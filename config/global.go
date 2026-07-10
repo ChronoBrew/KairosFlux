@@ -24,6 +24,10 @@ type GlobalConfig struct {
 	Host    string
 	Version string
 
+	// MetricsAddr 是 Prometheus /metrics 出口的监听地址（如 ":9100"）。
+	// 留空表示不启用可观测端口。
+	MetricsAddr string
+
 	WALPath           string
 	SSTablePath       string
 	MaxMemTableSize   int

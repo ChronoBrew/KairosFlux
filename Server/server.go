@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/network/banNet"
 	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/pkg/proto"
@@ -45,6 +46,11 @@ func main() {
 
 	// 启动周期性指标快照：headless 边缘设备 tail 日志即可观测运行状态
 	metrics.StartLogger(context.Background(), 10*time.Second)
+
+	// 可选：启动 Prometheus /metrics 出口（MetricsAddr 为空则不启用）
+	if err := metrics.StartPrometheusServer(config.G.MetricsAddr); err != nil {
+		fmt.Printf("[WARN] metrics endpoint not started: %v\n", err)
+	}
 
 	// 启动服务
 	fmt.Println("Starting Server...")
