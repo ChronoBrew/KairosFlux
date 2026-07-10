@@ -22,11 +22,7 @@ func NewGRPCServer(kv *service.KVServer) *GRPCServer {
 
 func (s *GRPCServer) Put(ctx context.Context, req *PutRequest) (*PutResponse, error) {
 	cmd := service.Command{Type: "Put", Key: req.Key, Value: req.Value}
-	index, err := s.kv.AppendEntry(cmd)
-	if err != nil {
-		return &PutResponse{Success: false}, nil
-	}
-	if err := s.kv.WaitForCommit(index); err != nil {
+	if err := s.kv.Write(cmd); err != nil {
 		return &PutResponse{Success: false}, nil
 	}
 	return &PutResponse{Success: true}, nil
@@ -42,11 +38,7 @@ func (s *GRPCServer) Get(ctx context.Context, req *GetRequest) (*GetResponse, er
 
 func (s *GRPCServer) Delete(ctx context.Context, req *DeleteRequest) (*DeleteResponse, error) {
 	cmd := service.Command{Type: "Delete", Key: req.Key}
-	index, err := s.kv.AppendEntry(cmd)
-	if err != nil {
-		return &DeleteResponse{Success: false}, nil
-	}
-	if err := s.kv.WaitForCommit(index); err != nil {
+	if err := s.kv.Write(cmd); err != nil {
 		return &DeleteResponse{Success: false}, nil
 	}
 	return &DeleteResponse{Success: true}, nil
