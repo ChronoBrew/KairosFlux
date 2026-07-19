@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NeverENG/BanDB/Raft"
@@ -25,6 +27,13 @@ type KVServer struct {
 	raft    *Raft.Raft
 	storage *storage.Engine
 	wal     *storage.WAL // standalone 模式的存储层 WAL；raft 模式为 nil
+
+	// cpMu 协调写入与 WAL checkpoint：每次写用 RLock 把 wal.Append+storage.Put
+	// 两步一起罩住（写之间仍并发，不影响 group commit）；checkpoint 用 Lock 独占，
+	// 待所有写静默后 active+dirty 快照才必然一致，此时重写 WAL 才不丢"已落 WAL 未进
+	// memtable"的在途写。
+	cpMu       sync.RWMutex
+	writeCount atomic.Int64
 }
 
 // NewFSM 创建 FSM，按运行模式初始化存储与持久化路径。
@@ -95,7 +104,21 @@ func (k *KVServer) Write(cmd Command) error {
 }
 
 // writeStandalone 先 append+fsync WAL，再写 memtable，提供单机崩溃恢复。
+// 全程持 cpMu.RLock（与 checkpoint 的 Lock 互斥），确保 append 与 Put 两步之间
+// 不会被 checkpoint 抢入截断——否则会丢"已落 WAL 但尚未进 memtable"的在途写。
 func (k *KVServer) writeStandalone(cmd Command) error {
+	k.cpMu.RLock()
+	err := k.applyStandalone(cmd)
+	k.cpMu.RUnlock()
+	if err != nil {
+		return err
+	}
+	k.maybeCheckpoint()
+	return nil
+}
+
+// applyStandalone 执行一条写的 WAL append + memtable 落地，调用方须持 cpMu.RLock。
+func (k *KVServer) applyStandalone(cmd Command) error {
 	switch cmd.Type {
 	case "Put":
 		if err := k.wal.Append(storage.WALOpPut, cmd.Key, cmd.Value); err != nil {
@@ -107,6 +130,60 @@ func (k *KVServer) writeStandalone(cmd Command) error {
 			return err
 		}
 		return k.storage.Delete(cmd.Key)
+	}
+	return nil
+}
+
+// checkpointInterval 每累计多少次写触发一次 WAL 自清洁重写。取 2×MaxMemTableSize：
+// 略高于单表刷盘阈值，保证 checkpoint 时通常已有历史数据落 SSTable 可回收，
+// 同时把 WAL 稳态大小约束在未刷盘热数据量级。
+func checkpointInterval() int64 {
+	return int64(2 * config.G.MaxMemTableSize)
+}
+
+// maybeCheckpoint 累计写达到阈值时触发一次 checkpoint。Add 原子自增保证同一阈值
+// 仅一个 goroutine 命中触发。
+func (k *KVServer) maybeCheckpoint() {
+	n := checkpointInterval()
+	if n <= 0 {
+		return
+	}
+	if k.writeCount.Add(1)%n == 0 {
+		k.Checkpoint()
+	}
+}
+
+// Checkpoint 独占静默所有写后，把 WAL 整体重写为未刷盘热数据(active+dirty，含墓碑)
+// 快照，回收已落 SSTable 的历史 WAL，令 WAL 大小有界。standalone 专用；raft 模式
+// 无存储层 WAL，为 no-op。
+func (k *KVServer) Checkpoint() {
+	if k.wal == nil {
+		return
+	}
+	k.cpMu.Lock()
+	defer k.cpMu.Unlock()
+
+	live := k.storage.SnapshotLive()
+	records := make([]storage.WALRecord, len(live))
+	for i, e := range live {
+		op := storage.WALOpPut
+		if e.Value == nil { // nil=墓碑；空切片[]byte{}非 nil=普通写
+			op = storage.WALOpDelete
+		}
+		records[i] = storage.WALRecord{Op: op, Key: e.Key, Value: e.Value}
+	}
+	if err := k.wal.Rewrite(records); err != nil {
+		slog.Error("WAL checkpoint rewrite failed", "error", err)
+	}
+}
+
+// Close 优雅停机：停止存储后台协程并关闭 standalone WAL（raft 模式 wal 为 nil）。
+func (k *KVServer) Close() error {
+	if k.storage != nil {
+		_ = k.storage.Close()
+	}
+	if k.wal != nil {
+		return k.wal.Close()
 	}
 	return nil
 }
