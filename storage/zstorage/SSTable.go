@@ -121,6 +121,16 @@ func (ss *SSTable) LoadSSTableMetaList() {
 			MaxKeyLoaded: false,
 		}
 
+		// 从块索引末项直接取 MaxKey（新格式）。不能用 EnsureMeta 的顺序扫描：它把数据段
+		// 之后的块索引/布隆/footer 也当记录读，导致 MaxKey 错乱（实测退化成空串），
+		// 使 getFromSSTables 的 [MinKey,MaxKey] 范围过滤把命中 key 整段跳过 → 重启后
+		// 已刷盘数据全部读不到。老格式无 footer，loadBlockIndexFromFile 返回 nil，
+		// 保留 MaxKeyLoaded=false 由 EnsureMeta 顺序扫描兜底（对纯数据文件正确）。
+		if idx := ss.loadBlockIndexFromFile(fullPath); len(idx) > 0 {
+			meta.MaxKey = idx[len(idx)-1].LastKey
+			meta.MaxKeyLoaded = true
+		}
+
 		metas = append(metas, meta)
 		count++
 	}
