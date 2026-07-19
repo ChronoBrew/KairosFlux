@@ -26,6 +26,19 @@ type walReq struct {
 	done  chan error
 }
 
+// WALRecord 一条完整 WAL 记录，供 Rewrite 批量重建 WAL 内容时使用。
+type WALRecord struct {
+	Op    uint8
+	Key   []byte
+	Value []byte
+}
+
+// walRewrite 一次 WAL 重写请求：把 WAL 内容整体替换为 records，done 回传结果。
+type walRewrite struct {
+	records []WALRecord
+	done    chan error
+}
+
 // WAL 存储层预写日志：standalone 模式下，写先 append + fsync 到此处再进 memtable，
 // 提供单机崩溃恢复。记录格式 [op u8][klen u32][vlen u32][key][value]（BigEndian）。
 // 与 Raft/raft_wal.go 一致：重放读到残缺尾部记录时直接停止（撕裂的尾写按 EOF 处理），
@@ -36,12 +49,13 @@ type walReq struct {
 // 摊销为 1 次（并发越高摊销越充分），又让 flushLoop 成为文件的唯一写者，消除了此前
 // 无锁并发 Write+Sync 的隐患。持久化契约不变：Append 返回即代表该记录已 fsync 落盘。
 type WAL struct {
-	file    *os.File
-	path    string
-	reqCh   chan *walReq
-	closeCh chan struct{}
-	done    chan struct{} // flushLoop 退出后关闭
-	once    sync.Once
+	file      *os.File
+	path      string
+	reqCh     chan *walReq
+	rewriteCh chan *walRewrite
+	closeCh   chan struct{}
+	done      chan struct{} // flushLoop 退出后关闭
+	once      sync.Once
 }
 
 // NewWAL 打开（或创建）WAL 文件，以追加模式准备写入，并启动 group commit flushLoop。
@@ -56,11 +70,12 @@ func NewWAL(path string) (*WAL, error) {
 		return nil, err
 	}
 	w := &WAL{
-		file:    f,
-		path:    path,
-		reqCh:   make(chan *walReq),
-		closeCh: make(chan struct{}),
-		done:    make(chan struct{}),
+		file:      f,
+		path:      path,
+		reqCh:     make(chan *walReq),
+		rewriteCh: make(chan *walRewrite),
+		closeCh:   make(chan struct{}),
+		done:      make(chan struct{}),
 	}
 	go w.flushLoop()
 	return w, nil
@@ -84,6 +99,15 @@ func (w *WAL) Append(op uint8, key, value []byte) error {
 	return <-req.done
 }
 
+// Rewrite 把 WAL 内容整体替换为 records（截断后重写并 fsync），用于 checkpoint 自清洁。
+// 调用方必须保证调用期间没有并发 Append（否则会丢写）：本项目由 KVServer.cpMu 独占锁
+// 让所有写静默后再调用。重写经 flushLoop 执行以维持"文件唯一写者"不变式。
+func (w *WAL) Rewrite(records []WALRecord) error {
+	rw := &walRewrite{records: records, done: make(chan error, 1)}
+	w.rewriteCh <- rw
+	return <-rw.done
+}
+
 // flushLoop 是文件的唯一写者：阻塞等到第一个请求后，非阻塞排空当前队列凑成一批，
 // 全部写入后只 fsync 一次，再把结果回传给整批。收到关闭信号时排空剩余请求后退出。
 func (w *WAL) flushLoop() {
@@ -95,6 +119,8 @@ func (w *WAL) flushLoop() {
 			batch = append(batch[:0], first)
 			w.drainInto(&batch)
 			w.commit(batch)
+		case rw := <-w.rewriteCh:
+			rw.done <- w.doRewrite(rw.records)
 		case <-w.closeCh:
 			// 排空关闭前已投递的请求，避免其永久阻塞在 <-done。
 			batch = batch[:0]
@@ -133,6 +159,21 @@ func (w *WAL) commit(batch []*walReq) {
 	for _, r := range batch {
 		r.done <- err
 	}
+}
+
+// doRewrite 在 flushLoop 内把文件截断为空后重写全部 records 并 fsync。
+// 只由 flushLoop 调用，保持文件唯一写者不变式。
+func (w *WAL) doRewrite(records []WALRecord) error {
+	if err := w.file.Truncate(0); err != nil {
+		return err
+	}
+	// O_APPEND 下写入总落到文件末尾；Truncate(0) 后末尾即 0，故重写从头开始。
+	for _, r := range records {
+		if err := w.writeRecord(r.Op, r.Key, r.Value); err != nil {
+			return err
+		}
+	}
+	return w.file.Sync()
 }
 
 // writeRecord 把单条记录字节写入文件（不 fsync）。O_APPEND 保证单次 Write 原子追加。

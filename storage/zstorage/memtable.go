@@ -208,6 +208,46 @@ func (m *MemTable) ScanRange(start, end []byte, fn func(key, value []byte) bool)
 	}
 }
 
+// SnapshotLive 返回 active+dirty 合并后的全部键值快照（active 覆盖 dirty），
+// 与 ScanRange 不同：保留墓碑(value==nil)。用于 WAL checkpoint 重写——未刷盘的
+// 热数据（含删除墓碑）必须完整保留，否则重放时被删的 key 会从 SSTable 复活。
+// 拷贝底层字节，返回后可安全持有。
+func (m *MemTable) SnapshotLive() []istorage.LogEntry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var a, d *SkipNode
+	if m.active != nil {
+		a = m.active.head.Next[0]
+	}
+	if m.dirty != nil {
+		d = m.dirty.head.Next[0]
+	}
+
+	out := make([]istorage.LogEntry, 0)
+	for a != nil || d != nil {
+		var key, val []byte
+		switch {
+		case d == nil || (a != nil && bytes.Compare(a.Key, d.Key) < 0):
+			key, val = a.Key, a.Value
+			a = a.Next[0]
+		case a == nil || bytes.Compare(d.Key, a.Key) < 0:
+			key, val = d.Key, d.Value
+			d = d.Next[0]
+		default: // a.Key == d.Key：active 为最新版本
+			key, val = a.Key, a.Value
+			a = a.Next[0]
+			d = d.Next[0]
+		}
+		e := istorage.LogEntry{Key: append([]byte(nil), key...)}
+		if val != nil { // 保留 nil-vs-空切片语义：nil=墓碑，非 nil=普通写
+			e.Value = append([]byte(nil), val...)
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // search 在跳表中查找指定 key，返回值和是否找到
 func (sl *SkipList) search(key []byte) ([]byte, bool) {
 	p := sl.head

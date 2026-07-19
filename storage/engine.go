@@ -47,6 +47,16 @@ func (e *Engine) Scan(start, end []byte, fn func(key, value []byte) bool) {
 	e.memTable.ScanRange(start, end, fn)
 }
 
+// SnapshotLive 返回未刷盘热数据（active+dirty，含墓碑）的快照，供 WAL checkpoint 重写。
+func (e *Engine) SnapshotLive() []istorage.LogEntry {
+	return e.memTable.SnapshotLive()
+}
+
+// Close 停止底层 MemTable 的后台协程，用于优雅停机。
+func (e *Engine) Close() error {
+	return e.memTable.Close()
+}
+
 func (e *Engine) Apply(cmd StorageCommand) error {
 	e.applyCh <- cmd
 	return nil
