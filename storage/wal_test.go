@@ -2,8 +2,10 @@ package storage
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -115,6 +117,45 @@ func TestWALTornTailStops(t *testing.T) {
 		t.Fatalf("torn tail should yield exactly the 1 intact record, got %+v", recs)
 	}
 	_ = w2.Close()
+}
+
+func TestWALConcurrentAppendGroupCommit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wal.log")
+	w, err := NewWAL(path)
+	if err != nil {
+		t.Fatalf("new wal: %v", err)
+	}
+
+	// 并发 Append：group commit 下 flushLoop 是唯一写者，全部记录都应完整落盘、无交错、无丢失。
+	const n = 500
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			key := []byte(fmt.Sprintf("k%04d", i))
+			if err := w.Append(WALOpPut, key, []byte("v")); err != nil {
+				t.Errorf("append %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	recs := replayAll(t, w)
+	if len(recs) != n {
+		t.Fatalf("want %d records, got %d", n, len(recs))
+	}
+	seen := make(map[string]bool, n)
+	for _, r := range recs {
+		if r.op != WALOpPut || !bytes.Equal(r.value, []byte("v")) {
+			t.Fatalf("corrupt record: %+v", r)
+		}
+		seen[string(r.key)] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("want %d unique keys, got %d (interleaved/lost writes)", n, len(seen))
+	}
+	_ = w.Close()
 }
 
 func TestWALReplayMissingFile(t *testing.T) {
