@@ -158,6 +158,71 @@ func TestWALConcurrentAppendGroupCommit(t *testing.T) {
 	_ = w.Close()
 }
 
+func TestWALRewriteAtomicReplace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "wal.log")
+	w, err := NewWAL(path)
+	if err != nil {
+		t.Fatalf("new wal: %v", err)
+	}
+
+	// 先写入若干旧记录。
+	for i := 0; i < 5; i++ {
+		if err := w.Append(WALOpPut, []byte(fmt.Sprintf("old%d", i)), []byte("x")); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	// 预置一个陈旧的 .tmp（模拟上次 rewrite 崩在中途的残留），不得干扰恢复。
+	if err := os.WriteFile(path+".tmp", []byte("garbage"), 0644); err != nil {
+		t.Fatalf("stale tmp: %v", err)
+	}
+
+	// Rewrite 为一批新记录（含墓碑、含空值），原子替换。
+	newRecs := []WALRecord{
+		{Op: WALOpPut, Key: []byte("a"), Value: []byte("1")},
+		{Op: WALOpDelete, Key: []byte("b"), Value: nil},
+		{Op: WALOpPut, Key: []byte("c"), Value: []byte{}},
+	}
+	if err := w.Rewrite(newRecs); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	// 重写后应恰好只剩新记录，旧记录被整体替换，无残缺。
+	recs := replayAll(t, w)
+	if len(recs) != len(newRecs) {
+		t.Fatalf("want %d records after rewrite, got %d: %+v", len(newRecs), len(recs), recs)
+	}
+	if recs[0].op != WALOpPut || !bytes.Equal(recs[0].key, []byte("a")) || !bytes.Equal(recs[0].value, []byte("1")) {
+		t.Errorf("rec0 mismatch: %+v", recs[0])
+	}
+	if recs[1].op != WALOpDelete || !bytes.Equal(recs[1].key, []byte("b")) || len(recs[1].value) != 0 {
+		t.Errorf("rec1 (tombstone) mismatch: %+v", recs[1])
+	}
+	if recs[2].op != WALOpPut || !bytes.Equal(recs[2].key, []byte("c")) || len(recs[2].value) != 0 {
+		t.Errorf("rec2 (empty-value put) mismatch: %+v", recs[2])
+	}
+
+	// 重写后仍可继续正常 Append。
+	if err := w.Append(WALOpPut, []byte("d"), []byte("4")); err != nil {
+		t.Fatalf("append after rewrite: %v", err)
+	}
+	if got := replayAll(t, w); len(got) != len(newRecs)+1 {
+		t.Fatalf("append after rewrite not persisted: %d", len(got))
+	}
+	_ = w.Close()
+
+	// 重开（模拟重启）应仍读到完整数据——证明 rename 后的文件是完整的。
+	w2, err := NewWAL(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer w2.Close()
+	if got := replayAll(t, w2); len(got) != len(newRecs)+1 {
+		t.Fatalf("reopen replay mismatch: %d", len(got))
+	}
+}
+
 func TestWALReplayMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "absent", "wal.log")
 	// 不创建文件，直接构造一个指向不存在路径的 WAL 实例做重放

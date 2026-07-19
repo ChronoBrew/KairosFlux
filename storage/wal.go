@@ -161,31 +161,69 @@ func (w *WAL) commit(batch []*walReq) {
 	}
 }
 
-// doRewrite 在 flushLoop 内把文件截断为空后重写全部 records 并 fsync。
+// doRewrite 通过"临时文件 + 原子 rename"把 WAL 内容整体替换为 records。
+// 不能就地 Truncate(0)+重写：那三步非原子，若在 Truncate 之后、重写 fsync 之前崩溃，
+// WAL 会残缺/清空——而快照里的 active+dirty 尚无 SSTable 副本，会丢已 ack 的写。
+// 先把 records 写满并 fsync 到 tmp，再 rename 覆盖（POSIX 原子），最后 fsync 父目录
+// 让 rename 本身持久。恢复时只会看到完整的旧 WAL 或完整的新 WAL，绝不残缺。
 // 只由 flushLoop 调用，保持文件唯一写者不变式。
 func (w *WAL) doRewrite(records []WALRecord) error {
-	if err := w.file.Truncate(0); err != nil {
+	tmpPath := w.path + ".tmp"
+	tmp, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
 		return err
 	}
-	// O_APPEND 下写入总落到文件末尾；Truncate(0) 后末尾即 0，故重写从头开始。
 	for _, r := range records {
-		if err := w.writeRecord(r.Op, r.Key, r.Value); err != nil {
+		if _, err := tmp.Write(encodeRecord(r.Op, r.Key, r.Value)); err != nil {
+			tmp.Close()
 			return err
 		}
 	}
-	return w.file.Sync()
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, w.path); err != nil {
+		return err
+	}
+	// 重新打开为新文件（旧 fd 指向已被覆盖的旧 inode）。flushLoop 是唯一写者，无并发。
+	_ = w.file.Close()
+	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+	if err != nil {
+		return err
+	}
+	w.file = f
+	return fsyncDir(filepath.Dir(w.path))
 }
 
-// writeRecord 把单条记录字节写入文件（不 fsync）。O_APPEND 保证单次 Write 原子追加。
-func (w *WAL) writeRecord(op uint8, key, value []byte) error {
+// encodeRecord 编码一条 WAL 记录：[op u8][klen u32][vlen u32][key][value]（BigEndian）。
+func encodeRecord(op uint8, key, value []byte) []byte {
 	buf := make([]byte, 9, 9+len(key)+len(value))
 	buf[0] = op
 	binary.BigEndian.PutUint32(buf[1:5], uint32(len(key)))
 	binary.BigEndian.PutUint32(buf[5:9], uint32(len(value)))
 	buf = append(buf, key...)
 	buf = append(buf, value...)
-	_, err := w.file.Write(buf)
+	return buf
+}
+
+// writeRecord 把单条记录字节写入文件（不 fsync）。O_APPEND 保证单次 Write 原子追加。
+func (w *WAL) writeRecord(op uint8, key, value []byte) error {
+	_, err := w.file.Write(encodeRecord(op, key, value))
 	return err
+}
+
+// fsyncDir fsync 目录项，使其中文件的 rename 本身持久（崩溃后 rename 不丢失）。
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // Replay 从头读取全部记录，对每条调用 fn。读到残缺记录（撕裂尾写）即停止重放，
