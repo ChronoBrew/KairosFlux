@@ -86,7 +86,7 @@ flowchart TD
 ```
 
 - **投递脊柱**：起服务灌数据 → `deliverer` 周期 Scan 取批写出 JSONL；kill 后重启 → 从 `offset` 已提交游标续投、不重投已提交批。
-- **强一致 offset**：3 节点 raft 模式提交游标 → kill leader → 新 leader 上游标一致（复用现有 Raft）。
+- **强一致 offset（raft 模式仅 Leader 投递）**：投递被限定在 Leader（Follower 上 offset Commit 会 not-leader 失败，故 Follower 不投递），保证一次性投递；kill leader → 新 leader 从强一致 offset 续投、不重投已提交批。注意 FileSink 是**本地** sink，故 JSONL 落在当时 Leader 的磁盘上——真实共享 sink（如 ClickHouse）下才是全局一次性；FileSink 的节点局部性属骨架局限。
 - **指标**：`pkg/metrics` 的 `delivered` / `delivery_failed` / `offset_commits` / `circuit_open` 随投递累加，tail 日志即可观测。
 - **分片路由**：`go test ./service/cluster/...` 覆盖 key→node 稳定分布、移除节点最小迁移、心跳 TTL 判死。
 - **零依赖**：`go list -m all` 依赖数不变，仍只有 grpc/protobuf。

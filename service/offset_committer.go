@@ -17,6 +17,8 @@ func (c *offsetCommitter) Put(key, value []byte) error {
 
 // Get 读取 offset；key 不存在时 KVServer.Get 返回 "key not found" 错误，
 // 按 offset.Committer 约定翻译为 (nil, nil)，表示该 sink 尚无已提交游标（从头开始）。
+// 注意：当前把任何读错误都归为 (nil, nil)，因此真实读故障会退化为「从头重投」而非报错——
+// 骨架期可接受（投递幂等由 sink 兜底），后续应区分 not-found 与真实错误。
 func (c *offsetCommitter) Get(key []byte) ([]byte, error) {
 	v, err := c.kv.Get(key)
 	if err != nil {

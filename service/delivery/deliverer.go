@@ -31,6 +31,12 @@ type Deliverer struct {
 	batchSize   int
 	interval    time.Duration
 
+	// gate 是每轮投递前的准入判据：返回 false 时本轮跳过（不 Fetch/Send/Commit）。
+	// raft 模式用它把投递限定在 Leader——否则 Follower 上 Commit 走 kv.Write 会
+	// 「not leader」失败致游标永不推进、把同一批反复写入本地 sink。nil 视为恒放行
+	// （standalone 无需限制）。
+	gate func() bool
+
 	cursor []byte // 下一批的起始位置；nil 表示从最小 key 开始
 }
 
@@ -77,6 +83,12 @@ func NewDelivererWithOffset(source Source, sink sender, sinkName string, store o
 	}
 }
 
+// SetGate 设置每轮投递的准入判据（见 gate 字段），返回自身以便链式调用。
+func (d *Deliverer) SetGate(fn func() bool) *Deliverer {
+	d.gate = fn
+	return d
+}
+
 // Run 启动投递循环，直到 ctx 取消。启动时从 offsetStore 载入已提交游标以续投。
 func (d *Deliverer) Run(ctx context.Context) {
 	if cursor, err := d.offsetStore.Load(d.sinkName); err != nil {
@@ -103,6 +115,9 @@ func (d *Deliverer) Run(ctx context.Context) {
 // deliverOnce 取一批并投递。空批直接返回；Send 成功后先 Commit offset 再推进内存游标，
 // Commit 失败则不推进，下轮重投（at-least-once）。
 func (d *Deliverer) deliverOnce(ctx context.Context) error {
+	if d.gate != nil && !d.gate() {
+		return nil // 未获准入（如 raft 非 Leader）：本轮不投递，游标不动
+	}
 	batch, next, err := d.source.Fetch(d.cursor, d.batchSize)
 	if err != nil {
 		return err
