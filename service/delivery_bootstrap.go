@@ -19,7 +19,7 @@ func StartDeliveryFromConfig(ctx context.Context, kv *KVServer) {
 	if !config.G.DeliveryEnabled {
 		return
 	}
-	sink, err := delivery.NewFileSink("file", config.G.DeliveryFilePath)
+	sink, err := newDeliverySink()
 	if err != nil {
 		slog.Error("delivery: open file sink failed, delivery disabled", "path", config.G.DeliveryFilePath, "error", err)
 		return
@@ -38,5 +38,14 @@ func StartDeliveryFromConfig(ctx context.Context, kv *KVServer) {
 		})
 	}
 	go d.Run(ctx)
-	slog.Info("delivery: started from config", "path", config.G.DeliveryFilePath, "batch", config.G.DeliveryBatchSize, "interval", interval)
+	slog.Info("delivery: started from config", "path", config.G.DeliveryFilePath, "batch", config.G.DeliveryBatchSize, "interval", interval, "exactly_once", config.G.DeliveryExactlyOnce)
+}
+
+// newDeliverySink 按配置选择落地 sink：DeliveryExactlyOnce 为真时用幂等 sink
+// （按 key HWM 去重，崩溃/重投下 effectively-once），否则用普通 FileSink（at-least-once）。
+func newDeliverySink() (delivery.Sink, error) {
+	if config.G.DeliveryExactlyOnce {
+		return delivery.NewIdempotentFileSink("file", config.G.DeliveryFilePath)
+	}
+	return delivery.NewFileSink("file", config.G.DeliveryFilePath)
 }
