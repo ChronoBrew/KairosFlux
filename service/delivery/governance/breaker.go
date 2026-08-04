@@ -8,6 +8,8 @@ package governance
 import (
 	"sync"
 	"time"
+
+	"github.com/NeverENG/BanDB/pkg/metrics"
 )
 
 // state 是熔断器的三态。
@@ -115,4 +117,5 @@ func (b *Breaker) trip() {
 	b.st = stateOpen
 	b.openedAt = b.now()
 	b.probeInFlight = false
+	metrics.CircuitOpen.Add(1)
 }

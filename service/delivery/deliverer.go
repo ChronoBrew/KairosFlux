@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/service/delivery/offset"
 )
 
@@ -110,12 +111,15 @@ func (d *Deliverer) deliverOnce(ctx context.Context) error {
 		return nil
 	}
 	if err := d.sink.Send(ctx, batch); err != nil {
+		metrics.DeliveryFailed.Add(1)
 		return err // 未 ack：游标不推进，下轮重投（at-least-once）
 	}
 	if err := d.offsetStore.Commit(d.sinkName, next); err != nil {
 		return err // offset 未落地：不推进内存游标，下轮重投同一批
 	}
 	d.cursor = next
+	metrics.Delivered.Add(int64(len(batch)))
+	metrics.OffsetCommits.Add(1)
 	slog.Debug("delivery: batch delivered", "sink", d.sink.Name(), "n", len(batch))
 	return nil
 }
