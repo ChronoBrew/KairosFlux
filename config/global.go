@@ -54,6 +54,16 @@ type GlobalConfig struct {
 	// Raft 快照配置
 	RaftSnapshotThreshold   int // 触发快照的日志数量阈值
 	RaftSnapshotKeepEntries int // 快照后保留的日志条目数
+
+	// 下游投递（delivery）配置：默认关闭，不影响既有写/读路径。
+	DeliveryEnabled    bool   // 是否启动下游投递循环
+	DeliveryFilePath   string // FileSink 的 JSONL 输出路径
+	DeliveryBatchSize  int    // 每批投递的记录数
+	DeliveryIntervalMs int    // 投递轮询间隔（毫秒）
+
+	// 分片集群（cluster）配置：骨架期供路由/放置控制面使用，默认单分片。
+	ShardCount int // 分片数（ShardOf 取模基数）
+	VNodes     int // 一致性哈希每节点的虚拟节点数
 }
 
 func (g *GlobalConfig) Init() {
@@ -117,6 +127,12 @@ func defaultGlobalConfig() *GlobalConfig {
 		Me:                       0,                          // 默认节点ID
 		RaftSnapshotThreshold:    1000,                       // 默认快照阈值
 		RaftSnapshotKeepEntries:  100,                        // 默认保留条目数
+		DeliveryEnabled:          false,                      // 默认不启动下游投递
+		DeliveryFilePath:         filepath.Join(logDir, "delivery.jsonl"),
+		DeliveryBatchSize:        100,
+		DeliveryIntervalMs:       1000,
+		ShardCount:               1,   // 默认单分片
+		VNodes:                   128, // 一致性哈希默认虚拟节点数
 	}
 }
 

@@ -61,5 +61,7 @@ func main() {
 	fmt.Printf("HA initialized, initial health status: %v\n", ha.IsHealthy())
 	// 单节点下等待选主完成再开放端口，避免启动瞬间写入被拒（#86）
 	KVServer.WaitUntilReady()
+	// 按配置启动下游投递循环（默认关闭）
+	service.StartDeliveryFromConfig(context.Background(), KVServer)
 	server.Serve()
 }
