@@ -30,12 +30,14 @@ type OffsetStore interface {
 	Commit(sink string, cursor []byte) error
 }
 
-// offsetKeyPrefix 是 offset KV 的 key 前缀，与业务 key 空间隔离，避免冲突。
-const offsetKeyPrefix = "__offset__/"
+// ReservedPrefix 是 offset KV 的 key 前缀，与业务 key 空间隔离，避免冲突。
+// 导出以便投递源（delivery.KVSource）扫描时跳过这些保留 key，防止把游标自身
+// 当作业务数据投递到下游。
+const ReservedPrefix = "__offset__/"
 
 // offsetKey 由 sink 名派生 offset 的 KV key，形如 `__offset__/<sink>`。
 func offsetKey(sink string) []byte {
-	return []byte(offsetKeyPrefix + sink)
+	return []byte(ReservedPrefix + sink)
 }
 
 // KVOffsetStore 是 OffsetStore 的 KV 实现：游标以 `__offset__/<sink>` 为 key 落到 Committer。

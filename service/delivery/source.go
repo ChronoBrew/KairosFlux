@@ -1,8 +1,11 @@
 package delivery
 
 import (
+	"bytes"
+
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/service/delivery/offset"
 )
 
 // Source 是投递的数据来源：给定游标，返回下一批记录与推进后的游标。
@@ -33,19 +36,25 @@ func NewKVSource(kv KVScanner, end []byte) *KVSource {
 
 func (s *KVSource) Fetch(cursor []byte, limit int) ([]Record, []byte, error) {
 	entries := s.kv.Scan(cursor, s.end, predicate.Predicate{Op: predicate.OpNone})
-	if len(entries) > limit {
-		entries = entries[:limit]
+	reserved := []byte(offset.ReservedPrefix)
+	batch := make([]Record, 0, limit)
+	var lastScanned []byte
+	for _, e := range entries {
+		lastScanned = e.Key
+		// 跳过 offset 等保留 key，避免把投递游标自身当业务数据投递到下游。
+		if bytes.HasPrefix(e.Key, reserved) {
+			continue
+		}
+		batch = append(batch, Record{Key: e.Key, Value: e.Value})
+		if len(batch) >= limit {
+			break
+		}
 	}
-	batch := make([]Record, len(entries))
-	for i, e := range entries {
-		batch[i] = Record{Key: e.Key, Value: e.Value}
-	}
-	if len(batch) == 0 {
+	if lastScanned == nil {
 		return batch, cursor, nil
 	}
-	// 游标推进到最后一条 key 之后：append 0x00 得到字节序严格更大的下一 key，
-	// 使下一轮扫描不再重复读到本批最后一条。
-	last := batch[len(batch)-1].Key
-	next := append(append([]byte(nil), last...), 0x00)
+	// 游标推进到本次已消费的最后一条 key 之后（含被跳过的保留 key），保证前进：
+	// append 0x00 得到字节序严格更大的下一 key，使下一轮扫描不再重复读到它。
+	next := append(append([]byte(nil), lastScanned...), 0x00)
 	return batch, next, nil
 }
