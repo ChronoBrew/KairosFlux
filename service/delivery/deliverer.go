@@ -8,7 +8,15 @@ import (
 	"github.com/NeverENG/BanDB/service/delivery/offset"
 )
 
-// Deliverer 是投递循环：周期性从 source 取一批，交给 sink 投递，成功后推进游标。
+// sender 是 deliverer 的投递目标抽象：只需 Name/Send 两个方法。delivery.Sink 与
+// governance.Router 都满足它——如此 deliverer 无需 import governance（governance 反过来
+// import delivery），既避免 import 环，又让主体可把 governance.Router 直接当投递目标传入。
+type sender interface {
+	Name() string
+	Send(ctx context.Context, batch []Record) error
+}
+
+// Deliverer 是投递循环：周期性从 source 取一批，交给 sink（sender）投递，成功后推进游标。
 //
 // B2 起游标经 offset.OffsetStore 落地：Run 启动时 Load 已提交游标，每批 Send 成功后
 // 先 Commit 再推进内存 cursor——Commit 失败则不推进，下轮重投（at-least-once）。
@@ -16,7 +24,7 @@ import (
 // 已提交批（exactly-once 仍需 sink 幂等兜底，见 offset 包 godoc）。
 type Deliverer struct {
 	source      Source
-	sink        Sink
+	sink        sender
 	offsetStore offset.OffsetStore
 	sinkName    string // offset key 依据；显式传入以免受 sink.Name() 变化影响
 	batchSize   int
@@ -47,9 +55,11 @@ func NewDeliverer(source Source, sink Sink, batchSize int, interval time.Duratio
 }
 
 // NewDelivererWithOffset 构造带持久化 offset 的投递循环：游标经 store 落地，实现崩溃续传。
-// sinkName 作为 offset key（不用 sink.Name()，以免后续换成治理路由后 key 漂移）。
+// sink 参数为 sender（Name/Send），故 delivery.Sink 与 governance.Router 均可传入——
+// 主体接线治理路由时把 *governance.Router 按结构化满足直接传进来（无需 import 环）。
+// sinkName 作为 offset key（不用 sink.Name()，以免换成治理路由后 key 漂移）。
 // batchSize<=0 取 1，interval<=0 取 1s。
-func NewDelivererWithOffset(source Source, sink Sink, sinkName string, store offset.OffsetStore, batchSize int, interval time.Duration) *Deliverer {
+func NewDelivererWithOffset(source Source, sink sender, sinkName string, store offset.OffsetStore, batchSize int, interval time.Duration) *Deliverer {
 	if batchSize <= 0 {
 		batchSize = 1
 	}
