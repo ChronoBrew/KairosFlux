@@ -15,6 +15,12 @@ const (
 	WALOpDelete uint8 = 2
 )
 
+// 文件系统权限：目录 0o755、文件 0o644（标准约定，抽成命名常量避免散落的魔法数）。
+const (
+	dirPerm  = 0o755
+	filePerm = 0o644
+)
+
 // walMaxBatch 单次 group commit 最多攒多少条记录再 fsync，防止极端突发下批次无界增长。
 const walMaxBatch = 256
 
@@ -61,11 +67,11 @@ type WAL struct {
 // NewWAL 打开（或创建）WAL 文件，以追加模式准备写入，并启动 group commit flushLoop。
 func NewWAL(path string) (*WAL, error) {
 	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, dirPerm); err != nil {
 			return nil, err
 		}
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_RDWR|os.O_CREATE, filePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -169,7 +175,7 @@ func (w *WAL) commit(batch []*walReq) {
 // 只由 flushLoop 调用，保持文件唯一写者不变式。
 func (w *WAL) doRewrite(records []WALRecord) error {
 	tmpPath := w.path + ".tmp"
-	tmp, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+	tmp, err := os.OpenFile(tmpPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, filePerm)
 	if err != nil {
 		return err
 	}
@@ -191,7 +197,7 @@ func (w *WAL) doRewrite(records []WALRecord) error {
 	}
 	// 重新打开为新文件（旧 fd 指向已被覆盖的旧 inode）。flushLoop 是唯一写者，无并发。
 	_ = w.file.Close()
-	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(w.path, os.O_APPEND|os.O_RDWR|os.O_CREATE, filePerm)
 	if err != nil {
 		return err
 	}
