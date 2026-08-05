@@ -49,36 +49,61 @@ func (s *Shard) applyLoop() {
 	}
 }
 
-// Node 是集群中的一个节点：托管所有分片（每分片一个 Raft 组），共享一个 RPC 端点（RaftGroupServer
-// 按 GroupID=shardID 分发）。写按 key 路由到分片组 leader 提交，各节点 apply 循环复制应用。
+// Node 是集群中的一个节点。真分片下每个分片只复制到 rf 个节点的副本子集（rf<节点数），故
+// 本节点只托管「自己在其副本集内」的那些分片（每分片一个 Raft 组，peers=该分片副本子集）。
+// replicas 记录全部分片的副本地址（含本节点不托管的），供写/读路由与跨节点转发。
 type Node struct {
 	self       string
 	me         int
 	addrs      []string
 	shardCount int
-	shards     map[int]*Shard
+	rf         int
+	shards     map[int]*Shard   // 仅本节点托管的分片
+	replicas   map[int][]string // 每个分片的副本节点地址（全部分片）
 	groupSrv   *Raft.RaftGroupServer
 }
 
-// NewNode 构造节点：为每个分片建 Raft 组、内存 store，并起 apply 循环；注册进共享的分发器。
-// 调用方随后用 Serve 绑定监听器。dataDir 下每分片一个子目录持久化 Raft 状态。
-func NewNode(addrs []string, me, shardCount int, dataDir string) *Node {
+// NewNode 构造节点：按副本因子 rf 用一致性哈希环算出各分片的副本集，只为「本节点属于其副本集」
+// 的分片建 Raft 组、内存 store 并起 apply 循环；Raft 组的 peers 即该分片副本子集，me 为本节点在
+// 子集内的下标（各副本用同一环独立算出一致的子集顺序，故下标天然一致）。rf<=0 或 >=节点数时退化
+// 为全副本（每节点托管每分片）。dataDir 下每分片一个子目录持久化 Raft 状态。
+func NewNode(addrs []string, me, shardCount, rf int, dataDir string) *Node {
+	self := addrs[me]
+	ring := cluster.NewHashRing(addrs, 0)
 	n := &Node{
-		self:       addrs[me],
+		self:       self,
 		me:         me,
 		addrs:      addrs,
 		shardCount: shardCount,
+		rf:         rf,
 		shards:     make(map[int]*Shard),
+		replicas:   make(map[int][]string, shardCount),
 		groupSrv:   Raft.NewRaftGroupServer(),
 	}
 	for sid := 0; sid < shardCount; sid++ {
-		r := Raft.NewRaftGroup(sid, addrs, me, filepath.Join(dataDir, "shard"+strconv.Itoa(sid)))
+		reps := cluster.ShardReplicas(ring, sid, rf)
+		n.replicas[sid] = reps
+		meInSet := indexOf(reps, self)
+		if meInSet < 0 {
+			continue // 本节点不是该分片副本，不托管
+		}
+		r := Raft.NewRaftGroup(sid, reps, meInSet, filepath.Join(dataDir, "shard"+strconv.Itoa(sid)))
 		sh := &Shard{id: sid, raft: r, store: newMemStore(), stopCh: make(chan struct{})}
 		go sh.applyLoop()
 		n.shards[sid] = sh
 		n.groupSrv.AddGroup(sid, r)
 	}
 	return n
+}
+
+// indexOf 返回 s 在 ss 中的下标，不存在返回 -1。
+func indexOf(ss []string, s string) int {
+	for i, v := range ss {
+		if v == s {
+			return i
+		}
+	}
+	return -1
 }
 
 // Serve 在给定 rpc.Server / 监听器上暴露本节点的分片 RPC 端点。
@@ -106,13 +131,19 @@ func (n *Node) propose(c command) error {
 	if err != nil {
 		return err
 	}
-	return Raft.ProposeToGroup(n.addrs, sid, b, time.Second, 5*time.Second)
+	// 路由到该分片的副本集组 leader；本节点是否为副本无关——ProposeToGroup 直接拨向副本地址。
+	return Raft.ProposeToGroup(n.replicas[sid], sid, b, time.Second, 5*time.Second)
 }
 
 // LocalGet 从本节点的分片副本读取（最终一致：apply 异步，可能落后于最新提交）。
+// 本节点若非该分片副本则返回 (nil,false)。
 func (n *Node) LocalGet(key []byte) ([]byte, bool) {
 	sid := cluster.ShardOf(key, n.shardCount)
-	return n.shards[sid].store.Get(key)
+	sh, ok := n.shards[sid]
+	if !ok {
+		return nil, false
+	}
+	return sh.store.Get(key)
 }
 
 // ShardLeader 返回 shard 组在本节点视角的 leader 地址（供观测/调试）。
