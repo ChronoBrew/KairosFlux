@@ -19,7 +19,7 @@ func TestRecency_RandomizedOverwritesSurviveRestart(t *testing.T) {
 	config.G.MaxCompactionSize = 3
 	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
 
-	mt := &MemTable{sst: NewSSTable()}
+	mt := newBareMemTable(NewSSTable())
 
 	const keyspace = 40
 	ref := make(map[string]string) // 参考真值：key → 最新 value
@@ -53,7 +53,7 @@ func TestRecency_RandomizedOverwritesSurviveRestart(t *testing.T) {
 	sst2 := NewSSTable()
 	sst2.LoadSSTableMetaList()
 	time.Sleep(200 * time.Millisecond)
-	mt2 := &MemTable{sst: sst2}
+	mt2 := newBareMemTable(sst2)
 
 	stale := 0
 	for k, want := range ref {

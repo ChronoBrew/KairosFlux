@@ -45,6 +45,12 @@ type MemTable struct {
 	sst *SSTable
 
 	credits *credit.Pool // 字节级令牌桶背压：限制未刷盘数据的内存占用
+
+	// 构造时从 config 快照的阈值：flush 触发大小与 compaction 触发文件数。快照而非在
+	// 后台 goroutine（FlushWorker/ListenCompactCh）里读全局 config.G，避免与（测试中）
+	// 并发修改全局配置形成数据竞争。
+	maxSize       int
+	maxCompaction int
 }
 
 // SkipNode 跳表节点
@@ -64,12 +70,14 @@ func newSkipList() *SkipList {
 // NewMemTable 创建新的 MemTable
 func NewMemTable() *MemTable {
 	mt := &MemTable{
-		active:    newSkipList(),
-		FlushChan: make(chan bool, 1),
-		compactCh: make(chan bool, 1),
-		stopCh:    make(chan struct{}),
-		sst:       NewSSTable(),
-		credits:   credit.New(config.G.MemTableMaxInflightBytes),
+		active:        newSkipList(),
+		FlushChan:     make(chan bool, 1),
+		compactCh:     make(chan bool, 1),
+		stopCh:        make(chan struct{}),
+		sst:           NewSSTable(),
+		credits:       credit.New(config.G.MemTableMaxInflightBytes),
+		maxSize:       config.G.MaxMemTableSize,
+		maxCompaction: config.G.MaxCompactionSize,
 	}
 	// 注册未刷盘字节数仪表，供周期性指标快照实时读取。
 	metrics.SetMemTableGauges(mt.InflightBytes, config.G.MemTableMaxInflightBytes)
@@ -278,7 +286,7 @@ func (m *MemTable) Put(key []byte, value []byte) error {
 	delta := m.active.insert(key, value)
 
 	// 检查 active 表大小是否超过阈值，触发刷盘
-	if m.active.size > config.G.MaxMemTableSize {
+	if m.active.size > m.maxSize {
 		m.StartFlush()
 	}
 	m.mu.Unlock()
@@ -296,7 +304,7 @@ func (m *MemTable) acquireCredit(n int64) {
 		return
 	}
 	metrics.BackpressureStalls.Add(1) // 快路径未命中，将触发刷盘并阻塞等待信用
-	m.StartFlush()                     // 确保有 flush 在路上来归还信用，避免永久阻塞
+	m.StartFlush()                    // 确保有 flush 在路上来归还信用，避免永久阻塞
 	m.credits.Acquire(n)
 }
 
@@ -368,7 +376,7 @@ func (m *MemTable) Delete(key []byte) error {
 	// 删除因此变为幂等盲写，不再返回 key not found。
 	delta := m.active.insert(key, nil)
 
-	if m.active.size > config.G.MaxMemTableSize {
+	if m.active.size > m.maxSize {
 		m.StartFlush()
 	}
 	m.mu.Unlock()
@@ -587,7 +595,7 @@ func (m *MemTable) CompactSSTable(startLevel int) {
 	for level := startLevel; level < maxLevel; level++ {
 		files := m.sst.GetLevelFiles(level)
 
-		if len(files) < config.G.MaxCompactionSize {
+		if len(files) < m.maxCompaction {
 			continue
 		}
 

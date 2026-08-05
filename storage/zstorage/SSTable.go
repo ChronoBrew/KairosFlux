@@ -44,6 +44,11 @@ type BlockIndexEntry struct {
 var _ istorage.ISSTable = &SSTable{}
 
 type SSTable struct {
+	// dir 是 SSTable 文件目录，构造时从 config 快照一份。构造在主 goroutine 完成，之后
+	// 后台 goroutine（如 LoadSSTableMetaList、Flush、Merge）读 ss.dir 而非全局 config.G，
+	// 避免与（测试中）并发修改全局配置形成数据竞争。
+	dir string
+
 	mata       []*istorage.SSTableMata
 	mu         sync.RWMutex
 	indexCache map[string][]BlockIndexEntry
@@ -54,6 +59,7 @@ type SSTable struct {
 
 func NewSSTable() *SSTable {
 	return &SSTable{
+		dir:        config.G.SSTablePath,
 		mata:       make([]*istorage.SSTableMata, 0),
 		indexCache: make(map[string][]BlockIndexEntry),
 		bloomCache: make(map[string]*PartitionedBloom),
@@ -61,7 +67,7 @@ func NewSSTable() *SSTable {
 }
 
 func (ss *SSTable) LoadSSTableMetaList() {
-	dir := config.G.SSTablePath
+	dir := ss.dir
 
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		slog.Error("cannot create SSTable directory", "error", err)
@@ -168,7 +174,7 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 
 	// L0：memtable 刷盘落到 level 0；level 编进文件名以便重启恢复。
 	filename := fmt.Sprintf("sstable_L0_%d.sst", time.Now().UnixNano())
-	dir := config.G.SSTablePath
+	dir := ss.dir
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create data directory failed: %v", err)
 	}
@@ -605,7 +611,7 @@ func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) 
 
 	// targetLevel 编进文件名，使重启（LoadSSTableMetaList）能恢复该文件的 level。
 	filename := fmt.Sprintf("sstable_merged_L%d_%d.sst", targetLevel, time.Now().UnixNano())
-	dir := config.G.SSTablePath
+	dir := ss.dir
 	fullPath := filepath.Join(dir, filename)
 
 	file, err := os.Create(fullPath)

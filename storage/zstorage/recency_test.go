@@ -21,7 +21,7 @@ func TestRecency_OverwriteAcrossCompactionSurvivesRestart(t *testing.T) {
 	config.G.MaxCompactionSize = 2
 	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
 
-	mt := &MemTable{sst: NewSSTable()}
+	mt := newBareMemTable(NewSSTable())
 
 	// x=A 与另一个 key 一起落 L0，再补一个 L0，触发 compaction 把它们并成 L1 merged 文件。
 	if err := mt.FlushToSSTable([]istorage.LogEntry{
@@ -48,7 +48,7 @@ func TestRecency_OverwriteAcrossCompactionSurvivesRestart(t *testing.T) {
 	sst2 := NewSSTable()
 	sst2.LoadSSTableMetaList()
 	time.Sleep(150 * time.Millisecond)
-	mt2 := &MemTable{sst: sst2}
+	mt2 := newBareMemTable(sst2)
 
 	v, ok := mt2.getFromSSTables([]byte("x"))
 	if !ok {
