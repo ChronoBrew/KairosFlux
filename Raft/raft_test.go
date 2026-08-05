@@ -10,6 +10,7 @@ import (
 func TestNewRaft(t *testing.T) {
 	peers := []string{"localhost:8000", "localhost:8001", "localhost:8002"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	if r == nil {
 		t.Fatal("NewRaft returned nil")
@@ -35,6 +36,7 @@ func TestNewRaft(t *testing.T) {
 func TestGetState(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	state, term := r.GetState()
 	if state != Follower {
@@ -48,6 +50,7 @@ func TestGetState(t *testing.T) {
 func TestGetLog(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	log := r.GetLog()
 	if len(log) != 0 {
@@ -58,6 +61,7 @@ func TestGetLog(t *testing.T) {
 func TestAppendEntry(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	index, _ := r.AppendEntry([]byte("test command"))
 	if index != -1 {
@@ -68,6 +72,7 @@ func TestAppendEntry(t *testing.T) {
 func TestElectionTimeout(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	time.Sleep(400 * time.Millisecond)
 
@@ -80,6 +85,7 @@ func TestElectionTimeout(t *testing.T) {
 func TestLeaderAppendsLog(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	time.Sleep(400 * time.Millisecond)
 
@@ -106,6 +112,7 @@ func TestLeaderAppendsLog(t *testing.T) {
 func TestLeaderSendsHeartbeats(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r.Stop()
 
 	time.Sleep(400 * time.Millisecond)
 
@@ -130,6 +137,7 @@ func TestPersistenceTermAndVotedFor(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 模拟选举：增加 Term
 	r.mu.Lock()
@@ -140,6 +148,7 @@ func TestPersistenceTermAndVotedFor(t *testing.T) {
 
 	// 创建新的 Raft 实例，应该从磁盘加载状态
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
+	defer r2.Stop()
 
 	if r2.Term != 5 {
 		t.Errorf("Expected Term to be 5 after reload, got %d", r2.Term)
@@ -160,6 +169,7 @@ func TestPersistenceLog(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 添加一些日志条目
 	r.mu.Lock()
@@ -171,6 +181,7 @@ func TestPersistenceLog(t *testing.T) {
 
 	// 创建新的 Raft 实例，应该从磁盘加载日志
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
+	defer r2.Stop()
 
 	if len(r2.log) != 3 {
 		t.Errorf("Expected 3 log entries after reload, got %d", len(r2.log))
@@ -195,6 +206,7 @@ func TestSnapshotCreation(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 添加日志并设置 commitIndex
 	r.mu.Lock()
@@ -229,6 +241,7 @@ func TestSnapshotPersistence(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 添加日志并设置 commitIndex
 	r.mu.Lock()
@@ -255,6 +268,7 @@ func TestSnapshotPersistence(t *testing.T) {
 
 	// 创建新的 Raft 实例，应该从磁盘加载快照
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
+	defer r2.Stop()
 
 	if r2.LastIncludedIndex != 1 {
 		t.Errorf("Expected LastIncludedIndex to be 1 after reload, got %d", r2.LastIncludedIndex)
@@ -279,6 +293,7 @@ func TestInstallSnapshotRPC(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 添加一些日志
 	r.mu.Lock()
@@ -289,11 +304,11 @@ func TestInstallSnapshotRPC(t *testing.T) {
 
 	// 模拟接收 InstallSnapshot RPC
 	args := &InstallSnapshotArgs{
-		Term:             2,
-		LeaderID:         1,
+		Term:              2,
+		LeaderID:          1,
 		LastIncludedIndex: 1,
 		LastIncludedTerm:  1,
-		Data:             []byte("new snapshot"),
+		Data:              []byte("new snapshot"),
 	}
 
 	rpc := &RaftRPC{raft: r}
@@ -332,6 +347,7 @@ func TestPersistAfterElection(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 等待成为 Leader
 	time.Sleep(400 * time.Millisecond)
@@ -345,6 +361,7 @@ func TestPersistAfterElection(t *testing.T) {
 
 	// 重新加载，验证 Term 已持久化
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
+	defer r2.Stop()
 	_, newTerm := r2.GetState()
 
 	if newTerm < originalTerm {
@@ -362,6 +379,7 @@ func TestPersistAfterAppendEntry(t *testing.T) {
 	defer os.RemoveAll(datadir)
 
 	r := NewRaftWithDataDir(peers, 0, datadir)
+	defer r.Stop()
 
 	// 等待成为 Leader
 	time.Sleep(400 * time.Millisecond)
@@ -379,6 +397,7 @@ func TestPersistAfterAppendEntry(t *testing.T) {
 
 	// 重新加载，验证日志已持久化
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
+	defer r2.Stop()
 	log := r2.GetLog()
 
 	if len(log) == 0 {
