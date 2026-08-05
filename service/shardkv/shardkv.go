@@ -6,6 +6,7 @@ import (
 	"net/rpc"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/NeverENG/BanDB/Raft"
@@ -58,9 +59,12 @@ type Node struct {
 	addrs      []string
 	shardCount int
 	rf         int
-	shards     map[int]*Shard   // 仅本节点托管的分片
-	replicas   map[int][]string // 每个分片的副本节点地址（全部分片）
+	shards     map[int]*Shard               // 仅本节点托管的分片
+	replicas   map[int][]string             // 每个分片的副本节点地址（全部分片）
+	readLB     map[int]*cluster.P2CBalancer // 本节点不托管的分片：转发读的副本 LB（延迟感知）
 	groupSrv   *Raft.RaftGroupServer
+
+	served atomic.Int64 // 本节点作为副本服务的转发读次数（观测 P2C 在副本间的分布）
 }
 
 // NewNode 构造节点：按副本因子 rf 用一致性哈希环算出各分片的副本集，只为「本节点属于其副本集」
@@ -78,6 +82,7 @@ func NewNode(addrs []string, me, shardCount, rf int, dataDir string) *Node {
 		rf:         rf,
 		shards:     make(map[int]*Shard),
 		replicas:   make(map[int][]string, shardCount),
+		readLB:     make(map[int]*cluster.P2CBalancer),
 		groupSrv:   Raft.NewRaftGroupServer(),
 	}
 	for sid := 0; sid < shardCount; sid++ {
@@ -85,7 +90,9 @@ func NewNode(addrs []string, me, shardCount, rf int, dataDir string) *Node {
 		n.replicas[sid] = reps
 		meInSet := indexOf(reps, self)
 		if meInSet < 0 {
-			continue // 本节点不是该分片副本，不托管
+			// 本节点不托管该分片：建 P2C 均衡器，读请求按延迟在副本间择优转发。
+			n.readLB[sid] = cluster.NewP2CBalancer(reps, 0)
+			continue
 		}
 		r := Raft.NewRaftGroup(sid, reps, meInSet, filepath.Join(dataDir, "shard"+strconv.Itoa(sid)))
 		sh := &Shard{id: sid, raft: r, store: newMemStore(), stopCh: make(chan struct{})}
@@ -109,6 +116,11 @@ func indexOf(ss []string, s string) int {
 // Serve 在给定 rpc.Server / 监听器上暴露本节点的分片 RPC 端点。
 func (n *Node) Serve(server *rpc.Server, ln net.Listener) error {
 	if err := n.groupSrv.RegisterRPC(server); err != nil {
+		return err
+	}
+	// ShardRead 服务转发读的落地端：从本节点托管的分片副本读取。与 RaftRPC 共享同一连接
+	// （net/rpc 一条连接可服务多个已注册服务），故转发读复用 Raft 的连接池、不额外建连。
+	if err := server.RegisterName("ShardRead", &readService{node: n}); err != nil {
 		return err
 	}
 	go server.Accept(ln)
