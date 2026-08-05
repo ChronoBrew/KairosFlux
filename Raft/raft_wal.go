@@ -17,6 +17,10 @@ const (
 	StateFile          = "raft_state.dat"
 	LogFile            = "raft_log.dat"
 	SnapshotDir        = "snapshots"
+
+	// 文件系统权限：目录 0o755、文件 0o644（标准约定，抽成命名常量避免散落魔法数）。
+	dirPerm  = 0o755
+	filePerm = 0o644
 )
 
 type RaftWAL struct {
@@ -40,7 +44,7 @@ type PersistData struct {
 }
 
 func NewRaftWAL(dir string) (*RaftWAL, error) {
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return nil, err
 	}
 
@@ -49,7 +53,7 @@ func NewRaftWAL(dir string) (*RaftWAL, error) {
 		metaPath: filepath.Join(dir, StateFile),
 	}
 
-	f, err := os.OpenFile(wal.logPath, os.O_APPEND|os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(wal.logPath, os.O_APPEND|os.O_RDWR|os.O_CREATE, filePerm)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +72,7 @@ func (w *RaftWAL) Close() error {
 func (w *RaftWAL) SaveState(term int64, votedFor int64) error {
 	state := WALState{Term: term, VotedFor: votedFor}
 
-	f, err := os.OpenFile(w.metaPath, os.O_RDWR|os.O_CREATE, 0644)
+	f, err := os.OpenFile(w.metaPath, os.O_RDWR|os.O_CREATE, filePerm)
 	if err != nil {
 		return err
 	}
@@ -233,7 +237,7 @@ func (w *RaftWAL) Clear() error {
 
 func (w *RaftWAL) SaveSnapshot(data []byte, lastIncludedIndex int64, lastIncludedTerm int64) error {
 	snapshotDir := filepath.Join(filepath.Dir(w.logPath), SnapshotDir)
-	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+	if err := os.MkdirAll(snapshotDir, dirPerm); err != nil {
 		return err
 	}
 	snapshotPath := filepath.Join(snapshotDir, fmt.Sprintf("%d_%d.snap", lastIncludedIndex, lastIncludedTerm))

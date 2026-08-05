@@ -34,6 +34,8 @@ const (
 	// 不写 value 字节，读侧据此还原为 nil。正常 value 长度不可能取此值，且老格式
 	// 文件永不含此哨兵，向后兼容。约定：内存与磁盘均以 Value==nil 表示墓碑。
 	tombstoneValLen uint32 = 0xFFFFFFFF
+	// dirPerm 是 SSTable 目录的文件系统权限。
+	dirPerm = 0o755
 )
 
 type BlockIndexEntry struct {
@@ -69,7 +71,7 @@ func NewSSTable() *SSTable {
 func (ss *SSTable) LoadSSTableMetaList() {
 	dir := ss.dir
 
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		slog.Error("cannot create SSTable directory", "error", err)
 		return
 	}
@@ -175,7 +177,7 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 	// L0：memtable 刷盘落到 level 0；level 编进文件名以便重启恢复。
 	filename := fmt.Sprintf("sstable_L0_%d.sst", time.Now().UnixNano())
 	dir := ss.dir
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, dirPerm); err != nil {
 		return fmt.Errorf("create data directory failed: %v", err)
 	}
 	fullPath := filepath.Join(dir, filename)
