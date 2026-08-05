@@ -8,6 +8,19 @@ BanDB 坐在数据仓库（ClickHouse、Doris 等）的写入入口之前，把�
 
 它不是数仓本体，也不替代 Kafka——是数仓前置的**摄入缓冲 + 投递**层。
 
+## 相比 Kafka + Spark 清洗链路
+
+传统数仓清洗是 `Source → Kafka（原始数据全量落盘） → Spark 拉回反序列化清洗 → 数仓`，跨两套重型分布式系统、多次网络跳转与序列化往返。BanDB 把这段收敛进一个零依赖引擎：
+
+| 维度 | Kafka + Spark | BanDB |
+| --- | --- | --- |
+| 清洗时机 | 原始数据先全量落 Kafka，下游再拉出来洗 | `PreHandle` 在写入进系统的一刻就地清洗，脏数据不进缓冲 |
+| 数据搬运 | 写 Kafka + 拉取 + 反序列化才开始处理 | 摄入与清洗同进程内联，少一套系统、少一跳、少一次 serde |
+| 延迟 | Spark 微批秒级批延迟 | 写入即清洗，投递紧循环，无攒批延迟 |
+| 运维 | Kafka 集群 + Spark 集群 + 调度，JVM 重内存 | 单二进制、零依赖、内存有界 |
+
+适用区间是**中小规模 / 边缘 / 低延迟**。大规模复杂有状态流处理（跨流 join、窗口聚合）与多消费者回放仍是 Kafka+Spark 的主场，BanDB 不做替代。
+
 ## 作用
 
 - **吸收高频写入**：LSM 内存跳表吸收瞬时高频写，后台 Compaction 顺序落盘；WAL group commit 让并发写共享一次 fsync；写路径背压令内存有界。
@@ -19,17 +32,56 @@ BanDB 坐在数据仓库（ClickHouse、Doris 等）的写入入口之前，把�
 
 ```mermaid
 flowchart TD
-    Up[上游写入端] -->|"TCP TLV / gRPC(+PreHandle 预处理)"| KV[KVServer 服务层]
-    KV -->|standalone| WAL[存储层 WAL]
-    KV -->|raft| Raft[Raft 日志复制]
-    WAL --> Engine[LSM 存储引擎]
+    Up([上游写入端])
+
+    subgraph L1[入口层]
+      direction LR
+      BanNet[BanNet · TCP TLV]
+      GRPC[gRPC]
+      KV["KVServer 服务层<br/>PreHandle 落盘前预处理"]
+    end
+
+    subgraph L2[存储层]
+      WAL[存储层 WAL]
+      Raft[Raft 日志复制]
+      Engine[LSM 存储引擎]
+      MemTable[MemTable 跳表 active/dirty]
+      SSTable[分层 SSTable]
+    end
+
+    subgraph L3[投递层]
+      Deliverer["投递循环<br/>熔断 / 健康 / 重试"]
+      Sink[下游 sink]
+    end
+
+    subgraph L4[分布式层]
+      Router[一致性哈希路由 + 准入限流]
+      Shards["Multi-Raft 分片副本组<br/>P2C 读 + 共享连接池"]
+    end
+
+    Up --> BanNet
+    Up --> GRPC
+    BanNet --> KV
+    GRPC --> KV
+    KV -->|standalone| WAL
+    KV -->|raft| Raft
+    WAL --> Engine
     Raft --> Engine
-    Engine --> MemTable[MemTable 跳表 active/dirty]
-    MemTable -->|Flush| SSTable[分层 SSTable]
-    Engine -->|按位点批量拉取| Deliverer[投递循环: 熔断/健康/重试]
-    Deliverer --> Sink[下游 sink]
-    KV -.横向切分.-> Router[一致性哈希路由 + 准入限流]
-    Router --> Shards[Multi-Raft 分片副本组: P2C 读 + 共享连接池]
+    Engine --> MemTable
+    MemTable -->|Flush| SSTable
+    Engine -->|按位点批量拉取| Deliverer
+    Deliverer --> Sink
+    KV -.横向切分.-> Router
+    Router --> Shards
+
+    classDef entry fill:#e3f2fd,stroke:#1565c0,color:#0d47a1;
+    classDef store fill:#e8f5e9,stroke:#2e7d32,color:#1b5e20;
+    classDef deliver fill:#fff3e0,stroke:#ef6c00,color:#e65100;
+    classDef dist fill:#f3e5f5,stroke:#6a1b9a,color:#4a148c;
+    class BanNet,GRPC,KV entry;
+    class WAL,Raft,Engine,MemTable,SSTable store;
+    class Deliverer,Sink deliver;
+    class Router,Shards dist;
 ```
 
 - **入口**：BanNet（二进制 TLV，无 HTTP/gRPC 依赖）或 gRPC，共用 `KVServer` 服务层。
