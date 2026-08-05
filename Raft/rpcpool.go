@@ -120,3 +120,10 @@ func (*timeoutError) Error() string { return "rpc call timeout" }
 // defaultRPCPool 是 Raft 节点间 RPC 的共享连接池：所有 Send*/Propose 复用之，
 // 使每个对端地址只维持一条被多路复用的连接。
 var defaultRPCPool = newRPCPool(5 * time.Second)
+
+// PooledCall 用共享连接池对 addr 发起一次 RPC。导出以便同进程内其它节点间 RPC（如 shardkv
+// 的副本读 ShardRead.Get）复用同一批多路复用连接——net/rpc 一条连接可服务多个已注册服务，
+// 故读 RPC 与 Raft RPC 共享每对端那一条连接。
+func PooledCall(addr, method string, args, reply any) error {
+	return defaultRPCPool.call(addr, method, args, reply)
+}
