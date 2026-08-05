@@ -34,6 +34,7 @@ func TestRaftGroupServer_DispatchesByGroupID(t *testing.T) {
 	defer sender1.Stop()
 
 	args := &AppendEntriesArgs{
+		GroupID:      1, // 显式发往组 1，验证服务端按 GroupID 分发
 		Term:         5, // 取较高 term，避免与托管组自身选举 term 竞争
 		LeaderID:     0,
 		PrevLogIndex: -1,
