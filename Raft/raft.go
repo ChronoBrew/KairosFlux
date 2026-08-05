@@ -479,7 +479,7 @@ func (r *Raft) applyCommittedLogs() {
 	for r.lastApplied < r.commitIndex {
 		r.lastApplied++
 		// 将绝对索引转换为相对数组索引
-		relativeIndex := r.lastApplied - int(r.LastIncludedIndex) - 1
+		relativeIndex := r.relIndex(r.lastApplied)
 		if relativeIndex >= 0 && relativeIndex < len(r.log) {
 			if r.ApplyCh != nil {
 				r.ApplyCh <- r.log[relativeIndex]
@@ -517,6 +517,20 @@ func (r *Raft) checkSnapshotTrigger() {
 	}
 }
 
+// relIndex 把绝对日志 index 映射为 r.log 的数组下标。
+//
+// 【历史 off-by-one 修复】无快照时基准应为 -1（首条绝对 index 0 → 数组下标 0）；
+// 但 LastIncludedIndex 初始为 0，旧代码统一用 `abs - LastIncludedIndex - 1`，在无快照场景
+// 把 index 0 算成 -1 → 追加/取 term/切片全部越界或错位。因 LastIncludedIndex>0 才代表"有快照"，
+// 这里无快照时用基准 -1，有快照时用 LastIncludedIndex（与旧公式一致，不影响快照路径）。
+func (r *Raft) relIndex(absIndex int) int {
+	base := -1
+	if r.LastIncludedIndex > 0 {
+		base = int(r.LastIncludedIndex)
+	}
+	return absIndex - base - 1
+}
+
 // getTermAt 获取指定绝对索引处的日志 term（考虑快照偏移）
 func (r *Raft) getTermAt(absIndex int) int {
 	if absIndex < 0 {
@@ -525,7 +539,7 @@ func (r *Raft) getTermAt(absIndex int) int {
 	if absIndex == int(r.LastIncludedIndex) && r.LastIncludedIndex > 0 {
 		return int(r.LastIncludedTerm)
 	}
-	relativeIndex := absIndex - int(r.LastIncludedIndex) - 1
+	relativeIndex := r.relIndex(absIndex)
 	if relativeIndex >= 0 && relativeIndex < len(r.log) {
 		return r.log[relativeIndex].Term
 	}
@@ -632,8 +646,8 @@ func (r *Raft) replicateLog() {
 
 		// 将绝对索引转换为相对数组索引来切片日志
 		var entries []LogEntry
-		relativeStart := r.nextIndex[i] - int(r.LastIncludedIndex) - 1
-		if relativeStart < len(r.log) {
+		relativeStart := r.relIndex(r.nextIndex[i])
+		if relativeStart >= 0 && relativeStart < len(r.log) {
 			entries = r.log[relativeStart:]
 		}
 
