@@ -566,7 +566,14 @@ func (ss *SSTable) readFromSSTableFull(filepath string, key []byte) ([]byte, boo
 	return nil, false
 }
 
-// 合并多个 SSTable 文件
+// 合并多个 SSTable 文件。
+//
+// 【正确性不变量 / 慎改】同 key 的 tie-break 由 files 的 srcIdx 决定（越大越新，见下），
+// 合并输出文件用 time.Now() 打新 ts。这依赖调用方 CompactSSTable「合并整层全部文件」：
+// 因此同 key 的多个版本要么都在本次输入里（srcIdx 定新旧），要么更新的版本在更浅层的
+// 更晚 ts 文件里——读路径据此按创建 ts 判 newest-wins（见 memtable.go getFromSSTables）。
+// 若引入 overlap-aware / 部分选择或跨层合并，必须同时确保「低 level = 更新」进入 tie-break，
+// 并把 recency 显式化（per-key 序号），否则合并会静默选中陈旧值。
 func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) *istorage.SSTableMata {
 	if len(files) == 0 {
 		return nil
