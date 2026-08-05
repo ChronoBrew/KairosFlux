@@ -9,7 +9,7 @@ import (
 
 func TestNewRaft(t *testing.T) {
 	peers := []string{"localhost:8000", "localhost:8001", "localhost:8002"}
-	r := NewRaft(peers, 0)
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	if r == nil {
 		t.Fatal("NewRaft returned nil")
@@ -34,7 +34,7 @@ func TestNewRaft(t *testing.T) {
 
 func TestGetState(t *testing.T) {
 	peers := []string{"localhost:8000"}
-	r := NewRaft(peers, 0)
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	state, term := r.GetState()
 	if state != Follower {
@@ -47,7 +47,7 @@ func TestGetState(t *testing.T) {
 
 func TestGetLog(t *testing.T) {
 	peers := []string{"localhost:8000"}
-	r := NewRaftWithDataDir(peers, 0, "raft_test_data_getlog")
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	log := r.GetLog()
 	if len(log) != 0 {
@@ -57,7 +57,7 @@ func TestGetLog(t *testing.T) {
 
 func TestAppendEntry(t *testing.T) {
 	peers := []string{"localhost:8000"}
-	r := NewRaft(peers, 0)
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	index, _ := r.AppendEntry([]byte("test command"))
 	if index != -1 {
@@ -67,7 +67,7 @@ func TestAppendEntry(t *testing.T) {
 
 func TestElectionTimeout(t *testing.T) {
 	peers := []string{"localhost:8000"}
-	r := NewRaft(peers, 0)
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	time.Sleep(400 * time.Millisecond)
 
@@ -79,7 +79,7 @@ func TestElectionTimeout(t *testing.T) {
 
 func TestLeaderAppendsLog(t *testing.T) {
 	peers := []string{"localhost:8000"}
-	r := NewRaftWithDataDir(peers, 0, "raft_test_data_leader_log")
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	time.Sleep(400 * time.Millisecond)
 
@@ -105,7 +105,7 @@ func TestLeaderAppendsLog(t *testing.T) {
 
 func TestLeaderSendsHeartbeats(t *testing.T) {
 	peers := []string{"localhost:8000"}
-	r := NewRaft(peers, 0)
+	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 
 	time.Sleep(400 * time.Millisecond)
 
