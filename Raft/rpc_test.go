@@ -7,38 +7,30 @@ import (
 	"time"
 )
 
+// mustListen 监听 addr 并在测试结束时关闭，避免固定端口在 -count=2 下被占用。
+func mustListen(t *testing.T, addr string) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("listen %s: %v", addr, err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	return ln
+}
+
 func TestRequestVoteRPC(t *testing.T) {
 	peers := []string{"localhost:8000", "localhost:8001"}
-	r1 := NewRaft(peers, 0)
-	r2 := NewRaft(peers, 1)
+	r1 := NewRaftWithDataDir(peers, 0, t.TempDir())
+	r2 := NewRaftWithDataDir(peers, 1, t.TempDir())
 
 	server1 := rpc.NewServer()
-	rpc1 := NewRaftRPC(r1)
-	rpc1.RegisterRPC(server1)
+	NewRaftRPC(r1).RegisterRPC(server1)
 
 	server2 := rpc.NewServer()
-	rpc2 := NewRaftRPC(r2)
-	rpc2.RegisterRPC(server2)
+	NewRaftRPC(r2).RegisterRPC(server2)
 
-	go func() {
-		ln, err := net.Listen("tcp", "localhost:8000")
-		if err != nil {
-			t.Errorf("Failed to listen: %v", err)
-			return
-		}
-		defer ln.Close()
-		server1.Accept(ln)
-	}()
-
-	go func() {
-		ln, err := net.Listen("tcp", "localhost:8001")
-		if err != nil {
-			t.Errorf("Failed to listen: %v", err)
-			return
-		}
-		defer ln.Close()
-		server2.Accept(ln)
-	}()
+	go server1.Accept(mustListen(t, "localhost:8000"))
+	go server2.Accept(mustListen(t, "localhost:8001"))
 
 	time.Sleep(100 * time.Millisecond)
 
@@ -65,36 +57,17 @@ func TestRequestVoteRPC(t *testing.T) {
 
 func TestAppendEntriesRPC(t *testing.T) {
 	peers := []string{"localhost:8002", "localhost:8003"}
-	r1 := NewRaft(peers, 0)
-	r2 := NewRaft(peers, 1)
+	r1 := NewRaftWithDataDir(peers, 0, t.TempDir())
+	r2 := NewRaftWithDataDir(peers, 1, t.TempDir())
 
 	server1 := rpc.NewServer()
-	rpc1 := NewRaftRPC(r1)
-	rpc1.RegisterRPC(server1)
+	NewRaftRPC(r1).RegisterRPC(server1)
 
 	server2 := rpc.NewServer()
-	rpc2 := NewRaftRPC(r2)
-	rpc2.RegisterRPC(server2)
+	NewRaftRPC(r2).RegisterRPC(server2)
 
-	go func() {
-		ln, err := net.Listen("tcp", "localhost:8002")
-		if err != nil {
-			t.Errorf("Failed to listen: %v", err)
-			return
-		}
-		defer ln.Close()
-		server1.Accept(ln)
-	}()
-
-	go func() {
-		ln, err := net.Listen("tcp", "localhost:8003")
-		if err != nil {
-			t.Errorf("Failed to listen: %v", err)
-			return
-		}
-		defer ln.Close()
-		server2.Accept(ln)
-	}()
+	go server1.Accept(mustListen(t, "localhost:8002"))
+	go server2.Accept(mustListen(t, "localhost:8003"))
 
 	time.Sleep(100 * time.Millisecond)
 
