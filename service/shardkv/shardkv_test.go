@@ -36,7 +36,7 @@ func TestShardKV_MultiRaftShardedReplicated(t *testing.T) {
 
 	nodes := make([]*Node, nNodes)
 	for i := 0; i < nNodes; i++ {
-		nd := NewNode(addrs, i, shardCount, filepath.Join(base, "node"+strconv.Itoa(i)))
+		nd := NewNode(addrs, i, shardCount, nNodes, filepath.Join(base, "node"+strconv.Itoa(i)))
 		nodes[i] = nd
 		if err := nd.Serve(rpc.NewServer(), lns[i]); err != nil {
 			t.Fatalf("serve: %v", err)
