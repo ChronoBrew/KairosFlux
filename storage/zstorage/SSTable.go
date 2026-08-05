@@ -113,7 +113,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		}
 
 		meta := &istorage.SSTableMata{
-			Level:        0,
+			Level:        parseLevelFromName(entry.Name()), // 从文件名恢复 level，避免重启塌缩到 L0
 			Filepath:     fullPath,
 			MinKey:       keyBytes,
 			MaxKey:       nil,
@@ -158,7 +158,8 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 		return errors.New("dont keep")
 	}
 
-	filename := fmt.Sprintf("sstable_%d.sst", time.Now().UnixNano())
+	// L0：memtable 刷盘落到 level 0；level 编进文件名以便重启恢复。
+	filename := fmt.Sprintf("sstable_L0_%d.sst", time.Now().UnixNano())
 	dir := config.G.SSTablePath
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("create data directory failed: %v", err)
@@ -587,7 +588,8 @@ func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) 
 	}
 	defer mi.Close()
 
-	filename := fmt.Sprintf("sstable_merged_%d.sst", time.Now().UnixNano())
+	// targetLevel 编进文件名，使重启（LoadSSTableMetaList）能恢复该文件的 level。
+	filename := fmt.Sprintf("sstable_merged_L%d_%d.sst", targetLevel, time.Now().UnixNano())
 	dir := config.G.SSTablePath
 	fullPath := filepath.Join(dir, filename)
 
