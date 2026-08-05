@@ -251,6 +251,7 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 		MaxKeyLoaded: true,
 	}
 	ss.AddMata(meta)
+	flushBytesWritten.Add(info.Size())
 	return nil
 }
 
@@ -705,6 +706,7 @@ func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) 
 	}
 
 	ss.AddMata(newMeta)
+	compactionBytesWritten.Add(info.Size())
 	slog.Info("SSTable merged", "level", targetLevel, "file", filename, "keys", count, "size", info.Size())
 
 	return newMeta
