@@ -2,6 +2,7 @@ package banNet
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -15,40 +16,35 @@ var _ banIface.IConnect = &Connection{}
 
 type Connection struct {
 	TCPServer banIface.IServer // 注入 ConnMgr
-	// 主要维护链接
-	Conn *net.TCPConn
-	// 链接的唯一 ID
-	ConnID uint32
-	// Stop 幂等化
-	stopOnce  sync.Once
+	Conn      *net.TCPConn     // 底层 TCP 连接
+	ConnID    uint32           // 连接唯一 ID
 	MsgHandle banIface.IMsgHandle
-	// 该链接状态
-	ExitBuffChan chan bool
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	// 生命周期：ctx 是唯一的取消信号。Stop 调 cancel() 广播退出、并关闭 Conn 以解除
+	// Reader 的阻塞读；Writer 与 Start 都 select ctx.Done()。stopOnce 保证 Stop 幂等。
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stopOnce sync.Once
 
-	msgChan chan []byte
-
-	msgBuffChan chan []byte
+	msgChan     chan []byte // 高优写通道
+	msgBuffChan chan []byte // 普通写通道
 
 	property     map[string]any
 	propertyLock sync.RWMutex
 }
 
-func NewConnection(conn *net.TCPConn, ConnID uint32, handle banIface.IMsgHandle, server banIface.IServer) *Connection {
+func NewConnection(conn *net.TCPConn, connID uint32, handle banIface.IMsgHandle, server banIface.IServer) *Connection {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Connection{
-		TCPServer:    server,
-		Conn:         conn,
-		ConnID:       ConnID,
-		MsgHandle:    handle,
-		ExitBuffChan: make(chan bool, 1),
-		ctx:          ctx,
-		cancel:       cancel,
-		msgChan:      make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
-		msgBuffChan:  make(chan []byte, config.G.MaxMsgChanLen),
-		property:     make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
+		TCPServer:   server,
+		Conn:        conn,
+		ConnID:      connID,
+		MsgHandle:   handle,
+		ctx:         ctx,
+		cancel:      cancel,
+		msgChan:     make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
+		msgBuffChan: make(chan []byte, config.G.MaxMsgChanLen),
+		property:    make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
 	}
 	c.TCPServer.GetConnMgr().Add(c)
 	return c
@@ -59,22 +55,16 @@ func (c *Connection) StartReader() {
 	defer c.Stop()
 
 	for {
-		if c.Conn == nil {
-			return
-		}
-
 		dp := NewDataPack()
 
 		headData := make([]byte, dp.GetHeadLen())
 		if _, err := io.ReadFull(c.Conn, headData); err != nil {
 			slog.Debug("conn read header failed", "connID", c.ConnID, "error", err)
-			c.ExitBuffChan <- true
-			return
+			return // defer Stop 取消 ctx、关闭连接
 		}
 		msg, err := dp.UnPack(headData)
 		if err != nil {
 			slog.Error("conn unpack header failed", "connID", c.ConnID, "error", err)
-			c.ExitBuffChan <- true
 			return
 		}
 
@@ -84,7 +74,6 @@ func (c *Connection) StartReader() {
 			idBuf := make([]byte, mImpl.IDLen)
 			if _, err := io.ReadFull(c.Conn, idBuf); err != nil {
 				slog.Error("conn read msgID failed", "connID", c.ConnID, "error", err)
-				c.ExitBuffChan <- true
 				return
 			}
 			msg.SetMsgID(string(idBuf))
@@ -96,7 +85,6 @@ func (c *Connection) StartReader() {
 
 			if _, err := io.ReadFull(c.Conn, data); err != nil {
 				slog.Error("conn read body failed", "connID", c.ConnID, "error", err)
-				c.ExitBuffChan <- true
 				return
 			}
 		}
@@ -117,29 +105,24 @@ func (c *Connection) StartWriter() {
 	defer c.Stop()
 
 	for {
-		// 检查最高优先级
+		// 优先冲刷高优通道，其空时再取普通通道；两处都随 ctx 取消而退出。
 		select {
-		case <-c.ExitBuffChan:
+		case <-c.ctx.Done():
 			return
-		case data, ok := <-c.msgChan:
-			if !ok {
-				return
-			}
-			if _, err := c.Conn.Write(data); err != nil {
-				slog.Error("conn write failed", "connID", c.ConnID, "error", err)
+		case data := <-c.msgChan:
+			if err := c.write(data); err != nil {
 				return
 			}
 		default:
-			// 高优通道全空时，在此静默等待
 			select {
-			case <-c.ExitBuffChan:
+			case <-c.ctx.Done():
 				return
-			case data, ok := <-c.msgBuffChan:
-				if !ok {
+			case data := <-c.msgChan:
+				if err := c.write(data); err != nil {
 					return
 				}
-				if _, err := c.Conn.Write(data); err != nil {
-					slog.Error("conn write failed", "connID", c.ConnID, "error", err)
+			case data := <-c.msgBuffChan:
+				if err := c.write(data); err != nil {
 					return
 				}
 			}
@@ -147,25 +130,29 @@ func (c *Connection) StartWriter() {
 	}
 }
 
+// write 向连接写一帧，出错记日志并返回错误（调用方据此退出 Writer）。
+func (c *Connection) write(data []byte) error {
+	if _, err := c.Conn.Write(data); err != nil {
+		slog.Error("conn write failed", "connID", c.ConnID, "error", err)
+		return err
+	}
+	return nil
+}
+
 func (c *Connection) Start() {
 	slog.Debug("conn established", "connID", c.ConnID)
 	go c.StartReader()
 	go c.StartWriter()
 	c.TCPServer.CallConnStartFunc(c)
-	<-c.ExitBuffChan // 阻塞至连接退出（Reader/Writer 出错或 Stop 触发）
+	<-c.ctx.Done() // 阻塞至连接被取消（Reader/Writer 出错或 Stop 触发）
 }
 
 func (c *Connection) Stop() {
 	c.stopOnce.Do(func() {
 		slog.Debug("conn terminated", "connID", c.ConnID)
+		c.cancel()     // 唯一取消信号：唤醒 Writer 与 Start 的 <-ctx.Done()
+		c.Conn.Close() // 解除 Reader 的阻塞读，使其返回
 		c.TCPServer.CallConnStopFunc(c)
-		c.cancel()
-		c.Conn.Close()
-		// 非阻塞通知 Start/Writer 退出；多次入口被 stopOnce 折叠
-		select {
-		case c.ExitBuffChan <- true:
-		default:
-		}
 		c.TCPServer.GetConnMgr().Remove(c)
 		// 不 close msgChan / msgBuffChan：worker 可能仍在 SendBuffMsg，close 会触发 send on closed channel
 	})
@@ -181,15 +168,21 @@ func (c *Connection) RemoteAddr() net.Addr {
 	return c.Conn.RemoteAddr()
 }
 
+// errConnClosed 表示向已关闭的连接发送。
+var errConnClosed = errors.New("banNet: connection closed")
+
 func (c *Connection) SendMsg(msgID string, data []byte) error {
 	packet, err := NewDataPack().Pack(NewMessage(msgID, data))
 	if err != nil {
 		return err
 	}
-	if c.msgChan != nil {
-		c.msgChan <- packet
+	// 随 ctx 取消而返回错误，避免连接关闭后 Writer 不再排空时永久阻塞。
+	select {
+	case c.msgChan <- packet:
+		return nil
+	case <-c.ctx.Done():
+		return errConnClosed
 	}
-	return nil
 }
 
 func (c *Connection) SendBuffMsg(msgID string, data []byte) error {
@@ -197,10 +190,12 @@ func (c *Connection) SendBuffMsg(msgID string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if c.msgBuffChan != nil {
-		c.msgBuffChan <- packet
+	select {
+	case c.msgBuffChan <- packet:
+		return nil
+	case <-c.ctx.Done():
+		return errConnClosed
 	}
-	return nil
 }
 
 func (c *Connection) SetProperty(key string, value any) {
