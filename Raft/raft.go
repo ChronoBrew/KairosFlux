@@ -63,6 +63,9 @@ type Raft struct {
 	addrMap map[int]string
 
 	commitCond *sync.Cond
+
+	stopCh   chan struct{} // 关闭以停止选举/心跳循环
+	stopOnce sync.Once
 }
 
 func NewRaft(peers []string, me int) *Raft {
@@ -92,6 +95,7 @@ func NewRaftWithDataDir(peers []string, me int, dataDir string) *Raft {
 		heartbeatCh: make(chan bool),
 		ApplyCh:     make(chan LogEntry, 100),
 		addrMap:     addrMap,
+		stopCh:      make(chan struct{}),
 	}
 
 	wal, _ := NewRaftWAL(dataDir)
@@ -180,6 +184,9 @@ func (r *Raft) Start() {
 func (r *Raft) electionLoop() {
 	for {
 		select {
+		case <-r.stopCh:
+			r.timer.Stop()
+			return
 		case <-r.timer.C:
 			r.startElection()
 			r.resetElectionTimer()
@@ -189,6 +196,14 @@ func (r *Raft) electionLoop() {
 			r.resetElectionTimer()
 		}
 	}
+}
+
+// Stop 停止 Raft 的选举与心跳循环并释放定时器。幂等（可重复调用）。
+// 用途：测试清理（避免泄漏的选举 goroutine 跨用例互扰），以及 Multi-Raft 的组启停。
+func (r *Raft) Stop() {
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+	})
 }
 
 // resetElectionTimer 复用单一 timer: 先 Stop→drain 残留信号, 再用新随机超时 Reset
@@ -340,10 +355,22 @@ func (r *Raft) startHeartbeatLoop() {
 	}
 
 	r.heartbeatTicker = time.NewTicker(HeartbeatInterval)
+	ticker := r.heartbeatTicker
 	go func() {
-		for r.state == Leader {
-			<-r.heartbeatTicker.C
-			r.SendHeartBeat()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-r.stopCh:
+				return
+			case <-ticker.C:
+				r.mu.Lock()
+				isLeader := r.state == Leader
+				r.mu.Unlock()
+				if !isLeader {
+					return
+				}
+				r.SendHeartBeat()
+			}
 		}
 	}()
 }
@@ -510,9 +537,9 @@ func (r *Raft) checkSnapshotTrigger() {
 	if logLength > threshold {
 		snapshotIndex := r.commitIndex - keepEntries
 		if snapshotIndex > r.lastSnapshotIndex {
-				slog.Info("auto-triggering snapshot", "index", snapshotIndex, "logLen", logLength, "threshold", threshold)
-				// 异步调用避免持锁死锁（checkSnapshotTrigger 在持锁上下文中被调用）
-				go r.TakeSnapshot(snapshotIndex)
+			slog.Info("auto-triggering snapshot", "index", snapshotIndex, "logLen", logLength, "threshold", threshold)
+			// 异步调用避免持锁死锁（checkSnapshotTrigger 在持锁上下文中被调用）
+			go r.TakeSnapshot(snapshotIndex)
 		}
 	}
 }
@@ -796,7 +823,7 @@ func (r *Raft) TakeSnapshot(index int) error {
 		}
 		select {
 		case r.ApplyCh <- snapshotEntry:
-				slog.Info("snapshot replay sent to FSM", "index", index, "entries", len(snapshotEntries))
+			slog.Info("snapshot replay sent to FSM", "index", index, "entries", len(snapshotEntries))
 		default:
 			slog.Warn("ApplyCh full, snapshot replay skipped")
 		}
