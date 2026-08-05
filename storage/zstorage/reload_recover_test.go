@@ -37,7 +37,7 @@ func TestReloadRecoversFlushedKeys(t *testing.T) {
 		}
 	}
 	time.Sleep(300 * time.Millisecond) // 等异步 FlushWorker 把数据落到 SSTable
-	_ = mt.Close()                      // 停后台协程，避免与重载实例抢同一目录
+	_ = mt.Close()                     // 停后台协程，避免与重载实例抢同一目录
 
 	// 模拟重启：同一目录新建 MemTable，从 SSTable 重新加载。
 	mt2 := NewMemTable()

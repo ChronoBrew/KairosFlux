@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/Raft"
+	"github.com/NeverENG/BanDB/config"
 )
 
 func setupTest(t *testing.T) (*KVServer, func()) {

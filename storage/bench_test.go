@@ -26,10 +26,10 @@ func benchmarkEnginePut(b *testing.B, valueSize int) {
 	}
 }
 
-func BenchmarkEngine_Put_64B(b *testing.B)   { benchmarkEnginePut(b, 64) }
-func BenchmarkEngine_Put_256B(b *testing.B)  { benchmarkEnginePut(b, 256) }
-func BenchmarkEngine_Put_1KB(b *testing.B)   { benchmarkEnginePut(b, 1024) }
-func BenchmarkEngine_Put_4KB(b *testing.B)   { benchmarkEnginePut(b, 4096) }
+func BenchmarkEngine_Put_64B(b *testing.B)  { benchmarkEnginePut(b, 64) }
+func BenchmarkEngine_Put_256B(b *testing.B) { benchmarkEnginePut(b, 256) }
+func BenchmarkEngine_Put_1KB(b *testing.B)  { benchmarkEnginePut(b, 1024) }
+func BenchmarkEngine_Put_4KB(b *testing.B)  { benchmarkEnginePut(b, 4096) }
 
 func BenchmarkEngine_Get(b *testing.B) {
 	config.G.MaxMemTableSize = 1000000

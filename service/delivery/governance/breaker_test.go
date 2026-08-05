@@ -8,7 +8,7 @@ import (
 // fakeClock 提供可控时钟，用于驱动 open→half-open 的超时迁移。
 type fakeClock struct{ t time.Time }
 
-func (c *fakeClock) now() time.Time      { return c.t }
+func (c *fakeClock) now() time.Time          { return c.t }
 func (c *fakeClock) advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newTestBreaker(failThreshold int, openTimeout time.Duration) (*Breaker, *fakeClock) {

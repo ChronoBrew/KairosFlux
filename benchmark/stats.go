@@ -11,10 +11,10 @@ type Stats struct {
 	latencies []time.Duration
 	mu        sync.Mutex
 
-	totalOps   atomic.Int64
-	totalErrs  atomic.Int64
-	startTime  time.Time
-	endTime    time.Time
+	totalOps  atomic.Int64
+	totalErrs atomic.Int64
+	startTime time.Time
+	endTime   time.Time
 }
 
 func NewStats() *Stats {
