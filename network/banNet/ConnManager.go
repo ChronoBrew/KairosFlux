@@ -45,11 +45,17 @@ func (cm *ConnManager) Len() int {
 }
 
 func (cm *ConnManager) ClearConn() {
+	// 先在锁内快照并清空连接表，再在锁外逐个 Stop——Stop 内部会回调 Remove 再次加锁，
+	// 若在持锁时调用会自死锁（sync.Mutex 不可重入）。
 	cm.mu.Lock()
-	defer cm.mu.Unlock()
+	conns := make([]banIface.IConnect, 0, len(cm.connections))
+	for _, conn := range cm.connections {
+		conns = append(conns, conn)
+	}
+	cm.connections = make(map[uint32]banIface.IConnect)
+	cm.mu.Unlock()
 
-	for connId, conn := range cm.connections {
+	for _, conn := range conns {
 		conn.Stop()
-		delete(cm.connections, connId)
 	}
 }
