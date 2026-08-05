@@ -22,7 +22,8 @@ const (
 
 // 响应负载内的状态字段。
 const (
-	StatusOK      = "ok"
-	StatusError   = "error"
-	StatusDropped = "dropped" // 被 PreHandle 钩子按策略丢弃，非传输错误
+	StatusOK         = "ok"
+	StatusError      = "error"
+	StatusDropped    = "dropped"    // 被 PreHandle 钩子按策略丢弃，非传输错误
+	StatusOverloaded = "overloaded" // 被网关自适应准入 shed（过载拒绝），可重试
 )

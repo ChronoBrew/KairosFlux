@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/NeverENG/BanDB/network/banIface"
+	"github.com/NeverENG/BanDB/pkg/admission"
 	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
@@ -28,6 +29,9 @@ type Router struct {
 	placement *cluster.Placement
 	self      string // 本节点地址（= config.Peers[Me]）
 	peers     *cluster.PeerPool
+
+	// 网关自适应准入（可选）：limiter!=nil 时按并发上限准入，过载 shed。
+	limiter *admission.Limiter
 
 	// 前置处理函数；返回 HookDrop 表示丢弃本帧
 	preHandleFunc func(request banIface.IRequest) banIface.HookAction
@@ -67,6 +71,11 @@ func (r *Router) forwardTarget(key []byte) (string, bool) {
 	return owner, true
 }
 
+// SetLimiter 开启网关自适应准入：过载时快速 shed（拒绝）而非无限排队。nil 关闭。
+func (r *Router) SetLimiter(l *admission.Limiter) {
+	r.limiter = l
+}
+
 // SetPreHandle 设置前置处理函数
 func (r *Router) SetPreHandle(f func(request banIface.IRequest) banIface.HookAction) {
 	r.preHandleFunc = f
@@ -90,8 +99,18 @@ func (r *Router) PreHandle(request banIface.IRequest) banIface.HookAction {
 	return action
 }
 
-// Handle 处理请求
+// Handle 处理请求。开启准入时先按并发上限准入：过载则 shed（回 overloaded 响应）不进处理。
 func (r *Router) Handle(request banIface.IRequest) {
+	if r.limiter != nil {
+		start, ok := r.limiter.Acquire()
+		if !ok {
+			metrics.AdmissionShed.Add(1)
+			sendOverloaded(request)
+			return
+		}
+		defer r.limiter.Release(start)
+	}
+
 	msgID := request.GetMsgID()
 	data := request.GetMsgData()
 
@@ -118,6 +137,11 @@ func statusPayload(status string) []byte {
 // sendErr 写回错误响应
 func sendErr(req banIface.IRequest) {
 	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusError))
+}
+
+// sendOverloaded 写回「网关过载 shed」响应；保证每请求恰好一个响应、且可被客户端识别重试。
+func sendOverloaded(req banIface.IRequest) {
+	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusOverloaded))
 }
 
 // sendOK 写回 PUT/DEL 成功响应
