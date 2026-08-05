@@ -5,9 +5,9 @@ import (
 )
 
 type Message struct {
-	Id string
+	ID string
 
-	IDLen   uint16 // 仅在 UnPack 解析头部时使用, 调用方据此再读取 Id 字节
+	IDLen   uint16 // 仅在 UnPack 解析头部时使用, 调用方据此再读取 ID 字节
 	DataLen uint32
 	Data    []byte
 }
@@ -16,14 +16,14 @@ var _ banIface.IMessage = &Message{}
 
 func NewMessage(id string, data []byte) *Message {
 	return &Message{
-		Id:      id,
+		ID:      id,
 		DataLen: uint32(len(data)),
 		Data:    data,
 	}
 }
 
 func (m *Message) GetMsgID() string {
-	return m.Id
+	return m.ID
 }
 func (m *Message) GetMsgLen() uint32 {
 	return m.DataLen
@@ -33,13 +33,13 @@ func (m *Message) GetData() []byte {
 }
 
 func (m *Message) SetMsgID(id string) {
-	m.Id = id
+	m.ID = id
 }
 
 func (m *Message) SetData(data []byte) {
 	m.Data = data
 }
 
-func (m *Message) SetMsgLen(id uint32) {
-	m.DataLen = id
+func (m *Message) SetMsgLen(length uint32) {
+	m.DataLen = length
 }
