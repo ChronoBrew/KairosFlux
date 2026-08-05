@@ -138,3 +138,43 @@ func TestAddNodeConsistency(t *testing.T) {
 		t.Errorf("新增节点迁移量 %d 过大，超过 2×公平份额 %.0f", moved, fair)
 	}
 }
+
+// TestShardReplicas 验证副本集放置：返回 rf 个互异节点、确定且各次一致、与副本数上界正确。
+func TestShardReplicas(t *testing.T) {
+	nodes := []string{"a", "b", "c", "d", "e"}
+	ring := NewHashRing(nodes, 0)
+	const rf = 3
+
+	for sid := 0; sid < 20; sid++ {
+		rs := ShardReplicas(ring, sid, rf)
+		if len(rs) != rf {
+			t.Fatalf("shard %d: 期望 %d 个副本，得到 %d", sid, rf, len(rs))
+		}
+		seen := map[string]bool{}
+		for _, n := range rs {
+			if seen[n] {
+				t.Fatalf("shard %d: 副本集含重复节点 %q", sid, n)
+			}
+			seen[n] = true
+		}
+		// 确定性：同一分片重复计算结果完全一致（各节点据此独立算出一致的 peers 顺序）。
+		if again := ShardReplicas(ring, sid, rf); fmt.Sprint(again) != fmt.Sprint(rs) {
+			t.Fatalf("shard %d: 副本集不确定，%v vs %v", sid, rs, again)
+		}
+	}
+}
+
+// TestShardReplicasBounds 验证 rf 越界与空环的边界处理。
+func TestShardReplicasBounds(t *testing.T) {
+	ring := NewHashRing([]string{"a", "b", "c"}, 0)
+	if got := ShardReplicas(ring, 0, 10); len(got) != 3 {
+		t.Fatalf("rf 超过节点数应取全部 3，得到 %d", len(got))
+	}
+	if got := ShardReplicas(ring, 0, 0); len(got) != 1 {
+		t.Fatalf("rf<=0 应视为 1，得到 %d", len(got))
+	}
+	empty := NewHashRing(nil, 0)
+	if got := ShardReplicas(empty, 0, 2); got != nil {
+		t.Fatalf("空环应返回 nil，得到 %v", got)
+	}
+}

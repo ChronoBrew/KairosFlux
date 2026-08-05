@@ -174,6 +174,32 @@ func (r *HashRing) walkNodesFrom(key []byte) []string {
 	return out
 }
 
+// ShardReplicas 返回分片 shardID 的副本集：以分片锚点在环上顺时针取前 rf 个物理节点。
+//
+// 为什么走环而非取模：这让「分片 → 承载节点子集」的放置与一致性哈希环统一——增删节点时
+// 副本集按环的最小变动性质迁移，且各节点用同一环独立算出完全一致的副本集与顺序（无需协调），
+// 从而 Raft 组的 peers 顺序、每节点在组内的下标（me）在各副本上天然一致。
+//
+// rf<=0 视为 1；rf 超过物理节点数则取全部。空环返回 nil。
+func ShardReplicas(ring *HashRing, shardID, rf int) []string {
+	nodes := ring.walkNodesFrom(shardAnchor(shardID))
+	if len(nodes) == 0 {
+		return nil
+	}
+	if rf <= 0 {
+		rf = 1
+	}
+	if rf > len(nodes) {
+		rf = len(nodes)
+	}
+	return nodes[:rf]
+}
+
+// shardAnchor 构造分片在环上的锚点 key。用 "shard#" 前缀与普通数据 key 区分命名空间。
+func shardAnchor(shardID int) []byte {
+	return []byte("shard#" + strconv.Itoa(shardID))
+}
+
 // ShardOf 把 key 映射到分片编号 [0, shardCount)。shardCount<=0 返回 0。
 //
 // 注意分层：这是纯取模的「分片编号」，与 NodeFor 的「节点归属」是两层概念——
