@@ -65,6 +65,8 @@ type Raft struct {
 
 	commitCond *sync.Cond
 
+	currentLeader int // 已知的当前 leader 的 peer 下标；-1 表示未知（供 leader-aware 路由重定向）
+
 	stopCh   chan struct{} // 关闭以停止选举/心跳循环
 	stopOnce sync.Once
 }
@@ -102,8 +104,9 @@ func NewRaftGroup(groupID int, peers []string, me int, dataDir string) *Raft {
 		electionCh:  make(chan bool),
 		heartbeatCh: make(chan bool),
 		ApplyCh:     make(chan LogEntry, 100),
-		addrMap:     addrMap,
-		stopCh:      make(chan struct{}),
+		addrMap:       addrMap,
+		stopCh:        make(chan struct{}),
+		currentLeader: -1,
 	}
 
 	wal, _ := NewRaftWAL(dataDir)
@@ -206,6 +209,22 @@ func (r *Raft) electionLoop() {
 	}
 }
 
+// LeaderHint 返回当前已知 leader 的地址供路由重定向：本节点即 leader 时返回自身地址；
+// 否则返回从 AppendEntries 学到的 leader 地址；均未知时 ok=false。
+func (r *Raft) LeaderHint() (string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.state == Leader {
+		return r.addrMap[r.me], true
+	}
+	if r.currentLeader >= 0 {
+		if addr, ok := r.addrMap[r.currentLeader]; ok {
+			return addr, true
+		}
+	}
+	return "", false
+}
+
 // Stop 停止 Raft 的选举与心跳循环并释放定时器。幂等（可重复调用）。
 // 用途：测试清理（避免泄漏的选举 goroutine 跨用例互扰），以及 Multi-Raft 的组启停。
 func (r *Raft) Stop() {
@@ -237,6 +256,7 @@ func (r *Raft) startElection() {
 	slog.Info("starting election", "state", r.state, "term", r.Term)
 
 	r.state = Candidate
+	r.currentLeader = -1 // 进入选举，leader 暂未知
 	r.Term++
 	r.votedFor = r.me
 	r.persistStateLocked()
@@ -260,9 +280,7 @@ func (r *Raft) startElection() {
 	}
 
 	peerCount := len(r.peers) - 1
-	votes := 1
 	voteCh := make(chan bool, peerCount+1)
-	voteCh <- true
 
 	for i := range r.peers {
 		if i == r.me {
@@ -295,39 +313,45 @@ func (r *Raft) startElection() {
 		}(i)
 	}
 
+	electionTerm := r.Term
 	r.mu.Unlock()
 
-	// 单节点模式：无需等待投票，直接成为 Leader
-	if peerCount == 0 {
+	// 异步收票：不阻塞 electionLoop。否则候选人在收票的最多 500ms 里无法处理现任 leader
+	// 的心跳（AppendEntries 本会把它退回 Follower 并重置计时器），会持续无谓改选、令 leader 抖动。
+	go r.awaitVotes(voteCh, peerCount, electionTerm)
+}
+
+// awaitVotes 收集本轮（electionTerm）选票并决定当选/退选。仅当仍是本轮任期的 Candidate 时
+// 才动作，避免作用于已被更高任期/心跳终结的过期选举。
+func (r *Raft) awaitVotes(voteCh chan bool, peerCount int, electionTerm int) {
+	wonAsCandidate := func() {
 		r.mu.Lock()
-		if r.state == Candidate {
+		if r.state == Candidate && r.Term == electionTerm {
 			r.becomeLeader()
 		}
 		r.mu.Unlock()
+	}
+
+	if peerCount == 0 {
+		wonAsCandidate() // 单节点：直接当选
 		return
 	}
 
-	// 等待投票结果或超时
+	votes := 1
 	timeout := time.After(500 * time.Millisecond)
 	for j := 0; j < peerCount; j++ {
 		select {
 		case voteGranted := <-voteCh:
 			if voteGranted {
 				votes++
-				// 获得多数票，成为 Leader
 				if votes > len(r.peers)/2 {
-					r.mu.Lock()
-					if r.state == Candidate {
-						r.becomeLeader()
-					}
-					r.mu.Unlock()
+					wonAsCandidate()
 					return
 				}
 			}
 		case <-timeout:
-			// 选举超时，重置为 Follower
 			r.mu.Lock()
-			if r.state == Candidate {
+			if r.state == Candidate && r.Term == electionTerm {
 				r.state = Follower
 				r.votedFor = -1
 			}
@@ -340,6 +364,7 @@ func (r *Raft) startElection() {
 func (r *Raft) becomeLeader() {
 	slog.Info("becoming leader", "term", r.Term)
 	r.state = Leader
+	r.currentLeader = r.me
 
 	// 计算下一个日志的绝对索引（考虑快照偏移）
 	nextLogIndex := 0
