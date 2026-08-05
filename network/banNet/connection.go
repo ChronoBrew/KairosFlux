@@ -2,8 +2,8 @@ package banNet
 
 import (
 	"context"
-	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 
@@ -53,8 +53,8 @@ func NewConnection(conn *net.TCPConn, ConnID uint32, handle banIface.IMsgHandle,
 	return c
 }
 func (c *Connection) StartReader() {
-	fmt.Println("[Reader] commenced")
-	defer fmt.Println("[Conn] exited gracefully")
+	slog.Debug("conn reader started", "connID", c.ConnID)
+	defer slog.Debug("conn reader exited", "connID", c.ConnID)
 	defer c.Stop()
 
 	for {
@@ -66,13 +66,13 @@ func (c *Connection) StartReader() {
 
 		headData := make([]byte, dp.GetHeadLen())
 		if _, err := io.ReadFull(c.Conn, headData); err != nil {
-			fmt.Println("read head err:", err)
+			slog.Debug("conn read header failed", "connID", c.ConnID, "error", err)
 			c.ExitBuffChan <- true
 			return
 		}
 		msg, err := dp.UnPack(headData)
 		if err != nil {
-			fmt.Println("unpack err:", err)
+			slog.Error("conn unpack header failed", "connID", c.ConnID, "error", err)
 			c.ExitBuffChan <- true
 			return
 		}
@@ -82,7 +82,7 @@ func (c *Connection) StartReader() {
 		if mImpl.IDLen > 0 {
 			idBuf := make([]byte, mImpl.IDLen)
 			if _, err := io.ReadFull(c.Conn, idBuf); err != nil {
-				fmt.Println("read msgID err:", err)
+				slog.Error("conn read msgID failed", "connID", c.ConnID, "error", err)
 				c.ExitBuffChan <- true
 				return
 			}
@@ -94,7 +94,7 @@ func (c *Connection) StartReader() {
 			data = make([]byte, msg.GetMsgLen())
 
 			if _, err := io.ReadFull(c.Conn, data); err != nil {
-				fmt.Println("read msg err:", err)
+				slog.Error("conn read body failed", "connID", c.ConnID, "error", err)
 				c.ExitBuffChan <- true
 				return
 			}
@@ -111,8 +111,8 @@ func (c *Connection) StartReader() {
 }
 
 func (c *Connection) StartWriter() {
-	fmt.Println("[Writer] commenced")
-	defer fmt.Println("[Writer] closed")
+	slog.Debug("conn writer started", "connID", c.ConnID)
+	defer slog.Debug("conn writer exited", "connID", c.ConnID)
 	defer c.Stop()
 
 	for {
@@ -125,7 +125,7 @@ func (c *Connection) StartWriter() {
 				return
 			}
 			if _, err := c.Conn.Write(data); err != nil {
-				fmt.Println("Write err:", err)
+				slog.Error("conn write failed", "connID", c.ConnID, "error", err)
 				return
 			}
 		default:
@@ -138,7 +138,7 @@ func (c *Connection) StartWriter() {
 					return
 				}
 				if _, err := c.Conn.Write(data); err != nil {
-					fmt.Println("Write err:", err)
+					slog.Error("conn write failed", "connID", c.ConnID, "error", err)
 					return
 				}
 			}
@@ -147,21 +147,16 @@ func (c *Connection) StartWriter() {
 }
 
 func (c *Connection) Start() {
-	fmt.Println("[Connection] established — ID:", c.ConnID)
+	slog.Debug("conn established", "connID", c.ConnID)
 	go c.StartReader()
 	go c.StartWriter()
 	c.TCPServer.CallConnStartFunc(c)
-	for {
-		select {
-		case <-c.ExitBuffChan:
-			return
-		}
-	}
+	<-c.ExitBuffChan // 阻塞至连接退出（Reader/Writer 出错或 Stop 触发）
 }
 
 func (c *Connection) Stop() {
 	c.stopOnce.Do(func() {
-		fmt.Println("[Connection] terminated — ID:", c.ConnID)
+		slog.Debug("conn terminated", "connID", c.ConnID)
 		c.TCPServer.CallConnStopFunc(c)
 		c.cancel()
 		c.Conn.Close()

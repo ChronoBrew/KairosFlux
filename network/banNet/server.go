@@ -2,6 +2,7 @@ package banNet
 
 import (
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 
@@ -44,38 +45,34 @@ func (s *Server) GetConnMgr() banIface.IConnManager {
 }
 
 func (s *Server) Start() {
-	fmt.Printf("[Server] commenced — %s @ %s:%d\n", s.Name, s.IP, s.Port)
+	slog.Info("banNet server starting", "name", s.Name, "addr", fmt.Sprintf("%s:%d", s.IP, s.Port))
 
 	go func() {
-
 		s.MsgHandle.StartWorkerPool()
 
-		TcPAddr, err := net.ResolveTCPAddr(s.IPVersion, fmt.Sprintf("%s:%d", s.IP, s.Port))
+		tcpAddr, err := net.ResolveTCPAddr(s.IPVersion, fmt.Sprintf("%s:%d", s.IP, s.Port))
 		if err != nil {
-			fmt.Println("[ERROR] Get the Tcp Addr err :", err)
+			slog.Error("banNet resolve addr failed", "error", err)
 			return
 		}
-		listener, err := net.ListenTCP(s.IPVersion, TcPAddr)
+		listener, err := net.ListenTCP(s.IPVersion, tcpAddr)
 		if err != nil {
-			fmt.Println("[ERROR] ListenTcp err :", err)
+			slog.Error("banNet listen failed", "error", err)
 			return
 		}
 		s.listener = listener
 
 		var cid uint32
-		cid = 0
-
 		for {
 			select {
 			case <-s.ExitCh:
 				s.Stop()
-				fmt.Println("[Server] shutting down")
-
+				slog.Info("banNet server shutting down")
 				return
 			default:
 				conn, err := listener.AcceptTCP()
 				if err != nil {
-					fmt.Println("[ERROR] Accept err :", err)
+					slog.Error("banNet accept failed", "error", err)
 					continue
 				}
 
@@ -85,7 +82,6 @@ func (s *Server) Start() {
 				}
 
 				dealConn := NewConnection(conn, cid, s.MsgHandle, s)
-				fmt.Println("[Connection] initializing")
 				go dealConn.Start()
 				cid++
 			}
@@ -94,16 +90,13 @@ func (s *Server) Start() {
 }
 
 func (s *Server) Stop() {
-	fmt.Println("[Server] listener closed — IP:", s.IP)
-
+	slog.Info("banNet server stopping", "addr", fmt.Sprintf("%s:%d", s.IP, s.Port))
 	s.ConnMgr.ClearConn()
 	s.MsgHandle.Stop()
-
 	if s.listener != nil {
-		fmt.Println("[Server] listener closed — Port:", s.Port)
 		s.listener.Close()
 	}
-	fmt.Println("[Server] exited safely")
+	slog.Debug("banNet server stopped")
 }
 
 func (s *Server) Serve() {
@@ -119,16 +112,14 @@ func (s *Server) SetConnStopFunc(f func(conn banIface.IConnect)) {
 }
 func (s *Server) CallConnStartFunc(conn banIface.IConnect) {
 	if s.ConnStartFunc == nil {
-		fmt.Println("[WARN] CallConnStartFunc is nil — connection start callback not registered")
-		return
+		return // 未注册连接建立回调，静默跳过
 	}
 	s.ConnStartFunc(conn)
 }
 
 func (s *Server) CallConnStopFunc(conn banIface.IConnect) {
 	if s.ConnStopFunc == nil {
-		fmt.Println("[WARN] CallConnStopFunc is nil — connection stop callback not registered")
-		return
+		return // 未注册连接关闭回调，静默跳过
 	}
 	s.ConnStopFunc(conn)
 }
