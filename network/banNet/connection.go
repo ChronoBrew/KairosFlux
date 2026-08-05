@@ -32,7 +32,7 @@ type Connection struct {
 
 	msgBuffChan chan []byte
 
-	property     map[string]interface{}
+	property     map[string]any
 	propertyLock sync.RWMutex
 }
 
@@ -48,6 +48,7 @@ func NewConnection(conn *net.TCPConn, ConnID uint32, handle banIface.IMsgHandle,
 		cancel:       cancel,
 		msgChan:      make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
 		msgBuffChan:  make(chan []byte, config.G.MaxMsgChanLen),
+		property:     make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
 	}
 	c.TCPServer.GetConnMgr().Add(c)
 	return c
@@ -172,7 +173,7 @@ func (c *Connection) Stop() {
 func (c *Connection) GetConnID() uint32 {
 	return c.ConnID
 }
-func (c *Connection) GetTcpConn() *net.TCPConn {
+func (c *Connection) GetTCPConn() *net.TCPConn {
 	return c.Conn
 }
 
@@ -181,40 +182,34 @@ func (c *Connection) RemoteAddr() net.Addr {
 }
 
 func (c *Connection) SendMsg(msgID string, data []byte) error {
-	dp := NewDataPack()
-
-	msg := NewMessage(msgID, data)
-	Gdata, err := dp.Pack(msg)
+	packet, err := NewDataPack().Pack(NewMessage(msgID, data))
 	if err != nil {
 		return err
 	}
 	if c.msgChan != nil {
-		c.msgChan <- Gdata
+		c.msgChan <- packet
 	}
 	return nil
 }
 
 func (c *Connection) SendBuffMsg(msgID string, data []byte) error {
-	dp := NewDataPack()
-	msg := NewMessage(msgID, data)
-	Gdata, err := dp.Pack(msg)
+	packet, err := NewDataPack().Pack(NewMessage(msgID, data))
 	if err != nil {
 		return err
 	}
 	if c.msgBuffChan != nil {
-		c.msgBuffChan <- Gdata
+		c.msgBuffChan <- packet
 	}
-
 	return nil
 }
 
-func (c *Connection) SetProperty(key string, value interface{}) {
+func (c *Connection) SetProperty(key string, value any) {
 	c.propertyLock.Lock()
 	defer c.propertyLock.Unlock()
 	c.property[key] = value
 }
 
-func (c *Connection) GetProperty(key string) interface{} {
+func (c *Connection) GetProperty(key string) any {
 	c.propertyLock.RLock()
 	defer c.propertyLock.RUnlock()
 	return c.property[key]

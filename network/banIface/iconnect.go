@@ -5,16 +5,14 @@ import "net"
 type IConnect interface {
 	Start()
 	Stop()
-	GetTcpConn() *net.TCPConn
+	GetTCPConn() *net.TCPConn
 	GetConnID() uint32
 	RemoteAddr() net.Addr
 
 	SendMsg(msgID string, data []byte) error
 	SendBuffMsg(msgID string, data []byte) error
 
-	SetProperty(key string, value interface{})
-	GetProperty(key string) interface{}
+	SetProperty(key string, value any)
+	GetProperty(key string) any
 	RemoveProperty(key string)
 }
-
-// type HandleFunc func(*net.TCPConn, []byte, int) error
