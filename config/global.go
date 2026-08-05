@@ -1,3 +1,6 @@
+// Package config 定义 BanDB 的全局运行配置及其加载：默认值（代码内）→ 配置文件覆盖
+// （config.json，Init）→ 命令行/环境变量覆盖（ParseFlags）。包级变量 G 在导入时完成加载，
+// 供各处以 config.G.X 读取。
 package config
 
 import (
@@ -140,19 +143,19 @@ func defaultGlobalConfig() *GlobalConfig {
 		Me:                       0,                          // 默认节点ID
 		RaftSnapshotThreshold:    1000,                       // 默认快照阈值
 		RaftSnapshotKeepEntries:  100,                        // 默认保留条目数
-		DeliveryEnabled:          false, // 默认不启动下游投递
+		DeliveryEnabled:          false,                      // 默认不启动下游投递
 		DeliveryFilePath:         filepath.Join(logDir, "delivery.jsonl"),
 		DeliveryBatchSize:        100,
 		DeliveryIntervalMs:       1000,
 		DeliveryExactlyOnce:      true, // 启用投递时默认走幂等 sink
 
-		ShardCount:               1,   // 默认单分片
-		VNodes:                   128, // 一致性哈希默认虚拟节点数
-		ShardRoutingEnabled:      false,
-		AdmissionEnabled:         false, // 默认不启用网关准入
-		AdmissionInitialLimit:    50,
-		AdmissionMinLimit:        1,
-		AdmissionMaxLimit:        2000,
+		ShardCount:            1,   // 默认单分片
+		VNodes:                128, // 一致性哈希默认虚拟节点数
+		ShardRoutingEnabled:   false,
+		AdmissionEnabled:      false, // 默认不启用网关准入
+		AdmissionInitialLimit: 50,
+		AdmissionMinLimit:     1,
+		AdmissionMaxLimit:     2000,
 	}
 }
 
