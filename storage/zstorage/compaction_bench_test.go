@@ -96,7 +96,11 @@ func TestCompactionBench(t *testing.T) {
 	time.Sleep(150 * time.Millisecond) // 等异步预热 goroutine 落定，避免与后续 compaction 竞争
 	dist2, total2 := levelDistribution(sst2)
 	t.Logf("=== 重启后（LoadSSTableMetaList）===")
-	t.Logf("文件总数=%d  per-level=%s  ← 全部塌缩到 L0", total2, dist2)
+	collapsed := "level 已保留（未塌缩）"
+	if dist2 != dist {
+		collapsed = "level 塌缩"
+	}
+	t.Logf("文件总数=%d  per-level=%s  ← %s", total2, dist2, collapsed)
 
 	mt2 := &MemTable{sst: sst2}
 	before := ReadCompactionStats()
