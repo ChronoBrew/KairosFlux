@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/network/banIface"
@@ -61,7 +62,7 @@ func (dp *DataPack) UnPack(data []byte) (banIface.IMessage, error) {
 	}
 
 	if config.G.MaxPackageSize > 0 && msg.DataLen > config.G.MaxPackageSize {
-		fmt.Println("[WARN] data exceeds max package size — length:", msg.DataLen)
+		slog.Warn("banNet frame exceeds max package size", "dataLen", msg.DataLen, "max", config.G.MaxPackageSize)
 		return nil, errors.New("data too large")
 	}
 	// 借用 Id 暂存 IDLen 信息: 调用方先从 GetMsgID() 拿不到东西, 通过头部之后另读 IDLen 字节填回。

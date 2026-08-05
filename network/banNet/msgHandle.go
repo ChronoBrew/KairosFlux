@@ -1,7 +1,7 @@
 package banNet
 
 import (
-	"fmt"
+	"log/slog"
 
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/network/banIface"
@@ -25,7 +25,7 @@ var _ banIface.IMsgHandle = &MsgHandle{}
 
 func (m *MsgHandle) AddRouter(msgID string, r banIface.IRouter) {
 	if _, ok := m.Arip[msgID]; ok {
-		fmt.Println("[WARN] duplicate route registration:", m.Arip)
+		slog.Warn("banNet duplicate route registration ignored", "msgID", msgID)
 		return
 	}
 	m.Arip[msgID] = r
@@ -34,7 +34,7 @@ func (m *MsgHandle) AddRouter(msgID string, r banIface.IRouter) {
 func (m *MsgHandle) DoMsgHandle(request banIface.IRequest) {
 	handler, ok := m.Arip[request.GetMsgID()]
 	if !ok {
-		fmt.Println("[ERROR] unregistered MsgID:", request.GetMsgID())
+		slog.Error("banNet unregistered msgID", "msgID", request.GetMsgID())
 		return
 	}
 	if handler.PreHandle(request) == banIface.HookDrop {
@@ -75,27 +75,20 @@ func (m *MsgHandle) SendMsgToTaskQueue(request banIface.IRequest) {
 	m.TaskQueue[workerID] <- request
 }
 
-func (m *MsgHandle) StartOneWorker(workerId int, taskQueue chan banIface.IRequest) {
-	fmt.Println("[Worker] commenced — ID:", workerId)
-	for {
-		select {
-		case request, ok := <-taskQueue:
-			if !ok {
-				fmt.Println("[ERROR] taskQueue is closed")
-				return
-			}
-			m.DoMsgHandle(request)
-		}
+func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan banIface.IRequest) {
+	slog.Debug("banNet worker started", "workerID", workerID)
+	// taskQueue 关闭时 range 自然结束，无需显式判空。
+	for request := range taskQueue {
+		m.DoMsgHandle(request)
 	}
+	slog.Debug("banNet worker exited", "workerID", workerID)
 }
 
 func (m *MsgHandle) Stop() {
-	fmt.Println("[MsgHandle] dispatching shutdown signal")
-
+	slog.Debug("banNet worker pool stopping")
 	for i := 0; i < int(m.WorkerPoolSize); i++ {
 		if m.TaskQueue[i] != nil {
 			close(m.TaskQueue[i])
 		}
 	}
-	fmt.Println("[WorkPool] shutting down")
 }
