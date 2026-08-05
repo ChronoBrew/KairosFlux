@@ -70,6 +70,13 @@ type GlobalConfig struct {
 	// 默认关闭（单机行为不变）。开启时 Peers 视为各节点的 BanNet 地址，Peers[Me] 须为本节点
 	// 监听地址（Host:Port）。
 	ShardRoutingEnabled bool
+
+	// 网关自适应准入（admission）：默认关闭。开启时按并发上限准入，用延迟反馈自适应探测
+	// 容量上限，过载 shed。
+	AdmissionEnabled      bool
+	AdmissionInitialLimit int
+	AdmissionMinLimit     int
+	AdmissionMaxLimit     int
 }
 
 func (g *GlobalConfig) Init() {
@@ -142,6 +149,10 @@ func defaultGlobalConfig() *GlobalConfig {
 		ShardCount:               1,   // 默认单分片
 		VNodes:                   128, // 一致性哈希默认虚拟节点数
 		ShardRoutingEnabled:      false,
+		AdmissionEnabled:         false, // 默认不启用网关准入
+		AdmissionInitialLimit:    50,
+		AdmissionMinLimit:        1,
+		AdmissionMaxLimit:        2000,
 	}
 }
 

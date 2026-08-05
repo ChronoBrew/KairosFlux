@@ -28,6 +28,7 @@ var (
 	DeliveryFailed            atomic.Int64 // 投递批失败（未 ack）次数
 	OffsetCommits             atomic.Int64 // 投递游标 offset 提交次数
 	CircuitOpen               atomic.Int64 // 下游 sink 熔断器跳到 open 的次数
+	AdmissionShed             atomic.Int64 // 网关自适应准入拒绝（shed）的请求数
 )
 
 // 仪表：当前瞬时值，由持有者注册回调，快照时实时读取。
@@ -67,6 +68,7 @@ type Snapshot struct {
 	DeliveryFailed        int64
 	OffsetCommits         int64
 	CircuitOpen           int64
+	AdmissionShed         int64
 	MemTableInflightBytes int64
 	MemTableBudgetBytes   int64
 }
@@ -87,6 +89,7 @@ func Take() Snapshot {
 		DeliveryFailed:        DeliveryFailed.Load(),
 		OffsetCommits:         OffsetCommits.Load(),
 		CircuitOpen:           CircuitOpen.Load(),
+		AdmissionShed:         AdmissionShed.Load(),
 		MemTableInflightBytes: memTableInflight(),
 		MemTableBudgetBytes:   memTableBudget.Load(),
 	}
@@ -109,6 +112,7 @@ func LogSnapshot() {
 		"delivery_failed", s.DeliveryFailed,
 		"offset_commits", s.OffsetCommits,
 		"circuit_open", s.CircuitOpen,
+		"admission_shed", s.AdmissionShed,
 		"memtable_inflight_bytes", s.MemTableInflightBytes,
 		"memtable_budget_bytes", s.MemTableBudgetBytes,
 	)
