@@ -1,4 +1,4 @@
-# BanDB —— 数据仓库写入前置的高性能缓冲引擎
+# BanDB Flux —— 高性能数仓前置存储引擎
 
 用 Go 从零实现、除 gRPC/Protobuf 外零第三方依赖:自研 TCP 框架、LSM 存储、WAL 与崩溃恢复、Multi-Raft 分片复制全部手写。
 
