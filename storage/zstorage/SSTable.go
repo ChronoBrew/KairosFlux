@@ -135,7 +135,15 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		count++
 	}
 
+	// 按创建时间戳升序重建 mata，等价于内存中的创建（append）序——读路径靠 mata 逆序判定
+	// newest-wins，按文件名字符串排序会让旧 merged 盖过新 L0 而返回陈旧值。时间戳相同时
+	// 退回文件名比较以保证确定性。
 	sort.Slice(metas, func(i, j int) bool {
+		ti := parseCreateTsFromName(filepath.Base(metas[i].Filepath))
+		tj := parseCreateTsFromName(filepath.Base(metas[j].Filepath))
+		if ti != tj {
+			return ti < tj
+		}
 		return metas[i].Filepath < metas[j].Filepath
 	})
 

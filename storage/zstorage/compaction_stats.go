@@ -27,6 +27,26 @@ func parseLevelFromName(name string) int {
 	return level
 }
 
+// parseCreateTsFromName 从文件名解析创建时间戳（末尾的 UnixNano），作为 SSTable 的
+// 真实创建序。文件名形如 `sstable_L0_<ts>.sst` / `sstable_merged_L2_<ts>.sst` / 老格式
+// `sstable_<ts>.sst`——ts 恒为最后一个 `_` 之后、`.sst` 之前的数字段。解析失败返回 0。
+//
+// 用途（关键正确性）：读路径 getFromSSTables 按 mata 逆序判定 newest-wins（内存中 mata =
+// 创建序）。重启时若按文件名字符串排序重建 mata，`L0` 会排在 `merged` 之前，导致旧的
+// merged 文件在逆序中盖过新的 L0 文件、返回陈旧值。按创建时间戳排序才等价于内存创建序。
+func parseCreateTsFromName(name string) int64 {
+	base := strings.TrimSuffix(name, ".sst")
+	i := strings.LastIndexByte(base, '_')
+	if i < 0 {
+		return 0
+	}
+	ts, err := strconv.ParseInt(base[i+1:], 10, 64)
+	if err != nil || ts < 0 {
+		return 0
+	}
+	return ts
+}
+
 // 写放大观测：累计「刷盘(flush → L0)」与「合并(compaction)」写出的字节数。
 // 写放大 = (flush + compaction) / 刷盘，反映一条数据平均被 compaction 重写多少遍。
 // 零成本原子计数，供 benchmark 量化，也可后续接入 metrics。
