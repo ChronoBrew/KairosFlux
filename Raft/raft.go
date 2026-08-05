@@ -252,6 +252,7 @@ func (r *Raft) startElection() {
 	}
 
 	args := &RequestVoteArgs{
+		GroupID:      r.groupID,
 		Term:         r.Term,
 		CandidateID:  r.me,
 		LastLogIndex: lastLogIndex,
@@ -371,113 +372,18 @@ func (r *Raft) startHeartbeatLoop() {
 			case <-r.stopCh:
 				return
 			case <-ticker.C:
+				// 心跳即携带待复制条目的 AppendEntries：与 replicateLog 同一路径，
+				// 确保 follower 落后时下一次心跳就把缺的条目补上，而不是发空包。
 				r.mu.Lock()
-				isLeader := r.state == Leader
-				r.mu.Unlock()
-				if !isLeader {
+				if r.state != Leader {
+					r.mu.Unlock()
 					return
 				}
-				r.SendHeartBeat()
+				r.replicateLog()
+				r.mu.Unlock()
 			}
 		}
 	}()
-}
-
-func (r *Raft) SendHeartBeat() {
-	r.mu.Lock()
-	if r.state != Leader {
-		r.mu.Unlock()
-		return
-	}
-
-	for i := range r.peers {
-		if i == r.me {
-			continue
-		}
-
-		prevLogIndex := r.nextIndex[i] - 1
-
-		// 如果 follower 落后太多（prevLogIndex 在快照范围内），发送 InstallSnapshot
-		if prevLogIndex < int(r.LastIncludedIndex) && r.LastIncludedIndex > 0 {
-			snapshotData, _, _, err := r.wal.LoadLatestSnapshot()
-			if err == nil && snapshotData != nil {
-				snapArgs := &InstallSnapshotArgs{
-					Term:              r.Term,
-					LeaderID:          r.me,
-					Data:              snapshotData,
-					LastIncludedIndex: r.LastIncludedIndex,
-					LastIncludedTerm:  r.LastIncludedTerm,
-				}
-				r.mu.Unlock()
-				go func(peerID int, snapArgs *InstallSnapshotArgs) {
-					reply, err := r.SendInstallSnapshot(r.addrMap[peerID], snapArgs)
-					if err != nil {
-						return
-					}
-					r.mu.Lock()
-					defer r.mu.Unlock()
-					if reply.Success {
-						r.nextIndex[peerID] = int(r.LastIncludedIndex) + 1
-						r.matchIndex[peerID] = int(r.LastIncludedIndex)
-					} else if reply.Term > r.Term {
-						r.Term = reply.Term
-						r.state = Follower
-						r.votedFor = -1
-						r.heartbeatTicker.Stop()
-					}
-				}(i, snapArgs)
-				r.mu.Lock()
-				continue
-			}
-		}
-
-		prevLogTerm := r.getTermAt(prevLogIndex)
-
-		args := &AppendEntriesArgs{
-			Term:         r.Term,
-			LeaderID:     r.me,
-			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Entries:      []LogEntry{},
-			LeaderCommit: r.commitIndex,
-		}
-
-		r.mu.Unlock()
-
-		go func(peerID int, args *AppendEntriesArgs) {
-			reply, err := r.SendAppendEntries(r.addrMap[peerID], args)
-			if err != nil {
-				r.mu.Lock()
-				if r.state == Leader {
-					r.nextIndex[peerID]--
-				}
-				r.mu.Unlock()
-				return
-			}
-
-			r.mu.Lock()
-			defer r.mu.Unlock()
-
-			if reply.Term > r.Term {
-				r.Term = reply.Term
-				r.state = Follower
-				r.votedFor = -1
-				r.heartbeatTicker.Stop()
-				return
-			}
-
-			if reply.Success {
-				r.nextIndex[peerID] = r.getLastLogIndex() + 1
-				r.matchIndex[peerID] = r.getLastLogIndex()
-				r.updateCommitIndex()
-			} else {
-				r.nextIndex[peerID]--
-			}
-		}(i, args)
-
-		r.mu.Lock()
-	}
-	r.mu.Unlock()
 }
 
 func (r *Raft) updateCommitIndex() {
@@ -650,6 +556,7 @@ func (r *Raft) replicateLog() {
 			snapshotData, _, _, err := r.wal.LoadLatestSnapshot()
 			if err == nil && snapshotData != nil {
 				snapArgs := &InstallSnapshotArgs{
+					GroupID:           r.groupID,
 					Term:              r.Term,
 					LeaderID:          r.me,
 					Data:              snapshotData,
@@ -687,6 +594,7 @@ func (r *Raft) replicateLog() {
 		}
 
 		args := &AppendEntriesArgs{
+			GroupID:      r.groupID,
 			Term:         r.Term,
 			LeaderID:     r.me,
 			PrevLogIndex: prevLogIndex,
@@ -718,10 +626,15 @@ func (r *Raft) replicateLog() {
 			}
 
 			if reply.Success {
-				r.nextIndex[peerID] = r.getLastLogIndex() + 1
-				r.matchIndex[peerID] = r.getLastLogIndex()
+				// 只按「本次实际发送的条目」推进 matchIndex，绝不按 leader 的 last index——
+				// 否则空心跳会把 follower 误标为已追平（历史 bug：空 entries 却推进到 last）。
+				matched := args.PrevLogIndex + len(args.Entries)
+				if matched > r.matchIndex[peerID] {
+					r.matchIndex[peerID] = matched
+					r.nextIndex[peerID] = matched + 1
+				}
 				r.updateCommitIndex()
-			} else {
+			} else if r.nextIndex[peerID] > 0 {
 				r.nextIndex[peerID]--
 			}
 		}(i, args)
