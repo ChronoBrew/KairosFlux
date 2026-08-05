@@ -21,7 +21,9 @@ func mustListen(t *testing.T, addr string) net.Listener {
 func TestRequestVoteRPC(t *testing.T) {
 	peers := []string{"localhost:8000", "localhost:8001"}
 	r1 := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r1.Stop()
 	r2 := NewRaftWithDataDir(peers, 1, t.TempDir())
+	defer r2.Stop()
 
 	server1 := rpc.NewServer()
 	NewRaftRPC(r1).RegisterRPC(server1)
@@ -58,7 +60,9 @@ func TestRequestVoteRPC(t *testing.T) {
 func TestAppendEntriesRPC(t *testing.T) {
 	peers := []string{"localhost:8002", "localhost:8003"}
 	r1 := NewRaftWithDataDir(peers, 0, t.TempDir())
+	defer r1.Stop()
 	r2 := NewRaftWithDataDir(peers, 1, t.TempDir())
+	defer r2.Stop()
 
 	server1 := rpc.NewServer()
 	NewRaftRPC(r1).RegisterRPC(server1)
