@@ -33,6 +33,7 @@ type LogEntry struct {
 }
 
 type Raft struct {
+	groupID  int // 多组（Multi-Raft）编号；单组为 0。用于出站 RPC 标注与对端按组分发。
 	peers    []string
 	me       int
 	state    State
@@ -69,16 +70,23 @@ type Raft struct {
 }
 
 func NewRaft(peers []string, me int) *Raft {
-	return NewRaftWithDataDir(peers, me, "raft_data")
+	return NewRaftGroup(0, peers, me, "raft_data")
 }
 
 func NewRaftWithDataDir(peers []string, me int, dataDir string) *Raft {
+	return NewRaftGroup(0, peers, me, dataDir)
+}
+
+// NewRaftGroup 创建一个属于 groupID 组的 Raft 实例（Multi-Raft）。groupID 在启动选举循环
+// 前设定，出站 RPC 会据此标注，对端 RaftGroupServer 按组分发。单组用 NewRaft/NewRaftWithDataDir（组 0）。
+func NewRaftGroup(groupID int, peers []string, me int, dataDir string) *Raft {
 	addrMap := make(map[int]string)
 	for i, addr := range peers {
 		addrMap[i] = addr
 	}
 
 	r := &Raft{
+		groupID:         groupID,
 		peers:           peers,
 		me:              me,
 		state:           Follower,

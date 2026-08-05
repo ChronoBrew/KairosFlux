@@ -6,6 +6,7 @@ import (
 )
 
 type RequestVoteArgs struct {
+	GroupID      int // 多组分发：目标 Raft 组编号（零值=组 0，单组时兼容）
 	Term         int
 	CandidateID  int
 	LastLogIndex int
@@ -18,6 +19,7 @@ type RequestVoteReply struct {
 }
 
 type AppendEntriesArgs struct {
+	GroupID      int // 多组分发：目标 Raft 组编号（零值=组 0）
 	Term         int
 	LeaderID     int
 	PrevLogIndex int
@@ -32,6 +34,7 @@ type AppendEntriesReply struct {
 }
 
 type InstallSnapshotArgs struct {
+	GroupID           int // 多组分发：目标 Raft 组编号（零值=组 0）
 	Term              int
 	LeaderID          int
 	Data              []byte
@@ -295,6 +298,7 @@ func (r *RaftRPC) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnaps
 }
 
 func (r *Raft) SendRequestVote(serverAddr string, args *RequestVoteArgs) (*RequestVoteReply, error) {
+	args.GroupID = r.groupID // 打上本组编号，令对端按组分发
 	client, err := rpc.Dial("tcp", serverAddr)
 	if err != nil {
 		return nil, err
@@ -311,6 +315,7 @@ func (r *Raft) SendRequestVote(serverAddr string, args *RequestVoteArgs) (*Reque
 }
 
 func (r *Raft) SendAppendEntries(serverAddr string, args *AppendEntriesArgs) (*AppendEntriesReply, error) {
+	args.GroupID = r.groupID
 	client, err := rpc.Dial("tcp", serverAddr)
 	if err != nil {
 		return nil, err
@@ -327,6 +332,7 @@ func (r *Raft) SendAppendEntries(serverAddr string, args *AppendEntriesArgs) (*A
 }
 
 func (r *Raft) SendInstallSnapshot(serverAddr string, args *InstallSnapshotArgs) (*InstallSnapshotReply, error) {
+	args.GroupID = r.groupID
 	client, err := rpc.Dial("tcp", serverAddr)
 	if err != nil {
 		return nil, err
