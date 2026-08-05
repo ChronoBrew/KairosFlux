@@ -6,12 +6,28 @@ import (
 
 	"github.com/NeverENG/BanDB/network/banIface"
 	"github.com/NeverENG/BanDB/pkg/metrics"
+	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/service/cluster"
 )
+
+// KVStore 抽象出 Router 本地处理所需的 KV 能力（*KVServer 满足之）。抽成接口是为了
+// 让分片集成测试注入互相隔离的内存 store，从而在一个进程内起多节点验证转发。
+type KVStore interface {
+	Write(cmd Command) error
+	Get(key []byte) ([]byte, error)
+	Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry
+}
 
 // Router 基础路由处理器
 type Router struct {
-	kv *KVServer
+	kv    *KVServer // 具体实例，供 GetFSM 等；测试注入 store 时可为 nil
+	store KVStore   // 本地 KV 操作（生产 = kv）
+
+	// 分片路由（可选）：placement!=nil 时按 key 属主决定本地处理还是转发到 owner 节点。
+	placement *cluster.Placement
+	self      string // 本节点地址（= config.Peers[Me]）
+	peers     *cluster.PeerPool
 
 	// 前置处理函数；返回 HookDrop 表示丢弃本帧
 	preHandleFunc func(request banIface.IRequest) banIface.HookAction
@@ -22,8 +38,33 @@ type Router struct {
 // NewRouter 创建新的路由处理器
 func NewRouter(kv *KVServer) *Router {
 	return &Router{
-		kv: kv,
+		kv:    kv,
+		store: kv,
 	}
+}
+
+// NewRouterWithStore 用注入的 KVStore 创建路由（供多节点集成测试隔离存储）。
+func NewRouterWithStore(store KVStore) *Router {
+	return &Router{store: store}
+}
+
+// SetRouting 开启分片路由：不属本节点的 key 转发到 owner。placement/peers 为 nil 时不路由。
+func (r *Router) SetRouting(placement *cluster.Placement, self string, peers *cluster.PeerPool) {
+	r.placement = placement
+	r.self = self
+	r.peers = peers
+}
+
+// forwardTarget 返回 (owner, true) 表示 key 不属本节点、应转发到 owner；否则本地处理。
+func (r *Router) forwardTarget(key []byte) (string, bool) {
+	if r.placement == nil || r.peers == nil {
+		return "", false
+	}
+	owner := r.placement.OwnerOf(key)
+	if owner == "" || owner == r.self {
+		return "", false
+	}
+	return owner, true
 }
 
 // SetPreHandle 设置前置处理函数
@@ -108,13 +149,26 @@ func (r *Router) handlePut(data []byte, request banIface.IRequest) {
 	key := data[8 : 8+keyLen]
 	value := data[8+keyLen : 8+keyLen+valueLen]
 
+	// 分片路由：不属本节点则转发到 owner。
+	if owner, fwd := r.forwardTarget(key); fwd {
+		if err := r.peers.Put(owner, key, value); err != nil {
+			slog.Error("[ERROR] handlePut: forward failed", "owner", owner, "error", err)
+			metrics.WriteErrors.Add(1)
+			sendErr(request)
+			return
+		}
+		metrics.Writes.Add(1)
+		sendOK(request)
+		return
+	}
+
 	cmd := Command{
 		Type:  "Put",
 		Key:   key,
 		Value: value,
 	}
 
-	if err := r.kv.Write(cmd); err != nil {
+	if err := r.store.Write(cmd); err != nil {
 		slog.Error("[ERROR] handlePut: write failed", "error", err)
 		metrics.WriteErrors.Add(1)
 		sendErr(request)
@@ -140,10 +194,23 @@ func (r *Router) handleGet(data []byte, request banIface.IRequest) {
 	key := data[4 : 4+keyLen]
 
 	metrics.Reads.Add(1)
-	value, err := r.kv.Get(key)
-	if err != nil {
-		sendErr(request)
-		return
+
+	// 分片路由：不属本节点则转发到 owner 读取。
+	var value []byte
+	if owner, fwd := r.forwardTarget(key); fwd {
+		v, found, err := r.peers.Get(owner, key)
+		if err != nil || !found {
+			sendErr(request)
+			return
+		}
+		value = v
+	} else {
+		v, err := r.store.Get(key)
+		if err != nil {
+			sendErr(request)
+			return
+		}
+		value = v
 	}
 
 	// 响应负载: [statusLen u8][status bytes][valueLen u32 LE][value]
@@ -171,12 +238,24 @@ func (r *Router) handleDelete(data []byte, request banIface.IRequest) {
 
 	key := data[4 : 4+keyLen]
 
+	// 分片路由：不属本节点则转发到 owner。
+	if owner, fwd := r.forwardTarget(key); fwd {
+		if err := r.peers.Delete(owner, key); err != nil {
+			metrics.WriteErrors.Add(1)
+			sendErr(request)
+			return
+		}
+		metrics.Deletes.Add(1)
+		sendOK(request)
+		return
+	}
+
 	cmd := Command{
 		Type: "Delete",
 		Key:  key,
 	}
 
-	if err := r.kv.Write(cmd); err != nil {
+	if err := r.store.Write(cmd); err != nil {
 		metrics.WriteErrors.Add(1)
 		sendErr(request)
 		return
@@ -195,8 +274,9 @@ func (r *Router) handleScan(data []byte, request banIface.IRequest) {
 		return
 	}
 
+	// SCAN 暂不做分片路由：范围查询跨分片需 scatter-gather，属后续工作，当前只扫本地。
 	metrics.Scans.Add(1)
-	entries := r.kv.Scan(req.Start, req.End, req.Pred)
+	entries := r.store.Scan(req.Start, req.End, req.Pred)
 	request.GetConnection().SendBuffMsg(proto.MsgRespOK, proto.EncodeScanResponse(proto.StatusOK, entries))
 }
 

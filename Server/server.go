@@ -28,6 +28,9 @@ func main() {
 	// 创建路由
 	router := service.NewRouter(KVServer)
 
+	// 按配置开启分片路由：不属本节点的 key 经 BanNet 转发到 owner（默认关闭）。
+	service.EnableShardRoutingFromConfig(router)
+
 	// 挂载采集入口过滤钩子：落盘前丢弃畸形帧、按设备做 best-effort 时间戳
 	// 单调校验、对敏感字段脱敏。
 	filter := ingesthook.NewFilter([]string{"gps", "user_id"}, 0, true)
