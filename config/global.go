@@ -65,6 +65,11 @@ type GlobalConfig struct {
 	// 分片集群（cluster）配置：骨架期供路由/放置控制面使用，默认单分片。
 	ShardCount int // 分片数（ShardOf 取模基数）
 	VNodes     int // 一致性哈希每节点的虚拟节点数
+
+	// ShardRoutingEnabled 开启分片路由：不属本节点的 key 经 BanNet 转发到 owner。
+	// 默认关闭（单机行为不变）。开启时 Peers 视为各节点的 BanNet 地址，Peers[Me] 须为本节点
+	// 监听地址（Host:Port）。
+	ShardRoutingEnabled bool
 }
 
 func (g *GlobalConfig) Init() {
@@ -136,6 +141,7 @@ func defaultGlobalConfig() *GlobalConfig {
 
 		ShardCount:               1,   // 默认单分片
 		VNodes:                   128, // 一致性哈希默认虚拟节点数
+		ShardRoutingEnabled:      false,
 	}
 }
 
