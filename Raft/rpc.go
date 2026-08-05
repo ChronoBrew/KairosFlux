@@ -127,9 +127,20 @@ func (r *RaftRPC) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesRep
 
 	if args.Term > r.raft.Term {
 		r.raft.Term = args.Term
-		r.raft.state = Follower
 		r.raft.votedFor = -1
 		r.raft.persistStateLocked()
+	}
+
+	// 收到当前 term 合法 leader 的 AppendEntries：认其为 leader，Candidate 退回 Follower。
+	r.raft.state = Follower
+	r.raft.currentLeader = args.LeaderID
+
+	// 重置选举计时器：收到合法 leader 的心跳/复制即认为 leader 存活，避免误发起选举。
+	// 非阻塞发送——electionLoop 正阻塞在 heartbeatCh 上时命中并 resetElectionTimer；
+	// 若其正忙则丢弃，下次心跳再重置。此前缺失此信号导致 follower 无视心跳持续改选、leader 抖动。
+	select {
+	case r.raft.heartbeatCh <- true:
+	default:
 	}
 
 	// 检查 PrevLogIndex 是否匹配（考虑快照偏移）
