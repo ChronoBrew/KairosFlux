@@ -139,8 +139,8 @@ func (r *RaftRPC) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesRep
 				return nil
 			}
 		} else if args.PrevLogIndex > int(r.raft.LastIncludedIndex) {
-			relativeIndex := args.PrevLogIndex - int(r.raft.LastIncludedIndex) - 1
-			if relativeIndex >= len(r.raft.log) || r.raft.log[relativeIndex].Term != args.PrevLogTerm {
+			relativeIndex := r.raft.relIndex(args.PrevLogIndex)
+			if relativeIndex < 0 || relativeIndex >= len(r.raft.log) || r.raft.log[relativeIndex].Term != args.PrevLogTerm {
 				reply.Success = false
 				reply.Term = r.raft.Term
 				return nil
@@ -157,7 +157,10 @@ func (r *RaftRPC) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesRep
 	needRebuild := false
 	var newEntries []LogEntry
 	for _, entry := range args.Entries {
-		relativeIndex := entry.Index - int(r.raft.LastIncludedIndex) - 1
+		relativeIndex := r.raft.relIndex(entry.Index)
+		if relativeIndex < 0 {
+			continue // 已被快照覆盖的旧条目，跳过
+		}
 		if relativeIndex < len(r.raft.log) && r.raft.log[relativeIndex].Term != entry.Term {
 			r.raft.log = r.raft.log[:relativeIndex]
 			needRebuild = true
@@ -198,7 +201,7 @@ func (r *RaftRPC) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesRep
 func (r *RaftRPC) applyCommittedLogs() {
 	for r.raft.lastApplied < r.raft.commitIndex {
 		r.raft.lastApplied++
-		relativeIndex := r.raft.lastApplied - int(r.raft.LastIncludedIndex) - 1
+		relativeIndex := r.raft.relIndex(r.raft.lastApplied)
 		if relativeIndex >= 0 && relativeIndex < len(r.raft.log) {
 			if r.raft.ApplyCh != nil {
 				r.raft.ApplyCh <- r.raft.log[relativeIndex]
