@@ -27,7 +27,7 @@ func TestCompactionBench(t *testing.T) {
 
 	// 不经 NewMemTable（避免启动异步 FlushWorker/ListenCompactCh 造成非确定性），
 	// 只用 sst，手动驱动 flush 与 compaction。
-	mt := &MemTable{sst: NewSSTable()}
+	mt := newBareMemTable(NewSSTable())
 
 	const (
 		flushes   = 300
@@ -102,7 +102,7 @@ func TestCompactionBench(t *testing.T) {
 	}
 	t.Logf("文件总数=%d  per-level=%s  ← %s", total2, dist2, collapsed)
 
-	mt2 := &MemTable{sst: sst2}
+	mt2 := newBareMemTable(sst2)
 	before := ReadCompactionStats()
 	t0 := time.Now()
 	mt2.CompactSSTable(0)

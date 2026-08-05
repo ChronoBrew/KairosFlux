@@ -19,7 +19,7 @@ func TestCompaction_LevelPersistedAcrossRestart(t *testing.T) {
 	config.G.MaxCompactionSize = 4
 	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
 
-	mt := &MemTable{sst: NewSSTable()}
+	mt := newBareMemTable(NewSSTable())
 	val := make([]byte, 32)
 	global := 0
 	for f := 0; f < 40; f++ {
