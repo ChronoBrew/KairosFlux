@@ -150,22 +150,11 @@ func ProposeToGroup(addrs []string, groupID int, command []byte, perCallTimeout,
 	return fmt.Errorf("propose: timed out finding leader for group %d", groupID)
 }
 
-// callPropose 对 addr 发起一次带超时的 Propose RPC。
+// callPropose 对 addr 发起一次带超时的 Propose RPC（复用连接池，省去每次拨号）。
 func callPropose(addr string, args *ProposeArgs, timeout time.Duration) (*ProposeReply, error) {
-	client, err := rpc.Dial("tcp", addr)
-	if err != nil {
+	var reply ProposeReply
+	if err := defaultRPCPool.callTimeout(addr, "RaftRPC.Propose", args, &reply, timeout); err != nil {
 		return nil, err
 	}
-	defer client.Close()
-	var reply ProposeReply
-	call := client.Go("RaftRPC.Propose", args, &reply, nil)
-	select {
-	case <-call.Done:
-		if call.Error != nil {
-			return nil, call.Error
-		}
-		return &reply, nil
-	case <-time.After(timeout):
-		return nil, fmt.Errorf("propose call timeout to %s", addr)
-	}
+	return &reply, nil
 }

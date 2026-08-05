@@ -309,50 +309,26 @@ func (r *RaftRPC) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnaps
 }
 
 func (r *Raft) SendRequestVote(serverAddr string, args *RequestVoteArgs) (*RequestVoteReply, error) {
-	client, err := rpc.Dial("tcp", serverAddr)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
 	var reply RequestVoteReply
-	err = client.Call("RaftRPC.RequestVote", args, &reply)
-	if err != nil {
+	if err := defaultRPCPool.call(serverAddr, "RaftRPC.RequestVote", args, &reply); err != nil {
 		return nil, err
 	}
-
 	return &reply, nil
 }
 
 func (r *Raft) SendAppendEntries(serverAddr string, args *AppendEntriesArgs) (*AppendEntriesReply, error) {
-	client, err := rpc.Dial("tcp", serverAddr)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
 	var reply AppendEntriesReply
-	err = client.Call("RaftRPC.AppendEntries", args, &reply)
-	if err != nil {
+	if err := defaultRPCPool.call(serverAddr, "RaftRPC.AppendEntries", args, &reply); err != nil {
 		return nil, err
 	}
-
 	return &reply, nil
 }
 
 func (r *Raft) SendInstallSnapshot(serverAddr string, args *InstallSnapshotArgs) (*InstallSnapshotReply, error) {
-	client, err := rpc.Dial("tcp", serverAddr)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-
 	var reply InstallSnapshotReply
-	err = client.Call("RaftRPC.InstallSnapshot", args, &reply)
-	if err != nil {
+	if err := defaultRPCPool.call(serverAddr, "RaftRPC.InstallSnapshot", args, &reply); err != nil {
 		return nil, err
 	}
-
 	return &reply, nil
 }
 
