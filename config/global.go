@@ -1,18 +1,16 @@
-// Package config 定义 BanDB 的全局运行配置及其加载：默认值（代码内）→ 配置文件覆盖
-// （config.json，Init）→ 命令行/环境变量覆盖（ParseFlags）。包级变量 G 在导入时完成加载，
-// 供各处以 config.G.X 读取。
+// Package config 定义 BanDB 的全局运行配置及其加载。加载遵循「默认值（代码内）→ 配置文件
+// （config.json）→ 命令行/环境变量」的覆盖优先级，用函数式选项组合表达（见 options.go 的
+// New/FromJSONFile/FromEnvAndFlags/WithXxx）。包级变量 G 在导入时按该顺序加载，供各处以
+// config.G.X 读取；测试/程序化构造可用 config.New(WithXxx(...)) 得到独立配置。
 package config
 
 import (
-	"encoding/json"
 	"flag"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/NeverENG/BanDB/network/banIface"
 )
 
 // 运行模式取值
@@ -36,7 +34,6 @@ type GlobalConfig struct {
 	// 字节级令牌桶背压：超出预算时写入阻塞，等 flush 归还信用。<=0 关闭背压。
 	MemTableMaxInflightBytes int64
 
-	TcpServer      banIface.IServer
 	MaxConn        int
 	MaxPackageSize uint32
 
@@ -82,43 +79,21 @@ type GlobalConfig struct {
 	AdmissionMaxLimit     int
 }
 
+// defaultConfigPaths 是查找 config.json 的候选路径（覆盖不同工作目录：项目根 / cmd 子目录 / 当前目录）。
+var defaultConfigPaths = []string{
+	"config/config.json",
+	"../config/config.json",
+	"../../config/config.json",
+	"config.json",
+}
+
+// Init 从默认候选路径加载配置文件覆盖到 g。保留以兼容既有调用；等价于施加 FromJSONFile 选项。
 func (g *GlobalConfig) Init() {
-	// 尝试多个可能的路径
-	paths := []string{
-		"config/config.json",       // 从项目根目录运行
-		"../config/config.json",    // 从 cmd/Server 或 cmd/client 运行
-		"../../config/config.json", // 从更深层目录运行
-		"config.json",              // 当前目录
-	}
-
-	var data []byte
-	var err error
-
-	for _, path := range paths {
-		data, err = os.ReadFile(path)
-		if err == nil {
-			slog.Info("config file found", "path", path)
-			break
-		}
-	}
-
-	if err != nil {
-		slog.Error("failed to read config", "error", err)
-		slog.Warn("falling back to default config")
-		return // 使用默认配置，不退出
-	}
-
-	err = json.Unmarshal(data, g)
-	if err != nil {
-		slog.Error("failed to parse config", "error", err)
-		return
-	}
-
-	slog.Info("config initialized")
+	FromJSONFile(defaultConfigPaths...)(g)
 }
 
 // defaultGlobalConfig 返回纯代码默认值，不读取配置文件、不解析命令行。
-// NewGlobalConfig 在其上叠加 Init()(文件覆盖) 与 ParseFlags()(命令行覆盖)。
+// New/NewGlobalConfig 在其上叠加各选项（文件、命令行等）。
 func defaultGlobalConfig() *GlobalConfig {
 	logDir := defaultLogDir()
 	return &GlobalConfig{
@@ -132,7 +107,6 @@ func defaultGlobalConfig() *GlobalConfig {
 		WorkerPoolSize:           10,
 		MaxWorkerTaskLen:         10000,
 		MaxMsgChanLen:            100,
-		TcpServer:                nil,
 		MaxMemTableP:             0.5,
 		MaxMemTableLevel:         32,
 		MaxMemTableSize:          1024,
@@ -159,11 +133,9 @@ func defaultGlobalConfig() *GlobalConfig {
 	}
 }
 
+// NewGlobalConfig 构造生产配置：默认 → 配置文件 → 命令行/环境变量，用函数式选项组合表达。
 func NewGlobalConfig() *GlobalConfig {
-	global := defaultGlobalConfig()
-	global.Init()
-	global.ParseFlags()
-	return global
+	return New(FromJSONFile(defaultConfigPaths...), FromEnvAndFlags())
 }
 
 func defaultLogDir() string {
