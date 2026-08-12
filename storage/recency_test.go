@@ -1,11 +1,10 @@
-package zstorage
+package storage
 
 import (
 	"testing"
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
 // TestRecency_OverwriteAcrossCompactionSurvivesRestart 是「newest-wins 跨重启不倒挂」的
@@ -24,19 +23,19 @@ func TestRecency_OverwriteAcrossCompactionSurvivesRestart(t *testing.T) {
 	mt := newBareMemTable(NewSSTable())
 
 	// x=A 与另一个 key 一起落 L0，再补一个 L0，触发 compaction 把它们并成 L1 merged 文件。
-	if err := mt.FlushToSSTable([]istorage.LogEntry{
+	if err := mt.FlushToSSTable([]LogEntry{
 		{Key: []byte("x"), Value: []byte("A")},
 		{Key: []byte("a"), Value: []byte("1")},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := mt.FlushToSSTable([]istorage.LogEntry{{Key: []byte("m"), Value: []byte("2")}}); err != nil {
+	if err := mt.FlushToSSTable([]LogEntry{{Key: []byte("m"), Value: []byte("2")}}); err != nil {
 		t.Fatal(err)
 	}
 	mt.CompactSSTable(0) // L0 两文件 >=2 → 合并到 L1；x=A 现位于 merged 文件
 
 	// 覆盖写 x=B，留在新的 L0 文件（更新）。
-	if err := mt.FlushToSSTable([]istorage.LogEntry{{Key: []byte("x"), Value: []byte("B")}}); err != nil {
+	if err := mt.FlushToSSTable([]LogEntry{{Key: []byte("x"), Value: []byte("B")}}); err != nil {
 		t.Fatal(err)
 	}
 

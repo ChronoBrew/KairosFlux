@@ -1,16 +1,14 @@
 package storage
 
-import (
-	"github.com/NeverENG/BanDB/storage/istorage"
-)
+import ()
 
 // Engine 存储引擎，作为 MemTable 的薄封装
 // MemTable 内部已使用 RWMutex 自同步，Engine 不再持有自己的锁
 type Engine struct {
-	memTable istorage.IMemTable
+	memTable IMemTable
 }
 
-func NewEngine(memTable istorage.IMemTable) *Engine {
+func NewEngine(memTable IMemTable) *Engine {
 	return &Engine{memTable: memTable}
 }
 
@@ -36,7 +34,7 @@ func (e *Engine) Scan(start, end []byte, fn func(key, value []byte) bool) {
 }
 
 // SnapshotLive 返回未刷盘热数据（active+dirty，含墓碑）的快照，供 WAL checkpoint 重写。
-func (e *Engine) SnapshotLive() []istorage.LogEntry {
+func (e *Engine) SnapshotLive() []LogEntry {
 	return e.memTable.SnapshotLive()
 }
 
@@ -46,6 +44,6 @@ func (e *Engine) Close() error {
 }
 
 // FlushToSSTable 快照重放到 SSTable（不经过 active 表，走临时表 → Flush → SSTable 路径）
-func (e *Engine) FlushToSSTable(entries []istorage.LogEntry) error {
+func (e *Engine) FlushToSSTable(entries []LogEntry) error {
 	return e.memTable.FlushToSSTable(entries)
 }

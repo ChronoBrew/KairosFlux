@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
 // TestRecency_RandomizedOverwritesSurviveRestart 是 newest-wins 的随机化守卫：
@@ -35,12 +34,12 @@ func TestRecency_RandomizedOverwritesSurviveRestart(t *testing.T) {
 	for flush := 0; flush < 120; flush++ {
 		// 每个 flush 覆盖写若干 key。
 		batch := 1 + next(5)
-		entries := make([]istorage.LogEntry, 0, batch)
+		entries := make([]LogEntry, 0, batch)
 		for i := 0; i < batch; i++ {
 			k := fmt.Sprintf("k%03d", next(keyspace))
 			v := fmt.Sprintf("v%d", round)
 			round++
-			entries = append(entries, istorage.LogEntry{Key: []byte(k), Value: []byte(v)})
+			entries = append(entries, LogEntry{Key: []byte(k), Value: []byte(v)})
 			ref[k] = v // 同一 flush 内后写覆盖先写；FlushToSSTable 内部按序 insert 去重
 		}
 		if err := mt.FlushToSSTable(entries); err != nil {

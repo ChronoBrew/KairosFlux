@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"bytes"
@@ -10,20 +10,19 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
 // makeSortedEntries 生成跨多个仓库、整体有序的 entries。
-func makeSortedEntries(n int) []istorage.LogEntry {
-	es := make([]istorage.LogEntry, 0, n*2)
+func makeSortedEntries(n int) []LogEntry {
+	es := make([]LogEntry, 0, n*2)
 	for i := 0; i < n; i++ {
-		es = append(es, istorage.LogEntry{
+		es = append(es, LogEntry{
 			Key:   []byte(fmt.Sprintf("log:%05d", i)),
 			Value: []byte(fmt.Sprintf("lval-%d", i)),
 		})
 	}
 	for i := 0; i < n; i++ {
-		es = append(es, istorage.LogEntry{
+		es = append(es, LogEntry{
 			Key:   []byte(fmt.Sprintf("order:%05d", i)),
 			Value: []byte(fmt.Sprintf("oval-%d", i)),
 		})
@@ -32,7 +31,7 @@ func makeSortedEntries(n int) []istorage.LogEntry {
 }
 
 // writeV1SSTable 手写旧格式(v1, 无布隆)文件，用于验证向后兼容读取。
-func writeV1SSTable(t *testing.T, path string, entries []istorage.LogEntry) {
+func writeV1SSTable(t *testing.T, path string, entries []LogEntry) {
 	t.Helper()
 	file, err := os.Create(path)
 	if err != nil {

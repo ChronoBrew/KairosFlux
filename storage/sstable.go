@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"bufio"
@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
 const (
@@ -35,8 +34,6 @@ const (
 	// 不写 value 字节，读侧据此还原为 nil。正常 value 长度不可能取此值，且老格式
 	// 文件永不含此哨兵，向后兼容。约定：内存与磁盘均以 Value==nil 表示墓碑。
 	tombstoneValLen uint32 = 0xFFFFFFFF
-	// dirPerm 是 SSTable 目录的文件系统权限。
-	dirPerm = 0o755
 )
 
 type BlockIndexEntry struct {
@@ -63,7 +60,7 @@ func (bi *blockIndex) blockExtent(i int) (int64, int64) {
 	return start, bi.dataEnd
 }
 
-var _ istorage.ISSTable = &SSTable{}
+var _ ISSTable = &SSTable{}
 
 type SSTable struct {
 	// dir 是 SSTable 文件目录，构造时从 config 快照一份。构造在主 goroutine 完成，之后
@@ -75,8 +72,8 @@ type SSTable struct {
 	// 读路径（每次点查都要遍历元数据）从 snapshot 无锁读取，避免逐次加锁与整表拷贝。
 	// 写侧为 copy-on-write：变更频率为刷盘/合并级，远低于读。
 	// 快照按值不可变——调用方只可读取，不得原地修改其元素顺序或内容。
-	mata       []*istorage.SSTableMata
-	snapshot   atomic.Pointer[[]*istorage.SSTableMata]
+	mata       []*SSTableMata
+	snapshot   atomic.Pointer[[]*SSTableMata]
 	mu         sync.RWMutex
 	indexCache map[string]*blockIndex
 	idxMu      sync.RWMutex
@@ -98,7 +95,7 @@ type SSTable struct {
 func NewSSTable() *SSTable {
 	ss := &SSTable{
 		dir:        config.G.SSTablePath,
-		mata:       make([]*istorage.SSTableMata, 0),
+		mata:       make([]*SSTableMata, 0),
 		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
 		fdCache:    make(map[string]*os.File),
@@ -110,7 +107,7 @@ func NewSSTable() *SSTable {
 
 // publishMata 发布 mata 的不可变快照供读路径无锁获取。调用方须持 ss.mu。
 func (ss *SSTable) publishMata() {
-	snap := make([]*istorage.SSTableMata, len(ss.mata))
+	snap := make([]*SSTableMata, len(ss.mata))
 	copy(snap, ss.mata)
 	ss.snapshot.Store(&snap)
 }
@@ -162,7 +159,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		return
 	}
 
-	metas := make([]*istorage.SSTableMata, 0)
+	metas := make([]*SSTableMata, 0)
 	count := 0
 
 	for _, entry := range entries {
@@ -200,7 +197,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 			continue
 		}
 
-		meta := &istorage.SSTableMata{
+		meta := &SSTableMata{
 			Level:        parseLevelFromName(entry.Name()), // 从文件名恢复 level，避免重启塌缩到 L0
 			Filepath:     fullPath,
 			MinKey:       keyBytes,
@@ -250,7 +247,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 }
 
 // WriteToSSTable 将有序 entries 写入 SSTable 文件（含块索引）
-func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
+func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 	if len(entries) == 0 {
 		return errors.New("dont keep")
 	}
@@ -340,7 +337,7 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 	if err != nil {
 		return fmt.Errorf("stat SSTable file failed: %v", err)
 	}
-	meta := &istorage.SSTableMata{
+	meta := &SSTableMata{
 		Level:        0,
 		Filepath:     fullPath,
 		MinKey:       entries[0].Key,
@@ -355,14 +352,14 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 
 // GetAllMata 返回元数据的不可变快照，按落盘先后升序（最旧在前）。
 // 无锁零拷贝；调用方只可读取，不得原地修改。切片元素是共享指针，非对象副本。
-func (ss *SSTable) GetAllMata() []*istorage.SSTableMata {
+func (ss *SSTable) GetAllMata() []*SSTableMata {
 	if snap := ss.snapshot.Load(); snap != nil {
 		return *snap
 	}
 	return nil
 }
 
-func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*istorage.LogEntry, error) {
+func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*LogEntry, error) {
 	file, err := os.Open(filepath)
 	if err != nil {
 		return nil, err
@@ -375,7 +372,7 @@ func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*istorage.LogEntry, er
 		file.Seek(0, io.SeekStart)
 	}
 
-	entries := make([]*istorage.LogEntry, 0)
+	entries := make([]*LogEntry, 0)
 	for {
 		if dataEnd > 0 {
 			pos, _ := file.Seek(0, io.SeekCurrent)
@@ -410,7 +407,7 @@ func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*istorage.LogEntry, er
 			}
 		}
 
-		entry := &istorage.LogEntry{
+		entry := &LogEntry{
 			Key:   keyBytes,
 			Value: valueBytes,
 		}
@@ -679,7 +676,7 @@ func (ss *SSTable) readFromSSTableFull(filepath string, key []byte) ([]byte, boo
 // 更晚 ts 文件里——读路径据此按创建 ts 判 newest-wins（见 memtable.go getFromSSTables）。
 // 若引入 overlap-aware / 部分选择或跨层合并，必须同时确保「低 level = 更新」进入 tie-break，
 // 并把 recency 显式化（per-key 序号），否则合并会静默选中陈旧值。
-func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) *istorage.SSTableMata {
+func (ss *SSTable) MergeSSTable(files []*SSTableMata, targetLevel int) *SSTableMata {
 	if len(files) == 0 {
 		return nil
 	}
@@ -818,7 +815,7 @@ func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) 
 		return nil
 	}
 
-	newMeta := &istorage.SSTableMata{
+	newMeta := &SSTableMata{
 		Level:        targetLevel,
 		Filepath:     fullPath,
 		MinKey:       minKey,
@@ -833,14 +830,14 @@ func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) 
 
 	return newMeta
 }
-func (ss *SSTable) AddMata(meta *istorage.SSTableMata) {
+func (ss *SSTable) AddMata(meta *SSTableMata) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.mata = append(ss.mata, meta)
 	ss.publishMata()
 }
 
-func (ss *SSTable) RemoveMata(target *istorage.SSTableMata) {
+func (ss *SSTable) RemoveMata(target *SSTableMata) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
@@ -854,11 +851,11 @@ func (ss *SSTable) RemoveMata(target *istorage.SSTableMata) {
 }
 
 // GetLevelFiles 获取指定层级的文件列表
-func (ss *SSTable) GetLevelFiles(level int) []*istorage.SSTableMata {
+func (ss *SSTable) GetLevelFiles(level int) []*SSTableMata {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
-	var result []*istorage.SSTableMata
+	var result []*SSTableMata
 	for _, meta := range ss.mata {
 		if meta.Level == level {
 			result = append(result, meta)
@@ -867,7 +864,7 @@ func (ss *SSTable) GetLevelFiles(level int) []*istorage.SSTableMata {
 	return result
 }
 
-func (ss *SSTable) DeleteSSTable(meta *istorage.SSTableMata) {
+func (ss *SSTable) DeleteSSTable(meta *SSTableMata) {
 	if err := os.Remove(meta.Filepath); err != nil {
 		slog.Warn("failed to delete SSTable", "file", meta.Filepath, "error", err)
 	}

@@ -1,15 +1,14 @@
-package zstorage
+package storage
 
 import (
 	"path/filepath"
 	"testing"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
-func entry(k, v string) istorage.LogEntry {
-	return istorage.LogEntry{Key: []byte(k), Value: []byte(v)}
+func entry(k, v string) LogEntry {
+	return LogEntry{Key: []byte(k), Value: []byte(v)}
 }
 
 func withTempSSTDir(t *testing.T) {
@@ -23,7 +22,7 @@ func withTempSSTDir(t *testing.T) {
 func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
 	withTempSSTDir(t)
 	ss := NewSSTable()
-	if err := ss.WriteToSSTable([]istorage.LogEntry{
+	if err := ss.WriteToSSTable([]LogEntry{
 		entry("k1", "v1"), entry("k2", "v2"), entry("k3", "v3"),
 	}); err != nil {
 		t.Fatal(err)
@@ -58,10 +57,10 @@ func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
 func TestMergeBasic(t *testing.T) {
 	withTempSSTDir(t)
 	ss := NewSSTable()
-	if err := ss.WriteToSSTable([]istorage.LogEntry{entry("a", "1"), entry("c", "1"), entry("e", "1")}); err != nil {
+	if err := ss.WriteToSSTable([]LogEntry{entry("a", "1"), entry("c", "1"), entry("e", "1")}); err != nil {
 		t.Fatal(err)
 	}
-	if err := ss.WriteToSSTable([]istorage.LogEntry{entry("b", "2"), entry("d", "2"), entry("f", "2")}); err != nil {
+	if err := ss.WriteToSSTable([]LogEntry{entry("b", "2"), entry("d", "2"), entry("f", "2")}); err != nil {
 		t.Fatal(err)
 	}
 	files := ss.GetLevelFiles(0)
@@ -109,9 +108,9 @@ func TestMergeDedupKeepNewest(t *testing.T) {
 	withTempSSTDir(t)
 	ss := NewSSTable()
 	// 三个文件按加入顺序 srcIdx = 0,1,2; "dup" 的最新值应为 v2
-	ss.WriteToSSTable([]istorage.LogEntry{entry("a", "a0"), entry("dup", "v0")})
-	ss.WriteToSSTable([]istorage.LogEntry{entry("dup", "v1"), entry("m", "m1")})
-	ss.WriteToSSTable([]istorage.LogEntry{entry("dup", "v2"), entry("z", "z2")})
+	ss.WriteToSSTable([]LogEntry{entry("a", "a0"), entry("dup", "v0")})
+	ss.WriteToSSTable([]LogEntry{entry("dup", "v1"), entry("m", "m1")})
+	ss.WriteToSSTable([]LogEntry{entry("dup", "v2"), entry("z", "z2")})
 
 	merged := ss.MergeSSTable(ss.GetLevelFiles(0), 1)
 	if merged == nil {
@@ -149,24 +148,24 @@ func TestMergeRejectsUnsortedSource(t *testing.T) {
 	withTempSSTDir(t)
 	path := filepath.Join(config.G.SSTablePath, "bad.sst")
 	// 降序 key — 违反归并前提
-	writeV1SSTable(t, path, []istorage.LogEntry{entry("c", "1"), entry("b", "1"), entry("a", "1")})
+	writeV1SSTable(t, path, []LogEntry{entry("c", "1"), entry("b", "1"), entry("a", "1")})
 
 	ss := NewSSTable()
-	merged := ss.MergeSSTable([]*istorage.SSTableMata{{Filepath: path}}, 1)
+	merged := ss.MergeSSTable([]*SSTableMata{{Filepath: path}}, 1)
 	if merged != nil {
 		t.Error("merge should fail on a non-ascending source, got non-nil")
 	}
 }
 
 // tomb 构造一个墓碑条目 (Value==nil)。
-func tomb(k string) istorage.LogEntry { return istorage.LogEntry{Key: []byte(k), Value: nil} }
+func tomb(k string) LogEntry { return LogEntry{Key: []byte(k), Value: nil} }
 
 // TestSSTableTombstoneRoundTrip 墓碑经 SSTable 写→点查→ReadAll→迭代器全链路：
 // 哨兵长度不触发巨型分配，墓碑还原为 found+nil，真实值不受影响。
 func TestSSTableTombstoneRoundTrip(t *testing.T) {
 	withTempSSTDir(t)
 	ss := NewSSTable()
-	if err := ss.WriteToSSTable([]istorage.LogEntry{
+	if err := ss.WriteToSSTable([]LogEntry{
 		entry("a", "1"), tomb("del"), entry("z", "3"),
 	}); err != nil {
 		t.Fatal(err)
@@ -210,8 +209,8 @@ func TestSSTableTombstoneRoundTrip(t *testing.T) {
 func TestMergePreservesTombstone(t *testing.T) {
 	withTempSSTDir(t)
 	ss := NewSSTable()
-	ss.WriteToSSTable([]istorage.LogEntry{entry("k", "v")}) // srcIdx 0（旧）
-	ss.WriteToSSTable([]istorage.LogEntry{tomb("k")})       // srcIdx 1（新，墓碑）
+	ss.WriteToSSTable([]LogEntry{entry("k", "v")}) // srcIdx 0（旧）
+	ss.WriteToSSTable([]LogEntry{tomb("k")})       // srcIdx 1（新，墓碑）
 
 	merged := ss.MergeSSTable(ss.GetLevelFiles(0), 1)
 	if merged == nil {

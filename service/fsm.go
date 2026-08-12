@@ -13,8 +13,6 @@ import (
 	"github.com/NeverENG/BanDB/pkg/proto"
 	"github.com/NeverENG/BanDB/raft"
 	"github.com/NeverENG/BanDB/storage"
-	"github.com/NeverENG/BanDB/storage/istorage"
-	"github.com/NeverENG/BanDB/storage/zstorage"
 )
 
 type Command struct {
@@ -41,7 +39,7 @@ type KVServer struct {
 // raft：启动 Raft，写经其日志，不使用存储层 WAL。
 func NewKVServer() *KVServer {
 	// 初始化存储
-	memTable := zstorage.NewMemTable()
+	memTable := storage.NewMemTable()
 	store := storage.NewEngine(memTable)
 
 	kv := &KVServer{
@@ -220,7 +218,7 @@ func (k *KVServer) replaySnapshot(entry raft.LogEntry) {
 		return
 	}
 
-	kvEntries := make([]istorage.LogEntry, 0, len(entries))
+	kvEntries := make([]storage.LogEntry, 0, len(entries))
 	for _, e := range entries {
 		var cmd Command
 		if err := json.Unmarshal(e.Command, &cmd); err != nil {
@@ -228,9 +226,9 @@ func (k *KVServer) replaySnapshot(entry raft.LogEntry) {
 		}
 		switch cmd.Type {
 		case "Put":
-			kvEntries = append(kvEntries, istorage.LogEntry{Key: cmd.Key, Value: cmd.Value})
+			kvEntries = append(kvEntries, storage.LogEntry{Key: cmd.Key, Value: cmd.Value})
 		case "Delete":
-			kvEntries = append(kvEntries, istorage.LogEntry{Key: cmd.Key, Value: nil})
+			kvEntries = append(kvEntries, storage.LogEntry{Key: cmd.Key, Value: nil})
 		}
 	}
 

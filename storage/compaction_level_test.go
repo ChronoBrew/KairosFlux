@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
 // TestCompaction_LevelPersistedAcrossRestart 是「重启不塌缩」的回归守卫：
@@ -23,9 +22,9 @@ func TestCompaction_LevelPersistedAcrossRestart(t *testing.T) {
 	val := make([]byte, 32)
 	global := 0
 	for f := 0; f < 40; f++ {
-		entries := make([]istorage.LogEntry, 100)
+		entries := make([]LogEntry, 100)
 		for i := range entries {
-			entries[i] = istorage.LogEntry{Key: []byte(fmt.Sprintf("key%08d", global)), Value: val}
+			entries[i] = LogEntry{Key: []byte(fmt.Sprintf("key%08d", global)), Value: val}
 			global++
 		}
 		if err := mt.FlushToSSTable(entries); err != nil {

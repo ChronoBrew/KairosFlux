@@ -6,12 +6,11 @@ import (
 
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/storage"
-	"github.com/NeverENG/BanDB/storage/zstorage"
 )
 
 func benchmarkEnginePut(b *testing.B, valueSize int) {
 	config.G.MaxMemTableSize = 1000000 // prevent flush during bench
-	memTable := zstorage.NewMemTable()
+	memTable := storage.NewMemTable()
 	engine := storage.NewEngine(memTable)
 
 	value := make([]byte, valueSize)
@@ -33,7 +32,7 @@ func BenchmarkEngine_Put_4KB(b *testing.B)  { benchmarkEnginePut(b, 4096) }
 
 func BenchmarkEngine_Get(b *testing.B) {
 	config.G.MaxMemTableSize = 1000000
-	memTable := zstorage.NewMemTable()
+	memTable := storage.NewMemTable()
 	engine := storage.NewEngine(memTable)
 
 	value := make([]byte, 256)
@@ -51,7 +50,7 @@ func BenchmarkEngine_Get(b *testing.B) {
 
 func BenchmarkEngine_Delete(b *testing.B) {
 	config.G.MaxMemTableSize = 1000000
-	memTable := zstorage.NewMemTable()
+	memTable := storage.NewMemTable()
 	engine := storage.NewEngine(memTable)
 
 	value := make([]byte, 256)
@@ -69,7 +68,7 @@ func BenchmarkEngine_Delete(b *testing.B) {
 
 func BenchmarkMemTable_Put(b *testing.B) {
 	config.G.MaxMemTableSize = 1000000
-	mt := zstorage.NewMemTable()
+	mt := storage.NewMemTable()
 	value := []byte("benchmark-value-data-256-bytes-padding-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 
 	b.ResetTimer()
@@ -81,7 +80,7 @@ func BenchmarkMemTable_Put(b *testing.B) {
 
 func BenchmarkMemTable_Get(b *testing.B) {
 	config.G.MaxMemTableSize = 1000000
-	mt := zstorage.NewMemTable()
+	mt := storage.NewMemTable()
 	value := []byte("benchmark-value")
 	for i := 0; i < 100000; i++ {
 		key := []byte(fmt.Sprintf("key-%08d", i))
