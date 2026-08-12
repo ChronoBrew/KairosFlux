@@ -1,6 +1,7 @@
 package banNet
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
@@ -49,16 +50,24 @@ func NewConnection(conn *net.TCPConn, connID uint32, handle banIface.IMsgHandle,
 	c.TCPServer.GetConnMgr().Add(c)
 	return c
 }
+
+// connReadBufSize 是每连接读缓冲大小。帧头与 msgID 都只有几字节，无缓冲时读一帧需要
+// 三次 read syscall（头 / msgID / 负载）；一层缓冲即可把它们摊薄到每若干帧一次内核往返。
+// 超过缓冲的大帧由 io.ReadFull 自行循环读取，故此值无需覆盖 MaxPackageSize。
+const connReadBufSize = 16 << 10
+
 func (c *Connection) StartReader() {
 	slog.Debug("conn reader started", "connID", c.ConnID)
 	defer slog.Debug("conn reader exited", "connID", c.ConnID)
 	defer c.Stop()
 
-	for {
-		dp := NewDataPack()
+	// reader 与 headData 在循环外创建：仅本 goroutine 读取该连接，故可安全复用。
+	reader := bufio.NewReaderSize(c.Conn, connReadBufSize)
+	dp := NewDataPack()
+	headData := make([]byte, dp.GetHeadLen())
 
-		headData := make([]byte, dp.GetHeadLen())
-		if _, err := io.ReadFull(c.Conn, headData); err != nil {
+	for {
+		if _, err := io.ReadFull(reader, headData); err != nil {
 			slog.Debug("conn read header failed", "connID", c.ConnID, "error", err)
 			return // defer Stop 取消 ctx、关闭连接
 		}
@@ -72,7 +81,7 @@ func (c *Connection) StartReader() {
 		mImpl := msg.(*Message)
 		if mImpl.IDLen > 0 {
 			idBuf := make([]byte, mImpl.IDLen)
-			if _, err := io.ReadFull(c.Conn, idBuf); err != nil {
+			if _, err := io.ReadFull(reader, idBuf); err != nil {
 				slog.Error("conn read msgID failed", "connID", c.ConnID, "error", err)
 				return
 			}
@@ -83,7 +92,7 @@ func (c *Connection) StartReader() {
 		if msg.GetMsgLen() > 0 {
 			data = make([]byte, msg.GetMsgLen())
 
-			if _, err := io.ReadFull(c.Conn, data); err != nil {
+			if _, err := io.ReadFull(reader, data); err != nil {
 				slog.Error("conn read body failed", "connID", c.ConnID, "error", err)
 				return
 			}
