@@ -4,7 +4,7 @@
 
 # 运行时 / 测试生成的数据，不纳入版本控制
 **/raft_data/
-Raft/raft_test_data_*/
+raft/raft_test_data_*/
 **/test_service_wal*.log
 **/test_memtable_wal*.log
 log/
@@ -45,3 +45,9 @@ tmp
 *.zip
 # benchmark 脚本的临时运行目录(数据/日志)
 .bench/
+# 编译产物：bench.sh 与 CI 都会 go build 到此，误提交会带入数十 MB 二进制
+bin/
+# pprof 采样脚本的临时运行目录
+.prof/
+# 各 agent 的 git worktree（内嵌仓库，不应作为 gitlink 提交）
+.claude/worktrees/
