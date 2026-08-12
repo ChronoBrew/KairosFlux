@@ -7,7 +7,7 @@ import (
 )
 
 func TestMemTable_PutAndDelete(t *testing.T) {
-	// 配置临时WAL
+	// 配置临时 WAL
 	oldWALPath := config.G.WALPath
 	testWAL := "test_memtable_wal.log"
 	config.G.WALPath = testWAL
@@ -44,7 +44,7 @@ func TestMemTable_PutAndDelete(t *testing.T) {
 	}
 }
 
-// setupMemTableTempEnv 为 MemTable 测试配置隔离的 WAL/SSTable 路径并关闭自动刷盘。
+// setupMemTableTempEnv 为 MemTable 测试配置隔离的 WAL/SSTable 路径并关闭自动 flush。
 func setupMemTableTempEnv(t *testing.T, walName string) {
 	t.Helper()
 	oldWAL := config.G.WALPath
@@ -127,7 +127,7 @@ func TestGetReturnsNewestAcrossSSTables(t *testing.T) {
 	oldMax := config.G.MaxMemTableSize
 	config.G.WALPath = "test_newest_wal.log"
 	config.G.SSTablePath = t.TempDir()
-	config.G.MaxMemTableSize = 1 << 20 // 避免 Put 触发自动刷盘，由测试显式 Flush 控制
+	config.G.MaxMemTableSize = 1 << 20 // 避免 Put 触发自动 flush，由测试显式 Flush 控制
 	os.Remove(config.G.WALPath)
 	defer func() {
 		os.Remove(config.G.WALPath)

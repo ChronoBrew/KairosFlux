@@ -195,7 +195,7 @@ func ShardReplicas(ring *HashRing, shardID, rf int) []string {
 	return nodes[:rf]
 }
 
-// shardAnchor 构造分片在环上的锚点 key。用 "shard#" 前缀与普通数据 key 区分命名空间。
+// shardAnchor 构造分片在环上的锚点 key。用 "分片#" 前缀与普通数据 key 区分命名空间。
 func shardAnchor(shardID int) []byte {
 	return []byte("shard#" + strconv.Itoa(shardID))
 }

@@ -37,7 +37,7 @@ var (
 	memTableBudget     atomic.Int64
 )
 
-// SetMemTableGauges 注册 MemTable 未刷盘字节数的实时读取回调与字节预算。
+// SetMemTableGauges 注册 MemTable 未 flush 字节数的实时读取回调与字节预算。
 // 通常在 MemTable 构造时调用一次。
 func SetMemTableGauges(inflight func() int64, budget int64) {
 	if inflight != nil {

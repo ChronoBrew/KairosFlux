@@ -160,7 +160,7 @@ func TestStandalone_WriteAndRecover(t *testing.T) {
 	config.G.Mode = config.ModeStandalone
 	config.G.WALPath = filepath.Join(dir, "wal.log")
 	config.G.SSTablePath = dir
-	config.G.MaxMemTableSize = 1 << 20 // 足够大，避免本测试触发刷盘
+	config.G.MaxMemTableSize = 1 << 20 // 足够大，避免本测试触发 flush
 	defer func() {
 		config.G.WALPath = oldWALPath
 		config.G.SSTablePath = oldSSTablePath

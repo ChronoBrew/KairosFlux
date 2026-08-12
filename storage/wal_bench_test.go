@@ -75,7 +75,7 @@ func BenchmarkWALSharded(b *testing.B) {
 }
 
 // BenchmarkWALAppendConcurrent 测量 group commit 在各并发度下的聚合吞吐与单次
-// Append 延迟，用于把写路径的成本归因到 WAL 本身而非上层（memtable 锁 / 刷盘 /
+// Append 延迟，用于把写路径的成本归因到 WAL 本身而非上层（memtable 锁 / flush /
 // checkpoint / 网络）。报告 append/s 与平均延迟。
 //
 // 用法: go test -run XXX -bench WALAppendConcurrent ./storage/

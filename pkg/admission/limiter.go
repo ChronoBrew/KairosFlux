@@ -1,6 +1,6 @@
 // Package admission 提供网关入口的「自适应并发限流 / 准入控制」。
 //
-// 与存储层字节背压（pkg/credit）的区别：credit 在 MemTable 写路径按未刷盘字节阻塞，管的是
+// 与存储层字节背压（pkg/credit）的区别：credit 在 MemTable 写路径按未 flush 字节阻塞，管的是
 // 内存边界；本包在网络入口按「并发在途请求数」准入，用请求延迟反馈**自适应**探测系统容量
 // 上限（类 TCP 拥塞控制 / Netflix gradient limiter），过载时**快速 shed（拒绝）** 而非无限
 // 排队阻塞。两者不同层、互补：准入在过载压垮存储前就把超额请求挡在门外。
@@ -75,7 +75,7 @@ func New(c Config) *Limiter {
 }
 
 // Acquire 尝试准入一个请求。ok=false 表示应 shed（拒绝）。准入成功须在完成时调用返回的
-// done(rtt起点)。
+// done(rtt 起点)。
 func (l *Limiter) Acquire() (start time.Time, ok bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()

@@ -25,13 +25,13 @@ type SkipList struct {
 	byteSize int64 // 当前表内 key+value 的累计字节数（覆盖写按增量维护）
 }
 
-// MemTable 基于跳表的双表内存表实现
+// MemTable 基于跳表的双表 memtable 实现
 // active:  当前写入表，接收所有 Put/Delete 操作
-// dirty:   正在刷盘的不可变快照，刷盘完成后置 nil
+// dirty:   正在 flush 的不可变快照，flush 完成后置 nil
 // 采用双表模式避免 Flush 与写入之间的数据竞争
 type MemTable struct {
 	active *SkipList
-	dirty  *SkipList // 正在刷盘中的不可变表，可能仍包含未刷盘的旧数据（供 Get 回退查询）
+	dirty  *SkipList // 正在 flush 中的不可变表，可能仍包含未 flush 的旧数据（供 Get 回退查询）
 	mu     sync.RWMutex
 
 	FlushChan chan bool
@@ -40,7 +40,7 @@ type MemTable struct {
 
 	sst *SSTable
 
-	credits *credit.Pool // 字节级令牌桶背压：限制未刷盘数据的内存占用
+	credits *credit.Pool // 字节级令牌桶背压：限制未 flush 数据的内存占用
 
 	// 构造时从 config 快照的阈值：flush 触发大小与 compaction 触发文件数。快照而非在
 	// 后台 goroutine（FlushWorker/ListenCompactCh）里读全局 config.G，避免与（测试中）
@@ -75,7 +75,7 @@ func NewMemTable() *MemTable {
 		maxSize:       config.G.MaxMemTableSize,
 		maxCompaction: config.G.MaxCompactionSize,
 	}
-	// 注册未刷盘字节数仪表，供周期性指标快照实时读取。
+	// 注册未 flush 字节数仪表，供周期性指标快照实时读取。
 	metrics.SetMemTableGauges(mt.InflightBytes, config.G.MemTableMaxInflightBytes)
 
 	go mt.FlushWorker()
@@ -116,12 +116,9 @@ func (m *MemTable) Size() int {
 // Get 获取指定 key 的值
 // 查找顺序：active → dirty → SSTable
 func (m *MemTable) Get(key []byte) ([]byte, error) {
-	// 【并发正确性】active 的查找必须在锁内完成。此前的实现只在锁内拷贝表指针便释放锁，
-	// 随后无锁遍历跳表——而 Put/Delete 正持写锁改写同一张 active 的节点指针，构成对链式
-	// 结构的无同步并发访问：读者可能跟到只连了一半的新节点，读出错值甚至解引用空指针。
-	//
-	// 只圈住内存查找、不圈住 SSTable 查找：后者要读磁盘，若也持锁会让写入停等 I/O。
-	// dirty 一经交换即不再被写入（Put 只改 active），故其查找无需持锁。
+	// active 的查找必须持锁：Put/Delete 会并发改写其节点指针，无锁遍历可能跟到只连了
+	// 一半的新节点，读出错值甚至解引用空指针。SSTable 查找不持锁——它要读磁盘，持锁会让
+	// 写入停等 I/O；dirty 一经交换便不再被写入，故也无需持锁。
 	m.mu.RLock()
 	if m.active == nil || m.active.head == nil {
 		m.mu.RUnlock()
@@ -176,7 +173,7 @@ func (sl *SkipList) firstGTE(key []byte) *SkipNode {
 // 跳过墓碑(value==nil)，对每条命中调用 fn；fn 返回 false 可提前停止。
 // start/end 为空分别表示下界/上界不限。
 //
-// 全程持读锁：热窗口范围扫描有界且短，期间写入与刷盘会等待。fn 内若需在调用
+// 全程持读锁：热窗口范围扫描有界且短，期间写入与 flush 会等待。fn 内若需在调用
 // 返回后继续持有 key/value，应自行拷贝——底层切片归 MemTable 所有。
 func (m *MemTable) ScanRange(start, end []byte, fn func(key, value []byte) bool) {
 	m.mu.RLock()
@@ -219,7 +216,7 @@ func (m *MemTable) ScanRange(start, end []byte, fn func(key, value []byte) bool)
 }
 
 // SnapshotLive 返回 active+dirty 合并后的全部键值快照（active 覆盖 dirty），
-// 与 ScanRange 不同：保留墓碑(value==nil)。用于 WAL checkpoint 重写——未刷盘的
+// 与 ScanRange 不同：保留墓碑(value==nil)。用于 WAL checkpoint 重写——未 flush 的
 // 热数据（含删除墓碑）必须完整保留，否则重放时被删的 key 会从 SSTable 复活。
 // 拷贝底层字节，返回后可安全持有。
 func (m *MemTable) SnapshotLive() []LogEntry {
@@ -287,7 +284,7 @@ func (m *MemTable) Put(key []byte, value []byte) error {
 
 	delta := m.active.insert(key, value)
 
-	// 检查 active 表大小是否超过阈值，触发刷盘
+	// 检查 active 表大小是否超过阈值，触发 flush
 	if m.active.size > m.maxSize {
 		m.StartFlush()
 	}
@@ -300,17 +297,17 @@ func (m *MemTable) Put(key []byte, value []byte) error {
 	return nil
 }
 
-// acquireCredit 为本次写入预占 n 字节信用；不足时先触发刷盘以归还信用，再阻塞等待。
+// acquireCredit 为本次写入预占 n 字节信用；不足时先触发 flush 以归还信用，再阻塞等待。
 func (m *MemTable) acquireCredit(n int64) {
 	if m.credits.TryAcquire(n) {
 		return
 	}
-	metrics.BackpressureStalls.Add(1) // 快路径未命中，将触发刷盘并阻塞等待信用
+	metrics.BackpressureStalls.Add(1) // 快路径未命中，将触发 flush 并阻塞等待信用
 	m.StartFlush()                    // 确保有 flush 在路上来归还信用，避免永久阻塞
 	m.credits.Acquire(n)
 }
 
-// InflightBytes 返回当前未刷盘（active + 正在刷的 dirty）占用的字节信用，供观测/压测使用。
+// InflightBytes 返回当前未 flush（active + 正在刷的 dirty）占用的字节信用，供观测/压测使用。
 func (m *MemTable) InflightBytes() int64 {
 	return m.credits.Used()
 }
@@ -438,11 +435,11 @@ func (m *MemTable) StartFlush() {
 //  1. 持锁交换 active → dirty（active 变为 dirty 的不可变快照）
 //  2. 创建新的空 active 表用于接受后续写入
 //  3. 释放锁，在锁外将 dirty 数据写入 SSTable
-//  4. 刷盘完成后将 dirty 置 nil
+//  4. flush 完成后将 dirty 置 nil
 func (m *MemTable) Flush() {
 	// 步骤 1-2: 持锁进行交换（快速操作）
 	m.mu.Lock()
-	// dirty 非 nil 说明上一次刷盘失败遗留，本次直接重试它，不再交换（避免覆盖丢数据）
+	// dirty 非 nil 说明上一次 flush 失败遗留，本次直接重试它，不再交换（避免覆盖丢数据）
 	if m.dirty == nil {
 		if m.active.size == 0 {
 			m.mu.Unlock()
@@ -503,13 +500,13 @@ func (m *MemTable) getFromSSTables(key []byte) ([]byte, bool) {
 	// 新→旧遍历：metas 按落盘先后追加（最旧在前），故逆序取首个命中即为最新版本，
 	// 避免旧 SSTable 的陈旧值盖过新 SSTable 中对同一 key 的覆盖写。
 	//
-	// 【正确性不变量 / 慎改】此处判定 newest-wins 只看 metas 顺序、不看 level。它依赖
-	// 「同一 key 的最新值所在文件的创建 ts 最大」——这是当前「compaction 合并整层」机制
+	// 正确性不变量（慎改）：此处判定 newest-wins 只看 metas 顺序、不看 level。它依赖
+	// 「同一 key 的最新值所在文件的创建 ts 最大」——这是当前「一次 compaction 卷走整层」机制
 	// 的涌现性质（每次 L0 compaction 卷走全部 L0，新写不会被落在浅层而其它数据继续下沉），
 	// 不是构造保证。重启由 LoadSSTableMetaList 按创建 ts 重建 metas 维持之（见其注释与
 	// recency_test.go / recency_fuzz_test.go 守卫）。
 	// 若改为 overlap-aware / 部分选择 compaction，该不变量会被打破（新写可滞留浅层、旧值
-	// 经深层合并获得更大 ts 而倒挂），必须改用 per-key 序号等显式 recency，否则会无声重新
+	// 经深层 compaction 获得更大 ts 而倒挂），必须改用 per-key 序号等显式 recency，否则会无声重新
 	// 引入「重启后读到陈旧值」。
 	metas := m.sst.Metas()
 	for i := len(metas) - 1; i >= 0; i-- {

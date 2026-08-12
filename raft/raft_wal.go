@@ -233,7 +233,7 @@ func (w *RaftWAL) Clear() error {
 	return nil
 }
 
-// 从data中获得数据转换成快照
+// 从 data 中获得数据转换成快照
 
 func (w *RaftWAL) SaveSnapshot(data []byte, lastIncludedIndex int64, lastIncludedTerm int64) error {
 	snapshotDir := filepath.Join(filepath.Dir(w.logPath), SnapshotDir)

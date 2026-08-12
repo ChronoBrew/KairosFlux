@@ -8,12 +8,12 @@ import (
 	"github.com/NeverENG/BanDB/config"
 )
 
-// TestReloadRecoversFlushedKeys 守护 SSTable 重载恢复：写入远超单表阈值的数据逼其刷盘到
-// SSTable，停机后用新 MemTable 在同一目录重新加载，所有已刷盘 key 都应能读回。
+// TestReloadRecoversFlushedKeys 守护 SSTable 重载恢复：写入远超单表阈值的数据逼其 flush 到
+// SSTable，停机后用新 MemTable 在同一目录重新加载，所有已 flush key 都应能读回。
 //
 // 回归目标：LoadSSTableMetaList 曾用 EnsureMeta 顺序扫描算 MaxKey，扫过了数据段之后的
 // 块索引/布隆/footer，MaxKey 退化成空串，使 getFromSSTables 的 [MinKey,MaxKey] 过滤把所有
-// 命中 key 跳过 → 重启后已刷盘数据全部丢失。修复后应 50/50 恢复。
+// 命中 key 跳过 → 重启后已 flush 数据全部丢失。修复后应 50/50 恢复。
 func TestReloadRecoversFlushedKeys(t *testing.T) {
 	oldWAL := config.G.WALPath
 	oldSST := config.G.SSTablePath
@@ -21,7 +21,7 @@ func TestReloadRecoversFlushedKeys(t *testing.T) {
 	dir := t.TempDir()
 	config.G.WALPath = dir + "/wal.log"
 	config.G.SSTablePath = dir
-	config.G.MaxMemTableSize = 4 // 极小阈值，逼迫多轮 active→dirty→SSTable 刷盘
+	config.G.MaxMemTableSize = 4 // 极小阈值，逼迫多轮 active→dirty→SSTable flush
 	defer func() {
 		config.G.WALPath = oldWAL
 		config.G.SSTablePath = oldSST
