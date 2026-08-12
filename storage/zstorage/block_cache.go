@@ -2,7 +2,6 @@ package zstorage
 
 import (
 	"container/list"
-	"hash/fnv"
 	"sync"
 	"sync/atomic"
 )
@@ -92,15 +91,29 @@ func newBlockCache(budgetBytes int64) *blockCache {
 	return c
 }
 
-func (c *blockCache) shard(key blockCacheKey) *blockCacheShard {
-	h := fnv.New64a()
-	h.Write([]byte(key.path))
-	var b [8]byte
-	for i := 0; i < 8; i++ {
-		b[i] = byte(key.offset >> (8 * i))
+// FNV-1a 常量。就地展开而不使用 hash/fnv：后者返回 hash.Hash64 接口，构造即逃逸到堆，
+// 且 Write 需要 []byte(path) 转换再分配一次——两次分配都落在每次点查的最热路径上。
+const (
+	fnv1aOffset64 uint64 = 14695981039346656037
+	fnv1aPrime64  uint64 = 1099511628211
+)
+
+// blockCacheHashOf 对 (path, offset) 求 FNV-1a 散列，全程零分配。
+func blockCacheHashOf(path string, offset int64) uint64 {
+	h := fnv1aOffset64
+	for i := 0; i < len(path); i++ { // 直接按字节遍历字符串，无需转 []byte
+		h ^= uint64(path[i])
+		h *= fnv1aPrime64
 	}
-	h.Write(b[:])
-	return &c.shards[h.Sum64()&(blockCacheShards-1)]
+	for s := 0; s < 64; s += 8 {
+		h ^= uint64(byte(offset >> s))
+		h *= fnv1aPrime64
+	}
+	return h
+}
+
+func (c *blockCache) shard(key blockCacheKey) *blockCacheShard {
+	return &c.shards[blockCacheHashOf(key.path, key.offset)&(blockCacheShards-1)]
 }
 
 // get 取一个已缓存的数据块。返回的切片不可修改。
