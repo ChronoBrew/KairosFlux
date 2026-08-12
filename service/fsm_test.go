@@ -53,7 +53,7 @@ func TestFSM_EmptyValueNotTombstone(t *testing.T) {
 	fsm, cleanup := setupTest(t)
 	defer cleanup()
 
-	cmdBytes, err := EncodeCommand(Command{Type: "Put", Key: []byte("ek"), Value: []byte{}})
+	cmdBytes, err := EncodeCommand(Command{Type: CommandPut, Key: []byte("ek"), Value: []byte{}})
 	if err != nil {
 		t.Fatalf("EncodeCommand: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestFSM_BasicOperation(t *testing.T) {
 	defer cleanup()
 
 	cmd := Command{
-		Type:  "Put",
+		Type:  CommandPut,
 		Key:   []byte("key1"),
 		Value: []byte("value1"),
 	}
@@ -105,7 +105,7 @@ func TestFSM_DeleteOperation(t *testing.T) {
 	defer cleanup()
 
 	putCmd := Command{
-		Type:  "Put",
+		Type:  CommandPut,
 		Key:   []byte("key1"),
 		Value: []byte("value1"),
 	}
@@ -118,7 +118,7 @@ func TestFSM_DeleteOperation(t *testing.T) {
 	}
 
 	delCmd := Command{
-		Type: "Delete",
+		Type: CommandDelete,
 		Key:  []byte("key1"),
 	}
 	delBytes, _ := EncodeCommand(delCmd)
@@ -134,11 +134,11 @@ func TestFSM_UpdateOperation(t *testing.T) {
 	fsm, cleanup := setupTest(t)
 	defer cleanup()
 
-	cmd1 := Command{Type: "Put", Key: []byte("key1"), Value: []byte("value1")}
+	cmd1 := Command{Type: CommandPut, Key: []byte("key1"), Value: []byte("value1")}
 	cmdBytes1, _ := EncodeCommand(cmd1)
 	fsm.Apply(raft.LogEntry{Index: 0, Term: 1, Command: cmdBytes1})
 
-	cmd2 := Command{Type: "Put", Key: []byte("key1"), Value: []byte("value2")}
+	cmd2 := Command{Type: CommandPut, Key: []byte("key1"), Value: []byte("value2")}
 	cmdBytes2, _ := EncodeCommand(cmd2)
 	fsm.Apply(raft.LogEntry{Index: 1, Term: 1, Command: cmdBytes2})
 
@@ -173,9 +173,9 @@ func TestStandalone_WriteAndRecover(t *testing.T) {
 		t.Fatal("standalone mode must not start Raft")
 	}
 	for _, c := range []Command{
-		{Type: "Put", Key: []byte("k1"), Value: []byte("v1")},
-		{Type: "Put", Key: []byte("k2"), Value: []byte("v2")},
-		{Type: "Delete", Key: []byte("k1")},
+		{Type: CommandPut, Key: []byte("k1"), Value: []byte("v1")},
+		{Type: CommandPut, Key: []byte("k2"), Value: []byte("v2")},
+		{Type: CommandDelete, Key: []byte("k1")},
 	} {
 		if err := kv.Write(c); err != nil {
 			t.Fatalf("write %+v: %v", c, err)
@@ -215,7 +215,7 @@ func TestWaitUntilReady_SingleNodeAcceptsImmediateWrite(t *testing.T) {
 		t.Fatalf("after WaitUntilReady expected Leader, got %v", state)
 	}
 
-	idx, err := fsm.AppendEntry(Command{Type: "Put", Key: []byte("k"), Value: []byte("v")})
+	idx, err := fsm.AppendEntry(Command{Type: CommandPut, Key: []byte("k"), Value: []byte("v")})
 	if err != nil {
 		t.Fatalf("write immediately after ready failed: %v", err)
 	}

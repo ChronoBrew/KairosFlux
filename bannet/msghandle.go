@@ -7,14 +7,14 @@ import (
 )
 
 type MsgHandle struct {
-	Arip           map[string]Handler
+	routers        map[string]Handler
 	WorkerPoolSize uint32
 	TaskQueue      []chan Request
 }
 
 func NewMsgHandle() *MsgHandle {
 	return &MsgHandle{
-		Arip:           make(map[string]Handler),
+		routers:        make(map[string]Handler),
 		WorkerPoolSize: config.G.WorkerPoolSize,
 		TaskQueue:      make([]chan Request, config.G.WorkerPoolSize),
 	}
@@ -23,15 +23,15 @@ func NewMsgHandle() *MsgHandle {
 var _ Dispatcher = &MsgHandle{}
 
 func (m *MsgHandle) AddRouter(msgID string, r Handler) {
-	if _, ok := m.Arip[msgID]; ok {
+	if _, ok := m.routers[msgID]; ok {
 		slog.Warn("banNet duplicate route registration ignored", "msgID", msgID)
 		return
 	}
-	m.Arip[msgID] = r
+	m.routers[msgID] = r
 }
 
 func (m *MsgHandle) DoMsgHandle(request Request) {
-	handler, ok := m.Arip[request.MsgID()]
+	handler, ok := m.routers[request.MsgID()]
 	if !ok {
 		slog.Error("banNet unregistered msgID", "msgID", request.MsgID())
 		return
