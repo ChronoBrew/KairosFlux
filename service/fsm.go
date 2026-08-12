@@ -35,7 +35,7 @@ type Command struct {
 
 type KVServer struct {
 	raft    *raft.Raft
-	storage *storage.Engine
+	storage *storage.MemTable
 	wal     *storage.WAL // standalone 模式的存储层 WAL；raft 模式为 nil
 
 	// cpMu 协调写入与 WAL checkpoint：每次写用 RLock 把 wal.Append+storage.Put
@@ -51,11 +51,8 @@ type KVServer struct {
 // raft：启动 Raft，写经其日志，不使用存储层 WAL。
 func NewKVServer() *KVServer {
 	// 初始化存储
-	memTable := storage.NewMemTable()
-	store := storage.NewEngine(memTable)
-
 	kv := &KVServer{
-		storage: store,
+		storage: storage.NewMemTable(),
 	}
 
 	if config.G.Mode == config.ModeStandalone {
@@ -267,7 +264,7 @@ const maxScanResults = 10000
 // 达到上限时截断并告警。
 func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry {
 	out := make([]proto.ScanEntry, 0)
-	k.storage.Scan(start, end, func(key, value []byte) bool {
+	k.storage.ScanRange(start, end, func(key, value []byte) bool {
 		if !pred.Eval(value) {
 			return true
 		}

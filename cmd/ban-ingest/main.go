@@ -1,4 +1,4 @@
-// 命令 ingest 是 M1 的 A1 层压测：进程内直接驱动 storage.Engine，证明存储引擎
+// 命令 ingest 是 M1 的 A1 层压测：进程内直接驱动存储引擎，证明存储引擎
 // 在内存封顶下扛得住高频顺序写。分两相：
 //   - 饱和相（闭环打满）：找写吞吐天花板 Rmax + 内存峰值。
 //   - 开环相（定速率）：在若干 IMU 速率档下证「定速率不丢帧」+ 尾延迟 + 内存封顶。
@@ -90,7 +90,7 @@ type Result struct {
 }
 
 // setupEngine 指向临时目录并以小 memtable 创建引擎，返回引擎与清理函数。
-func setupEngine(memTableSize int) (*storage.Engine, *storage.MemTable, func()) {
+func setupEngine(memTableSize int) (*storage.MemTable, func()) {
 	tmp, err := os.MkdirTemp("", "bandb-ingest-*")
 	if err != nil {
 		panic(err)
@@ -100,12 +100,11 @@ func setupEngine(memTableSize int) (*storage.Engine, *storage.MemTable, func()) 
 	config.G.MaxMemTableSize = memTableSize
 
 	memTable := storage.NewMemTable()
-	engine := storage.NewEngine(memTable)
 	cleanup := func() {
 		_ = memTable.Close()
 		os.RemoveAll(tmp)
 	}
-	return engine, memTable, cleanup
+	return memTable, cleanup
 }
 
 // memSampler 每 100ms 采样一次堆内存与未 flush 字节信用，返回停止函数（调用后回填峰值）。
@@ -145,7 +144,7 @@ func memSampler(mt *storage.MemTable, heapPeak, sysPeak, inflightPeak *uint64) f
 // runSaturation 闭环打满：不做 per-op 计时（避免计时器开销污染亚微秒写），
 // 只数总量得到吞吐天花板，平均延迟由 1/throughput 推导。
 func runSaturation(dur time.Duration, valueSize, memTableSize int) Result {
-	engine, memTable, cleanup := setupEngine(memTableSize)
+	memTable, cleanup := setupEngine(memTableSize)
 	defer cleanup()
 
 	runtime.GC() // 清掉上一轮残留，使本轮 heap 峰值只反映本轮活对象
@@ -161,7 +160,7 @@ func runSaturation(dur time.Duration, valueSize, memTableSize int) Result {
 			key := []byte(fmt.Sprintf("imu:dev0:%020d", seq))
 			seq++
 			value := make([]byte, valueSize) // 每条独立 value，保证内存计量真实
-			_ = engine.Put(key, value)
+			_ = memTable.Put(key, value)
 			written++
 		}
 	}
@@ -189,7 +188,7 @@ func runSaturation(dur time.Duration, valueSize, memTableSize int) Result {
 // runOpenLoop 开环定速率：生产者按固定速率非阻塞投递，队列满即丢帧；
 // 消费者单写入者，per-op 计时（此处速率有界，计时开销可忽略），得到尾延迟。
 func runOpenLoop(rateHz int, dur time.Duration, valueSize, qDepth, memTableSize int) Result {
-	engine, memTable, cleanup := setupEngine(memTableSize)
+	memTable, cleanup := setupEngine(memTableSize)
 	defer cleanup()
 
 	runtime.GC() // 清掉上一轮残留，使本轮 heap 峰值只反映本轮活对象
@@ -228,7 +227,7 @@ func runOpenLoop(rateHz int, dur time.Duration, valueSize, qDepth, memTableSize 
 	start := time.Now()
 	for s := range q {
 		t0 := time.Now()
-		_ = engine.Put(s.key, s.value)
+		_ = memTable.Put(s.key, s.value)
 		latencies = append(latencies, time.Since(t0))
 		written++
 	}
