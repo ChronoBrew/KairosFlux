@@ -116,17 +116,23 @@ func (m *MemTable) Size() int {
 // Get 获取指定 key 的值
 // 查找顺序：active → dirty → SSTable
 func (m *MemTable) Get(key []byte) ([]byte, error) {
+	// 【并发正确性】active 的查找必须在锁内完成。此前的实现只在锁内拷贝表指针便释放锁，
+	// 随后无锁遍历跳表——而 Put/Delete 正持写锁改写同一张 active 的节点指针，构成对链式
+	// 结构的无同步并发访问：读者可能跟到只连了一半的新节点，读出错值甚至解引用空指针。
+	//
+	// 只圈住内存查找、不圈住 SSTable 查找：后者要读磁盘，若也持锁会让写入停等 I/O。
+	// dirty 一经交换即不再被写入（Put 只改 active），故其查找无需持锁。
 	m.mu.RLock()
-	active := m.active
+	if m.active == nil || m.active.head == nil {
+		m.mu.RUnlock()
+		return nil, ErrMemTableUnavailable
+	}
+	// 先在 active 中查找（最新数据）。命中墓碑(val==nil)即已删除，不再下穿。
+	val, found := m.active.search(key)
 	dirty := m.dirty
 	m.mu.RUnlock()
 
-	if active == nil || active.head == nil {
-		return nil, ErrMemTableUnavailable
-	}
-
-	// 先在 active 中查找（最新数据）。命中墓碑(val==nil)即已删除，不再下穿。
-	if val, found := active.search(key); found {
+	if found {
 		if val == nil {
 			return nil, ErrKeyNotFound
 		}
