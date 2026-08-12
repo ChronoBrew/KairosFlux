@@ -59,8 +59,6 @@ func (bi *blockIndex) blockExtent(i int) (int64, int64) {
 	return start, bi.dataEnd
 }
 
-var _ ISSTable = &SSTable{}
-
 type SSTable struct {
 	// dir 是 SSTable 文件目录，构造时从 config 快照一份。构造在主 goroutine 完成，之后
 	// 后台 goroutine（如 LoadSSTableMetaList、Flush、Merge）读 ss.dir 而非全局 config.G，

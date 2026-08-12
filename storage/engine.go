@@ -5,10 +5,10 @@ import ()
 // Engine 存储引擎，作为 MemTable 的薄封装
 // MemTable 内部已使用 RWMutex 自同步，Engine 不再持有自己的锁
 type Engine struct {
-	memTable IMemTable
+	memTable *MemTable
 }
 
-func NewEngine(memTable IMemTable) *Engine {
+func NewEngine(memTable *MemTable) *Engine {
 	return &Engine{memTable: memTable}
 }
 

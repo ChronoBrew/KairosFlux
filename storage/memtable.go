@@ -12,8 +12,6 @@ import (
 	"github.com/NeverENG/BanDB/pkg/metrics"
 )
 
-var _ IMemTable = &MemTable{}
-
 var (
 	maxLevel    = config.G.MaxMemTableLevel
 	probability = config.G.MaxMemTableP
