@@ -8,10 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NeverENG/BanDB/Raft"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/raft"
 	"github.com/NeverENG/BanDB/storage"
 	"github.com/NeverENG/BanDB/storage/istorage"
 	"github.com/NeverENG/BanDB/storage/zstorage"
@@ -24,7 +24,7 @@ type Command struct {
 }
 
 type KVServer struct {
-	raft    *Raft.Raft
+	raft    *raft.Raft
 	storage *storage.Engine
 	wal     *storage.WAL // standalone 模式的存储层 WAL；raft 模式为 nil
 
@@ -60,7 +60,7 @@ func NewKVServer() *KVServer {
 	}
 
 	// raft 模式：写经 Raft 日志
-	kv.raft = Raft.NewRaft(config.G.Peers, config.G.Me)
+	kv.raft = raft.NewRaft(config.G.Peers, config.G.Me)
 	return kv
 }
 
@@ -189,7 +189,7 @@ func (k *KVServer) Close() error {
 }
 
 // Apply 应用日志到存储
-func (k *KVServer) Apply(entry Raft.LogEntry) {
+func (k *KVServer) Apply(entry raft.LogEntry) {
 	if entry.IsSnapshot {
 		go k.replaySnapshot(entry)
 		return
@@ -214,8 +214,8 @@ func (k *KVServer) Apply(entry Raft.LogEntry) {
 }
 
 // replaySnapshot 异步重放快照中的日志条目到临时表并 Flush 到 SSTable
-func (k *KVServer) replaySnapshot(entry Raft.LogEntry) {
-	entries := Raft.DeserializeLogEntries(entry.Command)
+func (k *KVServer) replaySnapshot(entry raft.LogEntry) {
+	entries := raft.DeserializeLogEntries(entry.Command)
 	if len(entries) == 0 {
 		return
 	}
@@ -285,7 +285,7 @@ func (k *KVServer) Delete(key []byte) error {
 */
 
 // GetRaft 获取 Raft 实例
-func (k *KVServer) GetRaft() *Raft.Raft {
+func (k *KVServer) GetRaft() *raft.Raft {
 	return k.raft
 }
 
@@ -324,7 +324,7 @@ func (k *KVServer) WaitUntilReady() {
 	}
 	slog.Info("single-node: waiting for leader before serving clients")
 	for {
-		if state, _ := k.raft.GetState(); state == Raft.Leader {
+		if state, _ := k.raft.GetState(); state == raft.Leader {
 			slog.Info("leader ready, opening client port")
 			return
 		}

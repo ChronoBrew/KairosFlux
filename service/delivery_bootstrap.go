@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/NeverENG/BanDB/Raft"
 	"github.com/NeverENG/BanDB/config"
+	"github.com/NeverENG/BanDB/raft"
 	"github.com/NeverENG/BanDB/service/delivery"
 	"github.com/NeverENG/BanDB/service/delivery/offset"
 )
@@ -34,7 +34,7 @@ func StartDeliveryFromConfig(ctx context.Context, kv *KVServer) {
 	if r := kv.GetRaft(); r != nil {
 		d.SetGate(func() bool {
 			state, _ := r.GetState()
-			return state == Raft.Leader
+			return state == raft.Leader
 		})
 	}
 	go d.Run(ctx)

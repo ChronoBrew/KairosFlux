@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NeverENG/BanDB/Raft"
+	"github.com/NeverENG/BanDB/raft"
 	"github.com/NeverENG/BanDB/service/cluster"
 )
 
@@ -59,7 +59,7 @@ func (n *Node) Get(key []byte) ([]byte, bool, error) {
 	addr, done := lb.Pick()
 	start := time.Now()
 	var reply ShardReadReply
-	err := Raft.PooledCall(addr, "ShardRead.Get", args, &reply)
+	err := raft.PooledCall(addr, "ShardRead.Get", args, &reply)
 	done(time.Since(start)) // 回填 EWMA/释放在途——P2C 据此持续把读导向更快的副本
 	if err == nil {
 		return reply.Value, reply.Found, nil
@@ -71,7 +71,7 @@ func (n *Node) Get(key []byte) ([]byte, bool, error) {
 			continue
 		}
 		var rep ShardReadReply
-		if e := Raft.PooledCall(r, "ShardRead.Get", args, &rep); e == nil {
+		if e := raft.PooledCall(r, "ShardRead.Get", args, &rep); e == nil {
 			return rep.Value, rep.Found, nil
 		}
 	}
