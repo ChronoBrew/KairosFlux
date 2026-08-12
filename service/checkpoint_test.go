@@ -11,7 +11,7 @@ import (
 	"github.com/NeverENG/BanDB/config"
 )
 
-// setupStandalone 配置一个 standalone KVServer，指定 memtable 刷盘阈值，返回实例与清理函数。
+// setupStandalone 配置一个 standalone KVServer，指定 memtable flush 阈值，返回实例与清理函数。
 func setupStandalone(t *testing.T, maxMemTableSize int) (*KVServer, string, func()) {
 	t.Helper()
 	oldWALPath := config.G.WALPath
@@ -37,13 +37,13 @@ func setupStandalone(t *testing.T, maxMemTableSize int) (*KVServer, string, func
 }
 
 // TestCheckpoint_RecoverAcrossSSTableAndTombstone 验证 WAL checkpoint 自清洁的安全性：
-// checkpoint 把 WAL 重写为未刷盘热数据快照后，已落 SSTable 的历史数据被移出 WAL，
+// checkpoint 把 WAL 重写为未 flush 热数据快照后，已落 SSTable 的历史数据被移出 WAL，
 // 但重启仍能从 SSTable 恢复；删除墓碑跨 checkpoint 不复活；checkpoint 之后的新写也在。
 func TestCheckpoint_RecoverAcrossSSTableAndTombstone(t *testing.T) {
 	kv, _, cleanup := setupStandalone(t, 4) // 阈值极小，逼迫大量数据刷到 SSTable
 	defer cleanup()
 
-	// 写入 50 个不同 key，触发多轮 active→dirty→SSTable 刷盘。
+	// 写入 50 个不同 key，触发多轮 active→dirty→SSTable flush。
 	for i := 0; i < 50; i++ {
 		key := []byte(fmt.Sprintf("k%04d", i))
 		if err := kv.Write(Command{Type: CommandPut, Key: key, Value: []byte(fmt.Sprintf("v%04d", i))}); err != nil {
@@ -58,7 +58,7 @@ func TestCheckpoint_RecoverAcrossSSTableAndTombstone(t *testing.T) {
 	// 等待异步 FlushWorker 把 dirty 落到 SSTable。
 	time.Sleep(300 * time.Millisecond)
 
-	// checkpoint：把 WAL 重写为当前未刷盘热数据快照，回收已落 SSTable 的历史 WAL。
+	// checkpoint：把 WAL 重写为当前未 flush 热数据快照，回收已落 SSTable 的历史 WAL。
 	kv.Checkpoint()
 
 	// checkpoint 之后再写一个新 key——必须落在重写后的 WAL 里。
@@ -93,7 +93,7 @@ func TestCheckpoint_RecoverAcrossSSTableAndTombstone(t *testing.T) {
 	}
 }
 
-// TestCheckpoint_BoundsWALGrowth 验证周期 checkpoint 把 WAL 稳态大小约束在未刷盘热数据
+// TestCheckpoint_BoundsWALGrowth 验证周期 checkpoint 把 WAL 稳态大小约束在未 flush 热数据
 // 量级：对小 key 集反复覆盖写 N≫阈值 次，WAL 不应线性膨胀到 N 条记录。
 func TestCheckpoint_BoundsWALGrowth(t *testing.T) {
 	kv, walPath, cleanup := setupStandalone(t, 100) // checkpoint 间隔 = 2×100 = 200 次写

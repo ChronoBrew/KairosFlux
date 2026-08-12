@@ -52,8 +52,8 @@ type walRewrite struct {
 //
 // 写入走 group commit：所有 Append 把请求投递到 reqCh，由唯一的 flushLoop 攒批——
 // 把当前排队的并发写一次性写入后只 fsync 一次，再唤醒整批等待者。这既把 N 次 fsync
-// 摊销为 1 次（并发越高摊销越充分），又让 flushLoop 成为文件的唯一写者，消除了此前
-// 无锁并发 Write+Sync 的隐患。持久化契约不变：Append 返回即代表该记录已 fsync 落盘。
+// 摊销为 1 次（并发越高摊销越充分），又使 flushLoop 成为文件的唯一写者，从而不存在
+// 并发 Write+Sync。持久化契约：Append 返回即代表该记录已 fsync 落盘。
 type WAL struct {
 	file      *os.File
 	path      string

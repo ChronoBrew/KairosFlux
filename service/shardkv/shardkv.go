@@ -23,7 +23,7 @@ type Shard struct {
 
 // applyLoop 排空该分片 Raft 的 ApplyCh，把已提交命令应用到 store。
 //
-// 【必须从构造起就运行】Raft 的 `ApplyCh <- entry` 是持锁的阻塞发送（缓冲 100）；若无人排空，
+// 必须从构造起就运行：Raft 的 `ApplyCh <- entry` 是持锁的阻塞发送（缓冲 100）；若无人排空，
 // 累计 100 条后发送会在锁内阻塞、卡死整个组。故每分片构造即起本循环，Stop 时退出。
 func (s *Shard) applyLoop() {
 	ch := s.raft.ApplyCh
@@ -158,7 +158,7 @@ func (n *Node) LocalGet(key []byte) ([]byte, bool) {
 	return sh.store.Get(key)
 }
 
-// ShardLeader 返回 shard 组在本节点视角的 leader 地址（供观测/调试）。
+// ShardLeader 返回 分片 组在本节点视角的 leader 地址（供观测/调试）。
 func (n *Node) ShardLeader(shardID int) (string, bool) {
 	sh, ok := n.shards[shardID]
 	if !ok {

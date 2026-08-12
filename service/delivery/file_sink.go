@@ -65,7 +65,7 @@ func (s *FileSink) Health() SinkHealth {
 	return SinkHealth{Healthy: true}
 }
 
-// Close 刷盘并关闭底层文件。
+// Close 先 flush 缓冲再关闭底层文件。
 func (s *FileSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -30,7 +30,7 @@ type GlobalConfig struct {
 	MaxMemTableSize   int
 	MaxCompactionSize int
 
-	// MemTableMaxInflightBytes 未刷盘数据（active + 正在刷的 dirty）的字节预算。
+	// MemTableMaxInflightBytes 未 flush 数据（active + 正在刷的 dirty）的字节预算。
 	// 字节级令牌桶背压：超出预算时写入阻塞，等 flush 归还信用。<=0 关闭背压。
 	MemTableMaxInflightBytes int64
 
@@ -114,12 +114,12 @@ func defaultGlobalConfig() *GlobalConfig {
 		MaxMemTableP:             0.5,
 		MaxMemTableLevel:         32,
 		MaxMemTableSize:          1024,
-		MemTableMaxInflightBytes: 64 << 20, // 64MiB 未刷盘字节预算
+		MemTableMaxInflightBytes: 64 << 20, // 64MiB 未 flush 字节预算
 		BlockCacheBytes:          64 << 20, // 64MiB SSTable 数据块缓存
 		WALPath:                  filepath.Join(logDir, "wal.log"),
 		SSTablePath:              logDir,
 		Peers:                    []string{"localhost:8080"}, // 默认单节点
-		Me:                       0,                          // 默认节点ID
+		Me:                       0,                          // 默认节点 ID
 		RaftSnapshotThreshold:    1000,                       // 默认快照阈值
 		RaftSnapshotKeepEntries:  100,                        // 默认保留条目数
 		DeliveryEnabled:          false,                      // 默认不启动下游投递

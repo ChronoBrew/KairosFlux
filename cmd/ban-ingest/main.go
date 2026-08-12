@@ -86,7 +86,7 @@ type Result struct {
 	P50, P99, P999, P9999, Max time.Duration
 	HeapPeak                   uint64 // HeapAlloc 峰值 (bytes)
 	SysPeak                    uint64 // Sys 峰值 (bytes)
-	InflightPeak               uint64 // 未刷盘字节信用峰值 (bytes)
+	InflightPeak               uint64 // 未 flush 字节信用峰值 (bytes)
 }
 
 // setupEngine 指向临时目录并以小 memtable 创建引擎，返回引擎与清理函数。
@@ -108,7 +108,7 @@ func setupEngine(memTableSize int) (*storage.Engine, *storage.MemTable, func()) 
 	return engine, memTable, cleanup
 }
 
-// memSampler 每 100ms 采样一次堆内存与未刷盘字节信用，返回停止函数（调用后回填峰值）。
+// memSampler 每 100ms 采样一次堆内存与未 flush 字节信用，返回停止函数（调用后回填峰值）。
 func memSampler(mt *storage.MemTable, heapPeak, sysPeak, inflightPeak *uint64) func() {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup

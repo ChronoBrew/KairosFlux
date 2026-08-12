@@ -137,7 +137,7 @@ func (r *RaftRPC) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesRep
 
 	// 重置选举计时器：收到合法 leader 的心跳/复制即认为 leader 存活，避免误发起选举。
 	// 非阻塞发送——electionLoop 正阻塞在 heartbeatCh 上时命中并 resetElectionTimer；
-	// 若其正忙则丢弃，下次心跳再重置。此前缺失此信号导致 follower 无视心跳持续改选、leader 抖动。
+	// 若其正忙则丢弃，下次心跳再重置。缺失该信号会使 follower 无视心跳持续改选，导致 leader 抖动。
 	select {
 	case r.raft.heartbeatCh <- true:
 	default:
@@ -224,7 +224,7 @@ func (r *RaftRPC) applyCommittedLogs() {
 	}
 }
 
-// 被调用端
+// InstallSnapshot 是被调用端
 func (r *RaftRPC) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapshotReply) error {
 	r.raft.mu.Lock()
 	defer r.raft.mu.Unlock()

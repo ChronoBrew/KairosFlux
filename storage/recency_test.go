@@ -8,7 +8,7 @@ import (
 )
 
 // TestRecency_OverwriteAcrossCompactionSurvivesRestart 是「newest-wins 跨重启不倒挂」的
-// 判别测试：x=A 落进已合并（compacted）文件，再写 x=B（留在新 L0），模拟重启后 GET x 必须是 B。
+// 判别测试：x=A 落进已被 compaction 的文件，再写 x=B（留在新 L0），模拟重启后 GET x 必须是 B。
 //
 // 风险点：读路径 getFromSSTables 按 metas 逆序判定「新胜旧」（内存里 = 创建序）；但重启时
 // LoadSSTableMetaList 按文件名字符串排序重建 metas，而非真实时间序——若排序把旧的 merged 文件
@@ -32,7 +32,7 @@ func TestRecency_OverwriteAcrossCompactionSurvivesRestart(t *testing.T) {
 	if err := mt.FlushToSSTable([]LogEntry{{Key: []byte("m"), Value: []byte("2")}}); err != nil {
 		t.Fatal(err)
 	}
-	mt.CompactSSTable(0) // L0 两文件 >=2 → 合并到 L1；x=A 现位于 merged 文件
+	mt.CompactSSTable(0) // L0 两文件 >=2 → compaction 到 L1；x=A 现位于 merged 文件
 
 	// 覆盖写 x=B，留在新的 L0 文件（更新）。
 	if err := mt.FlushToSSTable([]LogEntry{{Key: []byte("x"), Value: []byte("B")}}); err != nil {

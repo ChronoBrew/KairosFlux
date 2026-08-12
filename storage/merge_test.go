@@ -205,7 +205,7 @@ func TestSSTableTombstoneRoundTrip(t *testing.T) {
 }
 
 // TestMergePreservesTombstone 旧文件含值、新文件含同 key 墓碑：归并须保留墓碑
-// (newest 胜出)，合并后点查仍为已删除，而不是把旧值复活。
+// (newest 胜出)，compaction 后点查仍为已删除，而不是把旧值复活。
 func TestMergePreservesTombstone(t *testing.T) {
 	withTempSSTDir(t)
 	ss := NewSSTable()

@@ -13,7 +13,7 @@ func NewEngine(memTable *MemTable) *Engine {
 }
 
 func (e *Engine) Put(key []byte, value []byte) error {
-	// MemTable.Put 内部已包含同步和刷盘触发逻辑
+	// MemTable.Put 内部已包含同步和 flush 触发逻辑
 	return e.memTable.Put(key, value)
 }
 
@@ -28,12 +28,12 @@ func (e *Engine) Delete(key []byte) error {
 }
 
 // Scan 在 [start,end] 闭区间升序遍历最新可见键值，跳过墓碑；fn 返回 false 提前停止。
-// 当前仅覆盖 MemTable（未刷盘热数据），已刷盘到 SSTable 的历史数据待后续接入。
+// 当前仅覆盖 MemTable（未 flush 热数据），已 flush 到 SSTable 的历史数据待后续接入。
 func (e *Engine) Scan(start, end []byte, fn func(key, value []byte) bool) {
 	e.memTable.ScanRange(start, end, fn)
 }
 
-// SnapshotLive 返回未刷盘热数据（active+dirty，含墓碑）的快照，供 WAL checkpoint 重写。
+// SnapshotLive 返回未 flush 热数据（active+dirty，含墓碑）的快照，供 WAL checkpoint 重写。
 func (e *Engine) SnapshotLive() []LogEntry {
 	return e.memTable.SnapshotLive()
 }

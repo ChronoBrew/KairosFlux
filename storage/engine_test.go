@@ -22,7 +22,7 @@ func setupTestEngine(t *testing.T) (*Engine, func()) {
 	engine := NewEngine(memTable)
 
 	// 不再另起 FlushWorker：NewMemTable 已启动一个。两个 worker 会并发进入 Flush，
-	// 各自取到不同的 dirty 表后互相把 m.dirty 置 nil，导致刷盘丢数据、读回缺失
+	// 各自取到不同的 dirty 表后互相把 m.dirty 置 nil，导致 flush 丢数据、读回缺失
 	// （表现为 TestEngine_* 偶发失败）。
 
 	cleanup := func() {

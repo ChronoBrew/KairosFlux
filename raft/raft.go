@@ -485,7 +485,7 @@ func (r *Raft) checkSnapshotTrigger() {
 
 // relIndex 把绝对日志 index 映射为 r.log 的数组下标。
 //
-// 【历史 off-by-one 修复】无快照时基准应为 -1（首条绝对 index 0 → 数组下标 0）；
+// off-by-one 易错点：无快照时基准应为 -1（首条绝对 index 0 → 数组下标 0）；
 // 但 LastIncludedIndex 初始为 0，旧代码统一用 `abs - LastIncludedIndex - 1`，在无快照场景
 // 把 index 0 算成 -1 → 追加/取 term/切片全部越界或错位。因 LastIncludedIndex>0 才代表"有快照"，
 // 这里无快照时用基准 -1，有快照时用 LastIncludedIndex（与旧公式一致，不影响快照路径）。

@@ -67,7 +67,7 @@ type SSTable struct {
 
 	// metas 是元数据主副本，仅在持 mu 时修改；每次修改后即时发布一份不可变快照到 snapshot。
 	// 读路径（每次点查都要遍历元数据）从 snapshot 无锁读取，避免逐次加锁与整表拷贝。
-	// 写侧为 copy-on-write：变更频率为刷盘/合并级，远低于读。
+	// 写侧为 copy-on-write：变更频率为 flush / compaction 级，远低于读。
 	// 快照按值不可变——调用方只可读取，不得原地修改其元素顺序或内容。
 	metas      []*SSTableMeta
 	snapshot   atomic.Pointer[[]*SSTableMeta]
@@ -206,7 +206,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		// 从块索引末项直接取 MaxKey（新格式）。不能用 EnsureMeta 的顺序扫描：它把数据段
 		// 之后的块索引/布隆/footer 也当记录读，导致 MaxKey 错乱（实测退化成空串），
 		// 使 getFromSSTables 的 [MinKey,MaxKey] 范围过滤把命中 key 整段跳过 → 重启后
-		// 已刷盘数据全部读不到。老格式无 footer，loadBlockIndexFromFile 返回 nil，
+		// 已 flush 数据全部读不到。老格式无 footer，loadBlockIndexFromFile 返回 nil，
 		// 保留 MaxKeyLoaded=false 由 EnsureMeta 顺序扫描兜底（对纯数据文件正确）。
 		if idx := ss.loadBlockIndexFromFile(fullPath); idx != nil && len(idx.entries) > 0 {
 			meta.MaxKey = idx.entries[len(idx.entries)-1].LastKey
@@ -249,7 +249,7 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 		return ErrNoEntries
 	}
 
-	// L0：memtable 刷盘落到 level 0；level 编进文件名以便重启恢复。
+	// L0：memtable flush 落到 level 0；level 编进文件名以便重启恢复。
 	filename := fmt.Sprintf("sstable_L0_%d.sst", time.Now().UnixNano())
 	dir := ss.dir
 	if err := os.MkdirAll(dir, dirPerm); err != nil {
@@ -665,14 +665,14 @@ func (ss *SSTable) readFromSSTableFull(filepath string, key []byte) ([]byte, boo
 	return nil, false
 }
 
-// 合并多个 SSTable 文件。
+// MergeSSTable 把 files 归并为 targetLevel 上的一个新 SSTable，即 compaction 的落地实现。
 //
-// 【正确性不变量 / 慎改】同 key 的 tie-break 由 files 的 srcIdx 决定（越大越新，见下），
-// 合并输出文件用 time.Now() 打新 ts。这依赖调用方 CompactSSTable「合并整层全部文件」：
+// 正确性不变量（慎改）：同 key 的 tie-break 由 files 的 srcIdx 决定（越大越新，见下），
+// compaction 输出文件用 time.Now() 打新 ts。这依赖调用方 CompactSSTable「一次 compaction 卷走整层全部文件」：
 // 因此同 key 的多个版本要么都在本次输入里（srcIdx 定新旧），要么更新的版本在更浅层的
 // 更晚 ts 文件里——读路径据此按创建 ts 判 newest-wins（见 memtable.go getFromSSTables）。
-// 若引入 overlap-aware / 部分选择或跨层合并，必须同时确保「低 level = 更新」进入 tie-break，
-// 并把 recency 显式化（per-key 序号），否则合并会静默选中陈旧值。
+// 若引入 overlap-aware / 部分选择或跨层 compaction，必须同时确保「低 level = 更新」进入 tie-break，
+// 并把 recency 显式化（per-key 序号），否则 compaction 会静默选中陈旧值。
 func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableMeta {
 	if len(files) == 0 {
 		return nil

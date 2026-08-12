@@ -107,7 +107,7 @@ func TestCompactionBench(t *testing.T) {
 	mt2.CompactSSTable(0)
 	restartMerge := time.Since(t0)
 	after := ReadCompactionStats()
-	t.Logf("重启后首轮 compaction: 合并耗时=%v  写出=%.1fMiB（一次性重写全部数据）",
+	t.Logf("重启后首轮 compaction: 耗时=%v  写出=%.1fMiB（一次性重写全部数据）",
 		restartMerge, float64(after.CompactionBytes-before.CompactionBytes)/(1<<20))
 }
 

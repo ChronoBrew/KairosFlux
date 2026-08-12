@@ -14,14 +14,12 @@ import (
 	"github.com/NeverENG/BanDB/storage"
 )
 
-// CommandType 是写命令的类型。原先 Type 为裸 string，各调用点各自重复 "Put"/"Delete"
-// 字面量，switch 亦与字面量比较：拼错一个字母不会报错，命令会静默地既不写入也不删除
-// （switch 无匹配分支即落空）。
+// CommandType 是写命令的类型。具名类型 + 具名常量使拼写只存在此处一份，调用点不再重复
+// "Put"/"Delete" 字面量——散落的字面量一旦拼错，switch 会落空，命令既不写入也不删除。
 //
-// 改为具名类型 + 具名常量后，拼写只存在于此处一份，调用点不再重复字面量。需要说明的是
-// 这并非编译期强校验：无类型字符串常量可隐式转换为 CommandType，故 Type: "Pt" 仍能编译。
-// 真正的强校验需改为 int 枚举，但 Command 会被 json.Marshal 写入 Raft 日志，改动数值
-// 表示会破坏既有日志的兼容性，故此处保留字符串底层类型。
+// 它不是编译期强校验：无类型字符串常量可隐式转为 CommandType，故 Type: "Pt" 仍能编译。
+// 强校验需改为 int 枚举，但 Command 经 json.Marshal 写入 Raft 日志，改变数值表示会破坏
+// 既有日志的兼容性，故底层类型保持字符串。
 type CommandType string
 
 const (
@@ -48,7 +46,7 @@ type KVServer struct {
 	writeCount atomic.Int64
 }
 
-// NewFSM 创建 FSM，按运行模式初始化存储与持久化路径。
+// NewKVServer 创建 KVServer，按运行模式初始化存储与持久化路径。
 // standalone：构建存储层 WAL 并重放到 memtable，不启动 Raft。
 // raft：启动 Raft，写经其日志，不使用存储层 WAL。
 func NewKVServer() *KVServer {
@@ -147,8 +145,8 @@ func (k *KVServer) applyStandalone(cmd Command) error {
 }
 
 // checkpointInterval 每累计多少次写触发一次 WAL 自清洁重写。取 2×MaxMemTableSize：
-// 略高于单表刷盘阈值，保证 checkpoint 时通常已有历史数据落 SSTable 可回收，
-// 同时把 WAL 稳态大小约束在未刷盘热数据量级。
+// 略高于单表 flush 阈值，保证 checkpoint 时通常已有历史数据落 SSTable 可回收，
+// 同时把 WAL 稳态大小约束在未 flush 热数据量级。
 func checkpointInterval() int64 {
 	return int64(2 * config.G.MaxMemTableSize)
 }
@@ -165,7 +163,7 @@ func (k *KVServer) maybeCheckpoint() {
 	}
 }
 
-// Checkpoint 独占静默所有写后，把 WAL 整体重写为未刷盘热数据(active+dirty，含墓碑)
+// Checkpoint 独占静默所有写后，把 WAL 整体重写为未 flush 热数据(active+dirty，含墓碑)
 // 快照，回收已落 SSTable 的历史 WAL，令 WAL 大小有界。standalone 专用；raft 模式
 // 无存储层 WAL，为 no-op。
 func (k *KVServer) Checkpoint() {
