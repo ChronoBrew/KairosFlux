@@ -1,3 +1,12 @@
+// Package kvgrpc 是 BanDB 的 gRPC 传输实现，位于 internal/ 之下：它是内部传输，
+// 不是对外契约。
+//
+// 对外契约只有两样：client 包（Go SDK）与 BanNet 协议规范（见 README）。把 .proto
+// 交给使用方自行生成客户端，等于把内部传输实现当成公开 API——使用方要装 protoc 工具链、
+// 要理解 protobuf，还要跟着我们的 proto 变更走。需要多语言接入时，应当在此之上提供各语言
+// 的 SDK 或网关，而不是暴露 protobuf。
+//
+// Go 的 internal/ 由编译器强制：模块外的代码无法导入本包，故该边界不依赖口头约定。
 package kvgrpc
 
 import (
