@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NeverENG/BanDB/test_grpc"
+	"github.com/NeverENG/BanDB/kvgrpc"
 )
 
 type Config struct {
@@ -74,7 +74,7 @@ func (b *Benchmark) prePopulate() error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c, err := test_grpc.NewClient(b.cfg.Addr)
+			c, err := kvgrpc.NewClient(b.cfg.Addr)
 			if err != nil {
 				return
 			}
@@ -143,7 +143,7 @@ func (b *Benchmark) runPhase(dur time.Duration, stats *Stats) {
 }
 
 func (b *Benchmark) workerLoop(dur time.Duration, stopCh chan struct{}, stats *Stats) {
-	c, err := test_grpc.NewClient(b.cfg.Addr)
+	c, err := kvgrpc.NewClient(b.cfg.Addr)
 	if err != nil {
 		return
 	}

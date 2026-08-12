@@ -4,7 +4,7 @@
 // - protoc             v5.29.3
 // source: test_grpc/kv.proto
 
-package test_grpc
+package kvgrpc
 
 import (
 	context "context"
