@@ -147,6 +147,49 @@ OK
 > quit
 ```
 
+## Go SDK
+
+在自己的程序里接入用 `client` 包。它是并发安全的，应作为长生命周期对象复用——每次请求新建
+会丢掉连接池的全部收益。
+
+```go
+import "github.com/NeverENG/BanDB/client"
+
+c, err := client.New(client.Options{Addrs: []string{"127.0.0.1:8080"}})
+if err != nil {
+    return err
+}
+defer c.Close()
+
+if err := c.Put(ctx, []byte("order:1001"), []byte(`{"amount":128}`)); err != nil {
+    return err
+}
+
+v, err := c.Get(ctx, []byte("order:1001"))
+switch {
+case errors.Is(err, client.ErrKeyNotFound):
+    // 「查不到」是正常结果，不是故障：SDK 不会重试它
+case err != nil:
+    return err
+}
+```
+
+它为生产使用提供三件演示客户端没有的东西：
+
+- **连接池**：BanNet 是严格的请求-响应协议，一条连接收到响应才能发下一帧，故并发只能由多条
+  连接提供；池化同时免去每次请求的 TCP 握手。`PoolSize` 即客户端侧最大并发请求数。
+- **context**：超时与取消经 `context` 传入。请求中途取消也会立即生效（阻塞的读写无法被
+  context 直接打断，SDK 通过置连接 deadline 打断它）。
+- **有界重试**：服务端过载时专门返回 `overloaded` 状态以示可重试，SDK 据此指数退避重试，
+  次数由 `MaxRetries` 限定且受 context 截止时间约束。确定性的拒绝（键不存在、被策略丢弃）
+  不重试。
+
+错误一律为哨兵值，用 `errors.Is` 判别：`ErrKeyNotFound`、`ErrOverloaded`、`ErrDropped`、
+`ErrServer`、`ErrClosed`、`ErrProtocol`。
+
+多语言接入走 gRPC：`kvgrpc/kv.proto` 用 protoc 生成对应语言的客户端即可（当前 proto 覆盖
+Put/Get/Delete，不含 Scan）。
+
 BanNet 协议（定长帧头二进制）：
 
 ```text
