@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/binary"
+	"errors"
 	"log/slog"
 
 	"github.com/NeverENG/BanDB/bannet"
@@ -10,6 +11,7 @@ import (
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
 	"github.com/NeverENG/BanDB/service/cluster"
+	"github.com/NeverENG/BanDB/storage"
 )
 
 // KVStore 抽象出 Router 本地处理所需的 KV 能力（*KVServer 满足之）。抽成接口是为了
@@ -139,6 +141,12 @@ func sendErr(req bannet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusError))
 }
 
+// sendNotFound 写回「键不存在」响应。与 sendErr 分开，使客户端能把常规的查不到
+// 与服务端故障区分开——前者不应重试，后者可重试。
+func sendNotFound(req bannet.Request) {
+	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusNotFound))
+}
+
 // sendOverloaded 写回「网关过载 shed」响应；保证每请求恰好一个响应、且可被客户端识别重试。
 func sendOverloaded(req bannet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusOverloaded))
@@ -223,13 +231,21 @@ func (r *Router) handleGet(data []byte, request bannet.Request) {
 	var value []byte
 	if owner, fwd := r.forwardTarget(key); fwd {
 		v, found, err := r.peers.Get(owner, key)
-		if err != nil || !found {
+		if err != nil {
 			sendErr(request)
+			return
+		}
+		if !found { // 转发路径同样要区分「键不存在」与转发失败
+			sendNotFound(request)
 			return
 		}
 		value = v
 	} else {
 		v, err := r.store.Get(key)
+		if errors.Is(err, storage.ErrKeyNotFound) {
+			sendNotFound(request)
+			return
+		}
 		if err != nil {
 			sendErr(request)
 			return
