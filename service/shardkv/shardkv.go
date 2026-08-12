@@ -9,14 +9,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NeverENG/BanDB/Raft"
+	"github.com/NeverENG/BanDB/raft"
 	"github.com/NeverENG/BanDB/service/cluster"
 )
 
 // Shard 是一个分片：一个 Raft 组 + 该分片的 FSM store + 一个排空 ApplyCh 的 apply 循环。
 type Shard struct {
 	id     int
-	raft   *Raft.Raft
+	raft   *raft.Raft
 	store  KVStore
 	stopCh chan struct{}
 }
@@ -62,7 +62,7 @@ type Node struct {
 	shards     map[int]*Shard               // 仅本节点托管的分片
 	replicas   map[int][]string             // 每个分片的副本节点地址（全部分片）
 	readLB     map[int]*cluster.P2CBalancer // 本节点不托管的分片：转发读的副本 LB（延迟感知）
-	groupSrv   *Raft.RaftGroupServer
+	groupSrv   *raft.RaftGroupServer
 
 	served atomic.Int64 // 本节点作为副本服务的转发读次数（观测 P2C 在副本间的分布）
 }
@@ -83,7 +83,7 @@ func NewNode(addrs []string, me, shardCount, rf int, dataDir string) *Node {
 		shards:     make(map[int]*Shard),
 		replicas:   make(map[int][]string, shardCount),
 		readLB:     make(map[int]*cluster.P2CBalancer),
-		groupSrv:   Raft.NewRaftGroupServer(),
+		groupSrv:   raft.NewRaftGroupServer(),
 	}
 	for sid := 0; sid < shardCount; sid++ {
 		reps := cluster.ShardReplicas(ring, sid, rf)
@@ -94,7 +94,7 @@ func NewNode(addrs []string, me, shardCount, rf int, dataDir string) *Node {
 			n.readLB[sid] = cluster.NewP2CBalancer(reps, 0)
 			continue
 		}
-		r := Raft.NewRaftGroup(sid, reps, meInSet, filepath.Join(dataDir, "shard"+strconv.Itoa(sid)))
+		r := raft.NewRaftGroup(sid, reps, meInSet, filepath.Join(dataDir, "shard"+strconv.Itoa(sid)))
 		sh := &Shard{id: sid, raft: r, store: newMemStore(), stopCh: make(chan struct{})}
 		go sh.applyLoop()
 		n.shards[sid] = sh
@@ -144,7 +144,7 @@ func (n *Node) propose(c command) error {
 		return err
 	}
 	// 路由到该分片的副本集组 leader；本节点是否为副本无关——ProposeToGroup 直接拨向副本地址。
-	return Raft.ProposeToGroup(n.replicas[sid], sid, b, time.Second, 5*time.Second)
+	return raft.ProposeToGroup(n.replicas[sid], sid, b, time.Second, 5*time.Second)
 }
 
 // LocalGet 从本节点的分片副本读取（最终一致：apply 异步，可能落后于最新提交）。

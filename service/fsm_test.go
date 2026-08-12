@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/Raft"
 	"github.com/NeverENG/BanDB/config"
+	"github.com/NeverENG/BanDB/raft"
 )
 
 func setupTest(t *testing.T) (*KVServer, func()) {
@@ -57,7 +57,7 @@ func TestFSM_EmptyValueNotTombstone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncodeCommand: %v", err)
 	}
-	fsm.Apply(Raft.LogEntry{Index: 0, Term: 1, Command: cmdBytes})
+	fsm.Apply(raft.LogEntry{Index: 0, Term: 1, Command: cmdBytes})
 
 	val, err := fsm.Get([]byte("ek"))
 	if err != nil {
@@ -83,7 +83,7 @@ func TestFSM_BasicOperation(t *testing.T) {
 		t.Fatalf("EncodeCommand failed: %v", err)
 	}
 
-	entry := Raft.LogEntry{
+	entry := raft.LogEntry{
 		Index:   0,
 		Term:    1,
 		Command: cmdBytes,
@@ -110,7 +110,7 @@ func TestFSM_DeleteOperation(t *testing.T) {
 		Value: []byte("value1"),
 	}
 	putBytes, _ := EncodeCommand(putCmd)
-	fsm.Apply(Raft.LogEntry{Index: 0, Term: 1, Command: putBytes})
+	fsm.Apply(raft.LogEntry{Index: 0, Term: 1, Command: putBytes})
 
 	val, _ := fsm.Get([]byte("key1"))
 	if string(val) != "value1" {
@@ -122,7 +122,7 @@ func TestFSM_DeleteOperation(t *testing.T) {
 		Key:  []byte("key1"),
 	}
 	delBytes, _ := EncodeCommand(delCmd)
-	fsm.Apply(Raft.LogEntry{Index: 1, Term: 1, Command: delBytes})
+	fsm.Apply(raft.LogEntry{Index: 1, Term: 1, Command: delBytes})
 
 	val, err := fsm.Get([]byte("key1"))
 	if err == nil && val != nil {
@@ -136,11 +136,11 @@ func TestFSM_UpdateOperation(t *testing.T) {
 
 	cmd1 := Command{Type: "Put", Key: []byte("key1"), Value: []byte("value1")}
 	cmdBytes1, _ := EncodeCommand(cmd1)
-	fsm.Apply(Raft.LogEntry{Index: 0, Term: 1, Command: cmdBytes1})
+	fsm.Apply(raft.LogEntry{Index: 0, Term: 1, Command: cmdBytes1})
 
 	cmd2 := Command{Type: "Put", Key: []byte("key1"), Value: []byte("value2")}
 	cmdBytes2, _ := EncodeCommand(cmd2)
-	fsm.Apply(Raft.LogEntry{Index: 1, Term: 1, Command: cmdBytes2})
+	fsm.Apply(raft.LogEntry{Index: 1, Term: 1, Command: cmdBytes2})
 
 	val, _ := fsm.Get([]byte("key1"))
 	if string(val) != "value2" {
@@ -205,13 +205,13 @@ func TestWaitUntilReady_SingleNodeAcceptsImmediateWrite(t *testing.T) {
 	go fsm.Run()
 
 	// 选主超时下界 150ms，故刚创建时必为非 Leader —— 这正是 #86 的失败窗口。
-	if state, _ := fsm.GetRaft().GetState(); state == Raft.Leader {
+	if state, _ := fsm.GetRaft().GetState(); state == raft.Leader {
 		t.Fatalf("expected non-Leader before election window elapses, got Leader")
 	}
 
 	fsm.WaitUntilReady()
 
-	if state, _ := fsm.GetRaft().GetState(); state != Raft.Leader {
+	if state, _ := fsm.GetRaft().GetState(); state != raft.Leader {
 		t.Fatalf("after WaitUntilReady expected Leader, got %v", state)
 	}
 

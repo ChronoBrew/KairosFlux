@@ -1,4 +1,4 @@
-package Raft
+package raft
 
 import (
 	"net/rpc"
