@@ -1,4 +1,4 @@
-package istorage
+package storage
 
 import (
 	"encoding/binary"

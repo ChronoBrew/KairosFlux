@@ -1,4 +1,4 @@
-package istorage
+package storage
 
 type IMemTable interface {
 	Get(key []byte) ([]byte, error)
@@ -17,4 +17,17 @@ type IMemTable interface {
 	// FlushToSSTable 将 entries 写入临时表并立即 Flush 到 SSTable
 	// 不经过 active 表，不阻塞正常读写
 	FlushToSSTable(entries []LogEntry) error
+}
+type ISSTable interface {
+	LoadSSTableMetaList()
+	AddMata(meta *SSTableMata)
+	RemoveMata(target *SSTableMata)
+	GetLevelFiles(level int) []*SSTableMata
+	GetAllMata() []*SSTableMata
+
+	WriteToSSTable(entry []LogEntry) error
+	ReadFromSSTable(filepath string, key []byte) ([]byte, bool)
+	ReadAllFromSSTable(filepath string) ([]*LogEntry, error)
+	MergeSSTable(files []*SSTableMata, targetLevel int) *SSTableMata
+	DeleteSSTable(meta *SSTableMata)
 }

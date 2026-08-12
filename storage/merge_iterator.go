@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"bytes"

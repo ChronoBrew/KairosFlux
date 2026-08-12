@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/zstorage"
 )
 
 func setupTestEngine(t *testing.T) (*Engine, func()) {
@@ -19,7 +18,7 @@ func setupTestEngine(t *testing.T) (*Engine, func()) {
 	config.G.SSTablePath = dir
 	config.G.MaxMemTableSize = 100
 
-	memTable := zstorage.NewMemTable()
+	memTable := NewMemTable()
 	engine := NewEngine(memTable)
 
 	// 启动 FlushWorker goroutine
@@ -170,7 +169,7 @@ func TestEngine_PutTriggersFlush(t *testing.T) {
 	config.G.WALPath = filepath.Join(dir, "wal.log")
 	config.G.SSTablePath = dir
 
-	memTable := zstorage.NewMemTable()
+	memTable := NewMemTable()
 	engine := NewEngine(memTable)
 
 	for i := 0; i < 10; i++ {

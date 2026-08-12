@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"bytes"
@@ -11,10 +11,9 @@ import (
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/pkg/credit"
 	"github.com/NeverENG/BanDB/pkg/metrics"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
-var _ istorage.IMemTable = &MemTable{}
+var _ IMemTable = &MemTable{}
 
 var (
 	maxLevel    = config.G.MaxMemTableLevel
@@ -220,7 +219,7 @@ func (m *MemTable) ScanRange(start, end []byte, fn func(key, value []byte) bool)
 // 与 ScanRange 不同：保留墓碑(value==nil)。用于 WAL checkpoint 重写——未刷盘的
 // 热数据（含删除墓碑）必须完整保留，否则重放时被删的 key 会从 SSTable 复活。
 // 拷贝底层字节，返回后可安全持有。
-func (m *MemTable) SnapshotLive() []istorage.LogEntry {
+func (m *MemTable) SnapshotLive() []LogEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -232,7 +231,7 @@ func (m *MemTable) SnapshotLive() []istorage.LogEntry {
 		d = m.dirty.head.Next[0]
 	}
 
-	out := make([]istorage.LogEntry, 0)
+	out := make([]LogEntry, 0)
 	for a != nil || d != nil {
 		var key, val []byte
 		switch {
@@ -247,7 +246,7 @@ func (m *MemTable) SnapshotLive() []istorage.LogEntry {
 			a = a.Next[0]
 			d = d.Next[0]
 		}
-		e := istorage.LogEntry{Key: append([]byte(nil), key...)}
+		e := LogEntry{Key: append([]byte(nil), key...)}
 		if val != nil { // 保留 nil-vs-空切片语义：nil=墓碑，非 nil=普通写
 			e.Value = append([]byte(nil), val...)
 		}
@@ -483,12 +482,12 @@ func (m *MemTable) FlushWorker() {
 }
 
 // collectAllEntry 收集跳表中的所有 entry（从第 0 层按序遍历）
-func collectAllEntry(sl *SkipList) []istorage.LogEntry {
-	logEntries := make([]istorage.LogEntry, 0, sl.size)
+func collectAllEntry(sl *SkipList) []LogEntry {
+	logEntries := make([]LogEntry, 0, sl.size)
 
 	p := sl.head.Next[0]
 	for p != nil {
-		logEntries = append(logEntries, istorage.LogEntry{
+		logEntries = append(logEntries, LogEntry{
 			Key:   p.Key,
 			Value: p.Value,
 		})
@@ -531,7 +530,7 @@ func (m *MemTable) getFromSSTables(key []byte) ([]byte, bool) {
 
 // FlushToSSTable 将 entries 写入临时跳表并立即 Flush 到 SSTable
 // 不经过 active 表，不影响正常读写，专用于快照重放等场景
-func (m *MemTable) FlushToSSTable(entries []istorage.LogEntry) error {
+func (m *MemTable) FlushToSSTable(entries []LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}

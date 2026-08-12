@@ -1,4 +1,4 @@
-package zstorage
+package storage
 
 import (
 	"fmt"
@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/storage/istorage"
 )
 
 // TestCompactionBench 是 compaction 压测台：确定性地驱动真实的 flush + compaction 级联，
@@ -44,11 +43,11 @@ func TestCompactionBench(t *testing.T) {
 	var maxMergeStall time.Duration
 
 	for f := 0; f < flushes; f++ {
-		entries := make([]istorage.LogEntry, chunkSize)
+		entries := make([]LogEntry, chunkSize)
 		for i := 0; i < chunkSize; i++ {
 			k := []byte(fmt.Sprintf("key%08d", global))
 			global++
-			entries[i] = istorage.LogEntry{Key: k, Value: val}
+			entries[i] = LogEntry{Key: k, Value: val}
 			ingestedBytes += int64(len(k) + valueSize)
 		}
 		if err := mt.FlushToSSTable(entries); err != nil {
