@@ -190,16 +190,38 @@ case err != nil:
 多语言接入走 gRPC：`kvgrpc/kv.proto` 用 protoc 生成对应语言的客户端即可（当前 proto 覆盖
 Put/Get/Delete，不含 Scan）。
 
-BanNet 协议（定长帧头二进制）：
+BanNet 协议：6 字节定长帧头 + 变长 msgID + 负载，多字节整数一律小端。
 
 ```text
-[dataLen: uint32] [msgID: uint32] [payload]
+[dataLen: uint32 LE] [msgIDLen: uint16 LE] [msgID: bytes] [data: bytes]
 ```
 
-| msgID | 操作 | 负载 |
-| --- | --- | --- |
-| `1` | PUT | `keyLen:uint32 + valueLen:uint32 + key + value` |
-| `2` | GET | `keyLen:uint32 + key` |
-| `3` | DELETE | `keyLen:uint32 + key` |
+`dataLen` 只计 `data` 的长度，不含 msgID。msgID 是 ASCII 字符串而非数字：
 
-响应首字节为状态标志（`0x00` 成功 / `0x01` 失败）；GET 成功时其后接 `valueLen:uint32 + value`。
+| msgID | 操作 | data 负载 |
+| --- | --- | --- |
+| `PUT` | 写入 | `keyLen:uint32 LE + valueLen:uint32 LE + key + value` |
+| `GET` | 读取 | `keyLen:uint32 LE + key` |
+| `DEL` | 删除 | `keyLen:uint32 LE + key` |
+| `SCAN` | 范围查询 | 见 `pkg/proto` 的 `EncodeScanRequest` |
+
+响应同样是上述帧结构（msgID 为 `OK` 或 `ERR`），其 data 以状态字段开头——状态是**字符串**，
+不是单字节标志：
+
+```text
+[statusLen: uint8] [status: bytes] [该操作特有的其余字节]
+```
+
+| status | 含义 | 客户端应如何处理 |
+| --- | --- | --- |
+| `ok` | 成功 | GET 成功时其后接 `valueLen:uint32 LE + value` |
+| `notfound` | key 不存在（或已删除） | 正常查询结果，不应重试 |
+| `overloaded` | 被准入控制过载拒绝 | 退避后可重试 |
+| `dropped` | 被落盘前钩子按策略丢弃 | 确定性拒绝，重试无意义 |
+| `error` | 服务端内部错误 | 可重试 |
+
+客户端只应把 `ok` 视为成功；未知状态一律按失败处理，从而对将来新增的状态保持兼容。
+`notfound` 与 `error` 分开正是 SDK 能提供 `ErrKeyNotFound` 的前提。
+
+（服务端编解码见 `bannet/datapack.go`，客户端侧见 `client/conn.go`；两者的一致性由
+`client/wire_compat_test.go` 逐字节交叉校验。）
