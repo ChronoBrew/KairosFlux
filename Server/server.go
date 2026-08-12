@@ -1,3 +1,7 @@
+//go:build !pprof
+
+// 与 server_pprof.go(//go:build pprof) 互斥：两者各自定义 main，缺少本约束会使
+// `go build -tags pprof` 因 main 重复声明而失败，pprof 构建不可用。
 package main
 
 import (
