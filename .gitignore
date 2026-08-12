@@ -53,3 +53,7 @@ bin/
 .claude/
 # pprof 采样产物
 *.prof
+# 本地的面试/导学准备材料与 agent 说明，随个人而异，不入库
+导学-BanDB.md
+面经-BanDB.md
+AGENTS.md
