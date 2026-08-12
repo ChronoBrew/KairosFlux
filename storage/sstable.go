@@ -68,12 +68,12 @@ type SSTable struct {
 	// 避免与（测试中）并发修改全局配置形成数据竞争。
 	dir string
 
-	// mata 是元数据主副本，仅在持 mu 时修改；每次修改后即时发布一份不可变快照到 snapshot。
+	// metas 是元数据主副本，仅在持 mu 时修改；每次修改后即时发布一份不可变快照到 snapshot。
 	// 读路径（每次点查都要遍历元数据）从 snapshot 无锁读取，避免逐次加锁与整表拷贝。
 	// 写侧为 copy-on-write：变更频率为刷盘/合并级，远低于读。
 	// 快照按值不可变——调用方只可读取，不得原地修改其元素顺序或内容。
-	mata       []*SSTableMata
-	snapshot   atomic.Pointer[[]*SSTableMata]
+	metas      []*SSTableMeta
+	snapshot   atomic.Pointer[[]*SSTableMeta]
 	mu         sync.RWMutex
 	indexCache map[string]*blockIndex
 	idxMu      sync.RWMutex
@@ -95,20 +95,20 @@ type SSTable struct {
 func NewSSTable() *SSTable {
 	ss := &SSTable{
 		dir:        config.G.SSTablePath,
-		mata:       make([]*SSTableMata, 0),
+		metas:      make([]*SSTableMeta, 0),
 		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
 		fdCache:    make(map[string]*os.File),
 		blocks:     newBlockCache(config.G.BlockCacheBytes),
 	}
-	ss.publishMata()
+	ss.publishMetas()
 	return ss
 }
 
-// publishMata 发布 mata 的不可变快照供读路径无锁获取。调用方须持 ss.mu。
-func (ss *SSTable) publishMata() {
-	snap := make([]*SSTableMata, len(ss.mata))
-	copy(snap, ss.mata)
+// publishMetas 发布 metas 的不可变快照供读路径无锁获取。调用方须持 ss.mu。
+func (ss *SSTable) publishMetas() {
+	snap := make([]*SSTableMeta, len(ss.metas))
+	copy(snap, ss.metas)
 	ss.snapshot.Store(&snap)
 }
 
@@ -159,7 +159,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		return
 	}
 
-	metas := make([]*SSTableMata, 0)
+	metas := make([]*SSTableMeta, 0)
 	count := 0
 
 	for _, entry := range entries {
@@ -197,7 +197,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 			continue
 		}
 
-		meta := &SSTableMata{
+		meta := &SSTableMeta{
 			Level:        parseLevelFromName(entry.Name()), // 从文件名恢复 level，避免重启塌缩到 L0
 			Filepath:     fullPath,
 			MinKey:       keyBytes,
@@ -220,7 +220,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		count++
 	}
 
-	// 按创建时间戳升序重建 mata，等价于内存中的创建（append）序——读路径靠 mata 逆序判定
+	// 按创建时间戳升序重建 metas，等价于内存中的创建（append）序——读路径靠 metas 逆序判定
 	// newest-wins，按文件名字符串排序会让旧 merged 盖过新 L0 而返回陈旧值。时间戳相同时
 	// 退回文件名比较以保证确定性。
 	sort.Slice(metas, func(i, j int) bool {
@@ -233,8 +233,8 @@ func (ss *SSTable) LoadSSTableMetaList() {
 	})
 
 	ss.mu.Lock()
-	ss.mata = metas
-	ss.publishMata()
+	ss.metas = metas
+	ss.publishMetas()
 	ss.mu.Unlock()
 
 	for _, meta := range metas {
@@ -337,7 +337,7 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 	if err != nil {
 		return fmt.Errorf("stat SSTable file failed: %v", err)
 	}
-	meta := &SSTableMata{
+	meta := &SSTableMeta{
 		Level:        0,
 		Filepath:     fullPath,
 		MinKey:       entries[0].Key,
@@ -345,14 +345,14 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 		Size:         info.Size(),
 		MaxKeyLoaded: true,
 	}
-	ss.AddMata(meta)
+	ss.AddMeta(meta)
 	flushBytesWritten.Add(info.Size())
 	return nil
 }
 
-// GetAllMata 返回元数据的不可变快照，按落盘先后升序（最旧在前）。
+// GetAllMetas 返回元数据的不可变快照，按落盘先后升序（最旧在前）。
 // 无锁零拷贝；调用方只可读取，不得原地修改。切片元素是共享指针，非对象副本。
-func (ss *SSTable) GetAllMata() []*SSTableMata {
+func (ss *SSTable) GetAllMetas() []*SSTableMeta {
 	if snap := ss.snapshot.Load(); snap != nil {
 		return *snap
 	}
@@ -676,7 +676,7 @@ func (ss *SSTable) readFromSSTableFull(filepath string, key []byte) ([]byte, boo
 // 更晚 ts 文件里——读路径据此按创建 ts 判 newest-wins（见 memtable.go getFromSSTables）。
 // 若引入 overlap-aware / 部分选择或跨层合并，必须同时确保「低 level = 更新」进入 tie-break，
 // 并把 recency 显式化（per-key 序号），否则合并会静默选中陈旧值。
-func (ss *SSTable) MergeSSTable(files []*SSTableMata, targetLevel int) *SSTableMata {
+func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableMeta {
 	if len(files) == 0 {
 		return nil
 	}
@@ -815,7 +815,7 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMata, targetLevel int) *SSTableM
 		return nil
 	}
 
-	newMeta := &SSTableMata{
+	newMeta := &SSTableMeta{
 		Level:        targetLevel,
 		Filepath:     fullPath,
 		MinKey:       minKey,
@@ -824,39 +824,39 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMata, targetLevel int) *SSTableM
 		MaxKeyLoaded: true,
 	}
 
-	ss.AddMata(newMeta)
+	ss.AddMeta(newMeta)
 	compactionBytesWritten.Add(info.Size())
 	slog.Info("SSTable merged", "level", targetLevel, "file", filename, "keys", count, "size", info.Size())
 
 	return newMeta
 }
-func (ss *SSTable) AddMata(meta *SSTableMata) {
+func (ss *SSTable) AddMeta(meta *SSTableMeta) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
-	ss.mata = append(ss.mata, meta)
-	ss.publishMata()
+	ss.metas = append(ss.metas, meta)
+	ss.publishMetas()
 }
 
-func (ss *SSTable) RemoveMata(target *SSTableMata) {
+func (ss *SSTable) RemoveMeta(target *SSTableMeta) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 
-	for i, meta := range ss.mata {
+	for i, meta := range ss.metas {
 		if meta == target {
-			ss.mata = append(ss.mata[:i], ss.mata[i+1:]...)
-			ss.publishMata()
+			ss.metas = append(ss.metas[:i], ss.metas[i+1:]...)
+			ss.publishMetas()
 			return
 		}
 	}
 }
 
 // GetLevelFiles 获取指定层级的文件列表
-func (ss *SSTable) GetLevelFiles(level int) []*SSTableMata {
+func (ss *SSTable) GetLevelFiles(level int) []*SSTableMeta {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 
-	var result []*SSTableMata
-	for _, meta := range ss.mata {
+	var result []*SSTableMeta
+	for _, meta := range ss.metas {
 		if meta.Level == level {
 			result = append(result, meta)
 		}
@@ -864,7 +864,7 @@ func (ss *SSTable) GetLevelFiles(level int) []*SSTableMata {
 	return result
 }
 
-func (ss *SSTable) DeleteSSTable(meta *SSTableMata) {
+func (ss *SSTable) DeleteSSTable(meta *SSTableMeta) {
 	if err := os.Remove(meta.Filepath); err != nil {
 		slog.Warn("failed to delete SSTable", "file", meta.Filepath, "error", err)
 	}

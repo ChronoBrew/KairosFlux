@@ -497,18 +497,18 @@ func collectAllEntry(sl *SkipList) []LogEntry {
 }
 
 func (m *MemTable) getFromSSTables(key []byte) ([]byte, bool) {
-	// 新→旧遍历：mata 按落盘先后追加（最旧在前），故逆序取首个命中即为最新版本，
+	// 新→旧遍历：metas 按落盘先后追加（最旧在前），故逆序取首个命中即为最新版本，
 	// 避免旧 SSTable 的陈旧值盖过新 SSTable 中对同一 key 的覆盖写。
 	//
-	// 【正确性不变量 / 慎改】此处判定 newest-wins 只看 mata 顺序、不看 level。它依赖
+	// 【正确性不变量 / 慎改】此处判定 newest-wins 只看 metas 顺序、不看 level。它依赖
 	// 「同一 key 的最新值所在文件的创建 ts 最大」——这是当前「compaction 合并整层」机制
 	// 的涌现性质（每次 L0 compaction 卷走全部 L0，新写不会被落在浅层而其它数据继续下沉），
-	// 不是构造保证。重启由 LoadSSTableMetaList 按创建 ts 重建 mata 维持之（见其注释与
+	// 不是构造保证。重启由 LoadSSTableMetaList 按创建 ts 重建 metas 维持之（见其注释与
 	// recency_test.go / recency_fuzz_test.go 守卫）。
 	// 若改为 overlap-aware / 部分选择 compaction，该不变量会被打破（新写可滞留浅层、旧值
 	// 经深层合并获得更大 ts 而倒挂），必须改用 per-key 序号等显式 recency，否则会无声重新
 	// 引入「重启后读到陈旧值」。
-	metas := m.sst.GetAllMata()
+	metas := m.sst.GetAllMetas()
 	for i := len(metas) - 1; i >= 0; i-- {
 		meta := metas[i]
 		// 首次访问时自动加载 MaxKey
@@ -608,7 +608,7 @@ func (m *MemTable) CompactSSTable(startLevel int) {
 
 		for _, meta := range files {
 			m.sst.DeleteSSTable(meta)
-			m.sst.RemoveMata(meta)
+			m.sst.RemoveMeta(meta)
 		}
 
 		slog.Info("level compaction completed", "level", level)
