@@ -89,6 +89,10 @@ type SSTable struct {
 	// 中关闭并剔除，否则每轮 compaction 泄漏一个 fd。
 	fdCache map[string]*os.File
 	fdMu    sync.RWMutex
+
+	// blocks 缓存已读取的数据块，使热数据点查不再触达磁盘、也不再逐次分配整块缓冲。
+	// 预算取自 config.BlockCacheBytes（<=0 关闭，此时为 nil，读路径退化为每次 ReadAt）。
+	blocks *blockCache
 }
 
 func NewSSTable() *SSTable {
@@ -98,6 +102,7 @@ func NewSSTable() *SSTable {
 		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
 		fdCache:    make(map[string]*os.File),
+		blocks:     newBlockCache(config.G.BlockCacheBytes),
 	}
 	ss.publishMata()
 	return ss
@@ -600,14 +605,19 @@ func (ss *SSTable) searchBlock(filepath string, key []byte, bi *blockIndex) ([]b
 		return nil, false
 	}
 
-	f := ss.openFile(filepath)
-	if f == nil {
-		return nil, false
-	}
-	buf := make([]byte, end-start)
-	// ReadAt 不使用文件内偏移，故共享句柄可被并发读者安全复用。
-	if _, err := f.ReadAt(buf, start); err != nil {
-		return nil, false
+	// 命中缓存的块由多个读者共享，故下方扫描只读、且命中时对 value 另行拷贝。
+	buf, cached := ss.blocks.get(filepath, start)
+	if !cached {
+		f := ss.openFile(filepath)
+		if f == nil {
+			return nil, false
+		}
+		buf = make([]byte, end-start)
+		// ReadAt 不使用文件内偏移，故共享句柄可被并发读者安全复用。
+		if _, err := f.ReadAt(buf, start); err != nil {
+			return nil, false
+		}
+		ss.blocks.put(filepath, start, buf)
 	}
 
 	for off := 0; off+4 <= len(buf); {
@@ -861,8 +871,10 @@ func (ss *SSTable) DeleteSSTable(meta *istorage.SSTableMata) {
 	if err := os.Remove(meta.Filepath); err != nil {
 		slog.Warn("failed to delete SSTable", "file", meta.Filepath, "error", err)
 	}
-	// 与索引/布隆缓存同时剔除常驻句柄，否则每轮 compaction 泄漏一个 fd。
+	// 与索引/布隆缓存同时剔除常驻句柄与已缓存数据块，否则每轮 compaction 泄漏一个 fd、
+	// 并让已删文件的块长期占用缓存预算。
 	ss.closeFile(meta.Filepath)
+	ss.blocks.dropFile(meta.Filepath)
 	ss.idxMu.Lock()
 	delete(ss.indexCache, meta.Filepath)
 	ss.idxMu.Unlock()
