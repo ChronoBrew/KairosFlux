@@ -1,4 +1,4 @@
-package banNet
+package bannet
 
 import (
 	"bufio"
@@ -10,16 +10,15 @@ import (
 	"sync"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/network/banIface"
 )
 
-var _ banIface.IConnect = &Connection{}
+var _ IConnect = &Connection{}
 
 type Connection struct {
-	TCPServer banIface.IServer // 注入 ConnMgr
-	Conn      *net.TCPConn     // 底层 TCP 连接
-	ConnID    uint32           // 连接唯一 ID
-	MsgHandle banIface.IMsgHandle
+	TCPServer IServer      // 注入 ConnMgr
+	Conn      *net.TCPConn // 底层 TCP 连接
+	ConnID    uint32       // 连接唯一 ID
+	MsgHandle IMsgHandle
 
 	// 生命周期：ctx 是唯一的取消信号。Stop 调 cancel() 广播退出、并关闭 Conn 以解除
 	// Reader 的阻塞读；Writer 与 Start 都 select ctx.Done()。stopOnce 保证 Stop 幂等。
@@ -34,7 +33,7 @@ type Connection struct {
 	propertyLock sync.RWMutex
 }
 
-func NewConnection(conn *net.TCPConn, connID uint32, handle banIface.IMsgHandle, server banIface.IServer) *Connection {
+func NewConnection(conn *net.TCPConn, connID uint32, handle IMsgHandle, server IServer) *Connection {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Connection{
 		TCPServer:   server,

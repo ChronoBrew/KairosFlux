@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/NeverENG/BanDB/network/banIface"
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/pkg/proto"
 )
@@ -47,21 +47,21 @@ func NewFilter(redactFields []string, maxValueLen int, dropBackward bool) *Filte
 }
 
 // Handle 实现 PreHandle 钩子签名。返回 HookDrop 表示丢弃本帧。
-func (f *Filter) Handle(req banIface.IRequest) banIface.HookAction {
+func (f *Filter) Handle(req bannet.IRequest) bannet.HookAction {
 	// 钩子只针对写入帧：GET/DELETE 的负载格式不同，放行不动。
 	if req.GetMsgID() != proto.MsgPut {
-		return banIface.HookPass
+		return bannet.HookPass
 	}
 
 	key, value, ok := parsePut(req.GetMsgData())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
-		return banIface.HookDrop // 畸形帧：长度字段与实际数据不符
+		return bannet.HookDrop // 畸形帧：长度字段与实际数据不符
 	}
 
 	if f.maxValueLen > 0 && len(value) > f.maxValueLen {
 		metrics.FramesDroppedOversized.Add(1)
-		return banIface.HookDrop // 畸形帧：value 超过上限
+		return bannet.HookDrop // 畸形帧：value 超过上限
 	}
 
 	// 时间戳单调性校验（best-effort）：DoMsgHandle 的 work-stealing 在背压下
@@ -74,7 +74,7 @@ func (f *Filter) Handle(req banIface.IRequest) banIface.HookAction {
 			if seen && ts <= last {
 				f.mu.Unlock()
 				metrics.FramesDroppedNonMonotonic.Add(1)
-				return banIface.HookDrop // 回退/重放帧
+				return bannet.HookDrop // 回退/重放帧
 			}
 			f.lastTS[device] = ts
 			f.mu.Unlock()
@@ -86,7 +86,7 @@ func (f *Filter) Handle(req banIface.IRequest) banIface.HookAction {
 		req.SetMsgData(encodePut(key, newValue))
 	}
 
-	return banIface.HookPass
+	return bannet.HookPass
 }
 
 // parsePut 解析 PUT 负载 keyLen(u32 LE)+valueLen(u32 LE)+key+value。

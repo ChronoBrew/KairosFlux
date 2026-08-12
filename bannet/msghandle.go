@@ -1,29 +1,28 @@
-package banNet
+package bannet
 
 import (
 	"log/slog"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/network/banIface"
 )
 
 type MsgHandle struct {
-	Arip           map[string]banIface.IRouter
+	Arip           map[string]IRouter
 	WorkerPoolSize uint32
-	TaskQueue      []chan banIface.IRequest
+	TaskQueue      []chan IRequest
 }
 
 func NewMsgHandle() *MsgHandle {
 	return &MsgHandle{
-		Arip:           make(map[string]banIface.IRouter),
+		Arip:           make(map[string]IRouter),
 		WorkerPoolSize: config.G.WorkerPoolSize,
-		TaskQueue:      make([]chan banIface.IRequest, config.G.WorkerPoolSize),
+		TaskQueue:      make([]chan IRequest, config.G.WorkerPoolSize),
 	}
 }
 
-var _ banIface.IMsgHandle = &MsgHandle{}
+var _ IMsgHandle = &MsgHandle{}
 
-func (m *MsgHandle) AddRouter(msgID string, r banIface.IRouter) {
+func (m *MsgHandle) AddRouter(msgID string, r IRouter) {
 	if _, ok := m.Arip[msgID]; ok {
 		slog.Warn("banNet duplicate route registration ignored", "msgID", msgID)
 		return
@@ -31,13 +30,13 @@ func (m *MsgHandle) AddRouter(msgID string, r banIface.IRouter) {
 	m.Arip[msgID] = r
 }
 
-func (m *MsgHandle) DoMsgHandle(request banIface.IRequest) {
+func (m *MsgHandle) DoMsgHandle(request IRequest) {
 	handler, ok := m.Arip[request.GetMsgID()]
 	if !ok {
 		slog.Error("banNet unregistered msgID", "msgID", request.GetMsgID())
 		return
 	}
-	if handler.PreHandle(request) == banIface.HookDrop {
+	if handler.PreHandle(request) == HookDrop {
 		return
 	}
 	handler.Handle(request)
@@ -46,12 +45,12 @@ func (m *MsgHandle) DoMsgHandle(request banIface.IRequest) {
 
 func (m *MsgHandle) StartWorkerPool() {
 	for i := 0; i < int(m.WorkerPoolSize); i++ {
-		m.TaskQueue[i] = make(chan banIface.IRequest, config.G.MaxWorkerTaskLen)
+		m.TaskQueue[i] = make(chan IRequest, config.G.MaxWorkerTaskLen)
 		go m.StartOneWorker(i, m.TaskQueue[i])
 	}
 }
 
-func (m *MsgHandle) SendMsgToTaskQueue(request banIface.IRequest) {
+func (m *MsgHandle) SendMsgToTaskQueue(request IRequest) {
 	workerID := request.GetConnection().GetConnID() % m.WorkerPoolSize
 
 	// 优先投递到专属 Worker
@@ -75,7 +74,7 @@ func (m *MsgHandle) SendMsgToTaskQueue(request banIface.IRequest) {
 	m.TaskQueue[workerID] <- request
 }
 
-func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan banIface.IRequest) {
+func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan IRequest) {
 	slog.Debug("banNet worker started", "workerID", workerID)
 	// taskQueue 关闭时 range 自然结束，无需显式判空。
 	for request := range taskQueue {

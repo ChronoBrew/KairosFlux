@@ -1,15 +1,13 @@
-package banNet
-
-import "github.com/NeverENG/BanDB/network/banIface"
+package bannet
 
 type Request struct {
-	msg  banIface.IMessage
-	conn banIface.IConnect
+	msg  IMessage
+	conn IConnect
 }
 
-var _ banIface.IRequest = &Request{}
+var _ IRequest = &Request{}
 
-func NewRequest(msg banIface.IMessage, conn banIface.IConnect) *Request {
+func NewRequest(msg IMessage, conn IConnect) *Request {
 	return &Request{
 		msg:  msg,
 		conn: conn,
@@ -29,6 +27,6 @@ func (req *Request) GetMsgID() string {
 	return req.msg.GetMsgID()
 }
 
-func (req *Request) GetConnection() banIface.IConnect {
+func (req *Request) GetConnection() IConnect {
 	return req.conn
 }

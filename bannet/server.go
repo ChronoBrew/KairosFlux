@@ -1,4 +1,4 @@
-package banNet
+package bannet
 
 import (
 	"fmt"
@@ -10,7 +10,6 @@ import (
 	"syscall"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/network/banIface"
 )
 
 type Server struct {
@@ -19,11 +18,11 @@ type Server struct {
 	Name      string
 	IPVersion string
 	ExitCh    chan os.Signal
-	MsgHandle banIface.IMsgHandle
-	ConnMgr   banIface.IConnManager
+	MsgHandle IMsgHandle
+	ConnMgr   IConnManager
 
-	ConnStartFunc func(conn banIface.IConnect)
-	ConnStopFunc  func(conn banIface.IConnect)
+	ConnStartFunc func(conn IConnect)
+	ConnStopFunc  func(conn IConnect)
 	listener      *net.TCPListener
 
 	// 生命周期：Stop 关闭 done 广播「正在关停」，accept 循环据此区分「主动关停」与「瞬时错误」；
@@ -32,11 +31,11 @@ type Server struct {
 	stopOnce sync.Once
 }
 
-func (s *Server) AddRouter(msgID string, router banIface.IRouter) {
+func (s *Server) AddRouter(msgID string, router IRouter) {
 	s.MsgHandle.AddRouter(msgID, router)
 }
 
-func NewServer() banIface.IServer {
+func NewServer() IServer {
 	return &Server{
 		IPVersion: "tcp4",
 		IP:        config.G.Host,
@@ -49,7 +48,7 @@ func NewServer() banIface.IServer {
 	}
 }
 
-func (s *Server) GetConnMgr() banIface.IConnManager {
+func (s *Server) GetConnMgr() IConnManager {
 	return s.ConnMgr
 }
 
@@ -124,20 +123,20 @@ func (s *Server) Serve() {
 	s.Stop()
 }
 
-func (s *Server) SetConnStartFunc(f func(conn banIface.IConnect)) {
+func (s *Server) SetConnStartFunc(f func(conn IConnect)) {
 	s.ConnStartFunc = f
 }
-func (s *Server) SetConnStopFunc(f func(conn banIface.IConnect)) {
+func (s *Server) SetConnStopFunc(f func(conn IConnect)) {
 	s.ConnStopFunc = f
 }
-func (s *Server) CallConnStartFunc(conn banIface.IConnect) {
+func (s *Server) CallConnStartFunc(conn IConnect) {
 	if s.ConnStartFunc == nil {
 		return // 未注册连接建立回调，静默跳过
 	}
 	s.ConnStartFunc(conn)
 }
 
-func (s *Server) CallConnStopFunc(conn banIface.IConnect) {
+func (s *Server) CallConnStopFunc(conn IConnect) {
 	if s.ConnStopFunc == nil {
 		return // 未注册连接关闭回调，静默跳过
 	}

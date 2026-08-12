@@ -1,10 +1,10 @@
-package banNet_test
+package bannet_test
 
 import (
 	"fmt"
 	"testing"
 
-	"github.com/NeverENG/BanDB/network/banNet"
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/proto"
 )
 
@@ -24,10 +24,10 @@ func TestScanResponseSurvivesWire(t *testing.T) {
 		t.Fatalf("测试前提失效：响应应远超 1024B，实际 %d", len(payload))
 	}
 
-	dp := banNet.NewDataPack()
+	dp := bannet.NewDataPack()
 
 	// 服务端 SendBuffMsg 的打包路径。
-	packet, err := dp.Pack(banNet.NewMessage(proto.MsgRespOK, payload))
+	packet, err := dp.Pack(bannet.NewMessage(proto.MsgRespOK, payload))
 	if err != nil {
 		t.Fatalf("Pack 失败: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestScanResponseSurvivesWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnPack 拒绝了大响应（MaxPackageSize 太小？）: %v", err)
 	}
-	m := tempMsg.(*banNet.Message)
+	m := tempMsg.(*bannet.Message)
 
 	off := headLen + int(m.IDLen)
 	data := packet[off : off+int(tempMsg.GetMsgLen())]
