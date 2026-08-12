@@ -38,7 +38,14 @@ func (cm *ConnManager) Get(connId uint32) Conn {
 	return nil
 }
 
+// Len 返回当前连接数。
+//
+// 【并发正确性】必须持锁：Add/Remove 在锁内写这张 map，而 Len 由 acceptLoop 在每次接受
+// 连接时调用（用于 MaxConn 准入判断），二者天然并发。无锁读 map 撞上并发写 map 在 Go 中
+// 不只是竞态告警，运行时可能直接抛出 "concurrent map read and map write" 而使进程崩溃。
 func (cm *ConnManager) Len() int {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
 	return len(cm.connections)
 }
 
