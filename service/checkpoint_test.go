@@ -46,12 +46,12 @@ func TestCheckpoint_RecoverAcrossSSTableAndTombstone(t *testing.T) {
 	// 写入 50 个不同 key，触发多轮 active→dirty→SSTable 刷盘。
 	for i := 0; i < 50; i++ {
 		key := []byte(fmt.Sprintf("k%04d", i))
-		if err := kv.Write(Command{Type: "Put", Key: key, Value: []byte(fmt.Sprintf("v%04d", i))}); err != nil {
+		if err := kv.Write(Command{Type: CommandPut, Key: key, Value: []byte(fmt.Sprintf("v%04d", i))}); err != nil {
 			t.Fatalf("write %d: %v", i, err)
 		}
 	}
 	// 删除一个较早的 key，其墓碑需跨 checkpoint 存活。
-	if err := kv.Write(Command{Type: "Delete", Key: []byte("k0000")}); err != nil {
+	if err := kv.Write(Command{Type: CommandDelete, Key: []byte("k0000")}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 
@@ -62,7 +62,7 @@ func TestCheckpoint_RecoverAcrossSSTableAndTombstone(t *testing.T) {
 	kv.Checkpoint()
 
 	// checkpoint 之后再写一个新 key——必须落在重写后的 WAL 里。
-	if err := kv.Write(Command{Type: "Put", Key: []byte("after"), Value: []byte("cp")}); err != nil {
+	if err := kv.Write(Command{Type: CommandPut, Key: []byte("after"), Value: []byte("cp")}); err != nil {
 		t.Fatalf("post-checkpoint write: %v", err)
 	}
 	// 完整停机：必须停掉后台 FlushWorker/Compaction，否则它们会与 kv2 抢同一 SSTable 目录。
@@ -113,7 +113,7 @@ func TestCheckpoint_BoundsWALGrowth(t *testing.T) {
 			defer wg.Done()
 			for i := w; i < writes; i += workers {
 				key := []byte(fmt.Sprintf("k%02d", i%uniqueKeys))
-				if err := kv.Write(Command{Type: "Put", Key: key, Value: value}); err != nil {
+				if err := kv.Write(Command{Type: CommandPut, Key: key, Value: value}); err != nil {
 					t.Errorf("write %d: %v", i, err)
 					return
 				}

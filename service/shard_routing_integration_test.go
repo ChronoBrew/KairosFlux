@@ -29,9 +29,9 @@ func (s *memKV) Write(cmd Command) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch cmd.Type {
-	case "Put":
+	case CommandPut:
 		s.m[string(cmd.Key)] = append([]byte(nil), cmd.Value...)
-	case "Delete":
+	case CommandDelete:
 		delete(s.m, string(cmd.Key))
 	}
 	return nil

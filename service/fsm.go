@@ -14,8 +14,23 @@ import (
 	"github.com/NeverENG/BanDB/storage"
 )
 
+// CommandType 是写命令的类型。原先 Type 为裸 string，各调用点各自重复 "Put"/"Delete"
+// 字面量，switch 亦与字面量比较：拼错一个字母不会报错，命令会静默地既不写入也不删除
+// （switch 无匹配分支即落空）。
+//
+// 改为具名类型 + 具名常量后，拼写只存在于此处一份，调用点不再重复字面量。需要说明的是
+// 这并非编译期强校验：无类型字符串常量可隐式转换为 CommandType，故 Type: "Pt" 仍能编译。
+// 真正的强校验需改为 int 枚举，但 Command 会被 json.Marshal 写入 Raft 日志，改动数值
+// 表示会破坏既有日志的兼容性，故此处保留字符串底层类型。
+type CommandType string
+
+const (
+	CommandPut    CommandType = "Put"
+	CommandDelete CommandType = "Delete"
+)
+
 type Command struct {
-	Type  string
+	Type  CommandType
 	Key   []byte
 	Value []byte
 }
@@ -117,12 +132,12 @@ func (k *KVServer) writeStandalone(cmd Command) error {
 // applyStandalone 执行一条写的 WAL append + memtable 落地，调用方须持 cpMu.RLock。
 func (k *KVServer) applyStandalone(cmd Command) error {
 	switch cmd.Type {
-	case "Put":
+	case CommandPut:
 		if err := k.wal.Append(storage.WALOpPut, cmd.Key, cmd.Value); err != nil {
 			return err
 		}
 		return k.storage.Put(cmd.Key, cmd.Value)
-	case "Delete":
+	case CommandDelete:
 		if err := k.wal.Append(storage.WALOpDelete, cmd.Key, nil); err != nil {
 			return err
 		}
@@ -199,11 +214,11 @@ func (k *KVServer) Apply(entry raft.LogEntry) {
 	}
 
 	switch cmd.Type {
-	case "Put":
+	case CommandPut:
 		if err := k.storage.Put(cmd.Key, cmd.Value); err != nil {
 			slog.Error("failed to put", "error", err)
 		}
-	case "Delete":
+	case CommandDelete:
 		if err := k.storage.Delete(cmd.Key); err != nil {
 			slog.Error("failed to delete", "error", err)
 		}
@@ -224,9 +239,9 @@ func (k *KVServer) replaySnapshot(entry raft.LogEntry) {
 			continue
 		}
 		switch cmd.Type {
-		case "Put":
+		case CommandPut:
 			kvEntries = append(kvEntries, storage.LogEntry{Key: cmd.Key, Value: cmd.Value})
-		case "Delete":
+		case CommandDelete:
 			kvEntries = append(kvEntries, storage.LogEntry{Key: cmd.Key, Value: nil})
 		}
 	}

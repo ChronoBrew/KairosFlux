@@ -187,7 +187,7 @@ func (r *Router) handlePut(data []byte, request bannet.Request) {
 	}
 
 	cmd := Command{
-		Type:  "Put",
+		Type:  CommandPut,
 		Key:   key,
 		Value: value,
 	}
@@ -275,7 +275,7 @@ func (r *Router) handleDelete(data []byte, request bannet.Request) {
 	}
 
 	cmd := Command{
-		Type: "Delete",
+		Type: CommandDelete,
 		Key:  key,
 	}
 

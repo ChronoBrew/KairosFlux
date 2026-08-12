@@ -32,11 +32,11 @@ func TestKVServer_Scan(t *testing.T) {
 	defer kv.wal.Close()
 
 	frames := []Command{
-		{Type: "Put", Key: []byte("imu:dev0:100"), Value: []byte(`{"az":9.8}`)},
-		{Type: "Put", Key: []byte("imu:dev0:150"), Value: []byte(`{"az":9.95}`)}, // 命中
-		{Type: "Put", Key: []byte("imu:dev0:200"), Value: []byte(`{"az":10.2}`)}, // 命中
-		{Type: "Put", Key: []byte("imu:dev0:250"), Value: []byte(`{"az":9.0}`)},
-		{Type: "Put", Key: []byte("imu:dev1:150"), Value: []byte(`{"az":11}`)}, // 设备越界
+		{Type: CommandPut, Key: []byte("imu:dev0:100"), Value: []byte(`{"az":9.8}`)},
+		{Type: CommandPut, Key: []byte("imu:dev0:150"), Value: []byte(`{"az":9.95}`)}, // 命中
+		{Type: CommandPut, Key: []byte("imu:dev0:200"), Value: []byte(`{"az":10.2}`)}, // 命中
+		{Type: CommandPut, Key: []byte("imu:dev0:250"), Value: []byte(`{"az":9.0}`)},
+		{Type: CommandPut, Key: []byte("imu:dev1:150"), Value: []byte(`{"az":11}`)}, // 设备越界
 	}
 	for _, c := range frames {
 		if err := kv.Write(c); err != nil {

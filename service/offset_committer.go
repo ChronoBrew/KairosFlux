@@ -12,7 +12,7 @@ type offsetCommitter struct{ kv *KVServer }
 func NewOffsetCommitter(kv *KVServer) offset.Committer { return &offsetCommitter{kv: kv} }
 
 func (c *offsetCommitter) Put(key, value []byte) error {
-	return c.kv.Write(Command{Type: "Put", Key: key, Value: value})
+	return c.kv.Write(Command{Type: CommandPut, Key: key, Value: value})
 }
 
 // Get 读取 offset；key 不存在时 KVServer.Get 返回 "key not found" 错误，
