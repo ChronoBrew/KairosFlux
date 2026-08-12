@@ -7,22 +7,22 @@ import (
 )
 
 type MsgHandle struct {
-	Arip           map[string]IRouter
+	Arip           map[string]Handler
 	WorkerPoolSize uint32
-	TaskQueue      []chan IRequest
+	TaskQueue      []chan Request
 }
 
 func NewMsgHandle() *MsgHandle {
 	return &MsgHandle{
-		Arip:           make(map[string]IRouter),
+		Arip:           make(map[string]Handler),
 		WorkerPoolSize: config.G.WorkerPoolSize,
-		TaskQueue:      make([]chan IRequest, config.G.WorkerPoolSize),
+		TaskQueue:      make([]chan Request, config.G.WorkerPoolSize),
 	}
 }
 
-var _ IMsgHandle = &MsgHandle{}
+var _ Dispatcher = &MsgHandle{}
 
-func (m *MsgHandle) AddRouter(msgID string, r IRouter) {
+func (m *MsgHandle) AddRouter(msgID string, r Handler) {
 	if _, ok := m.Arip[msgID]; ok {
 		slog.Warn("banNet duplicate route registration ignored", "msgID", msgID)
 		return
@@ -30,7 +30,7 @@ func (m *MsgHandle) AddRouter(msgID string, r IRouter) {
 	m.Arip[msgID] = r
 }
 
-func (m *MsgHandle) DoMsgHandle(request IRequest) {
+func (m *MsgHandle) DoMsgHandle(request Request) {
 	handler, ok := m.Arip[request.GetMsgID()]
 	if !ok {
 		slog.Error("banNet unregistered msgID", "msgID", request.GetMsgID())
@@ -45,12 +45,12 @@ func (m *MsgHandle) DoMsgHandle(request IRequest) {
 
 func (m *MsgHandle) StartWorkerPool() {
 	for i := 0; i < int(m.WorkerPoolSize); i++ {
-		m.TaskQueue[i] = make(chan IRequest, config.G.MaxWorkerTaskLen)
+		m.TaskQueue[i] = make(chan Request, config.G.MaxWorkerTaskLen)
 		go m.StartOneWorker(i, m.TaskQueue[i])
 	}
 }
 
-func (m *MsgHandle) SendMsgToTaskQueue(request IRequest) {
+func (m *MsgHandle) SendMsgToTaskQueue(request Request) {
 	workerID := request.GetConnection().GetConnID() % m.WorkerPoolSize
 
 	// 优先投递到专属 Worker
@@ -74,7 +74,7 @@ func (m *MsgHandle) SendMsgToTaskQueue(request IRequest) {
 	m.TaskQueue[workerID] <- request
 }
 
-func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan IRequest) {
+func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan Request) {
 	slog.Debug("banNet worker started", "workerID", workerID)
 	// taskQueue 关闭时 range 自然结束，无需显式判空。
 	for request := range taskQueue {

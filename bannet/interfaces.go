@@ -5,30 +5,30 @@ package bannet
 
 import "net"
 
-type IConnManager interface {
-	Add(conn IConnect)
-	Remove(conn IConnect)
-	Get(connID uint32) IConnect
+type ConnRegistry interface {
+	Add(conn Conn)
+	Remove(conn Conn)
+	Get(connID uint32) Conn
 	Len() int
 	ClearConn()
 }
 
-type IDataPack interface {
+type Codec interface {
 	GetHeadLen() uint32
-	Pack(msg IMessage) ([]byte, error)
-	UnPack([]byte) (IMessage, error)
+	Pack(msg Frame) ([]byte, error)
+	UnPack([]byte) (Frame, error)
 }
 
-type IMsgHandle interface {
-	AddRouter(msgID string, router IRouter)
-	DoMsgHandle(request IRequest)
+type Dispatcher interface {
+	AddRouter(msgID string, router Handler)
+	DoMsgHandle(request Request)
 	StartWorkerPool()
-	SendMsgToTaskQueue(request IRequest)
+	SendMsgToTaskQueue(request Request)
 	Stop()
 }
 
-type IRequest interface {
-	GetConnection() IConnect
+type Request interface {
+	GetConnection() Conn
 	GetMsgData() []byte
 	GetMsgID() string
 	// SetMsgData 改写本帧负载，供 PreHandle 钩子做脱敏/裁剪。
@@ -45,13 +45,13 @@ const (
 	HookDrop
 )
 
-type IRouter interface {
-	PreHandle(request IRequest) HookAction
-	Handle(request IRequest)
-	PostHandle(request IRequest)
+type Handler interface {
+	PreHandle(request Request) HookAction
+	Handle(request Request)
+	PostHandle(request Request)
 }
 
-type IConnect interface {
+type Conn interface {
 	Start()
 	Stop()
 	GetTCPConn() *net.TCPConn
@@ -64,23 +64,11 @@ type IConnect interface {
 	RemoveProperty(key string)
 }
 
-type IMessage interface {
+type Frame interface {
 	GetMsgID() string
 	GetData() []byte
 	GetMsgLen() uint32
 	SetMsgLen(uint32)
 	SetData([]byte)
 	SetMsgID(string)
-}
-
-type IServer interface {
-	Start()
-	Stop()
-	Serve()
-	AddRouter(msgID string, router IRouter)
-	GetConnMgr() IConnManager
-	SetConnStartFunc(func(connect IConnect))
-	SetConnStopFunc(func(connect IConnect))
-	CallConnStartFunc(connect IConnect)
-	CallConnStopFunc(connect IConnect)
 }

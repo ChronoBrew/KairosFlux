@@ -72,7 +72,7 @@ func TestShardRouting_MultiNode(t *testing.T) {
 		pool := cluster.NewPeerPool(2 * time.Second)
 		router.SetRouting(placement, addr, pool)
 
-		srv := bannet.NewServer().(*bannet.Server)
+		srv := bannet.NewServer()
 		host, portStr, _ := net.SplitHostPort(addr)
 		port, _ := strconv.Atoi(portStr)
 		srv.IP = host

@@ -12,13 +12,13 @@ import (
 	"github.com/NeverENG/BanDB/config"
 )
 
-var _ IConnect = &Connection{}
+var _ Conn = &Connection{}
 
 type Connection struct {
-	TCPServer IServer      // 注入 ConnMgr
+	TCPServer *Server      // 注入 ConnMgr
 	Conn      *net.TCPConn // 底层 TCP 连接
 	ConnID    uint32       // 连接唯一 ID
-	MsgHandle IMsgHandle
+	MsgHandle Dispatcher
 
 	// 生命周期：ctx 是唯一的取消信号。Stop 调 cancel() 广播退出、并关闭 Conn 以解除
 	// Reader 的阻塞读；Writer 与 Start 都 select ctx.Done()。stopOnce 保证 Stop 幂等。
@@ -33,7 +33,7 @@ type Connection struct {
 	propertyLock sync.RWMutex
 }
 
-func NewConnection(conn *net.TCPConn, connID uint32, handle IMsgHandle, server IServer) *Connection {
+func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *Server) *Connection {
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &Connection{
 		TCPServer:   server,
@@ -97,7 +97,7 @@ func (c *Connection) StartReader() {
 			}
 		}
 		msg.SetData(data)
-		req := NewRequest(msg, c)
+		req := newRequest(msg, c)
 		// 根据有没有启动 WorkPool 选择不同的结果
 		if config.G.WorkerPoolSize > 0 {
 			c.MsgHandle.SendMsgToTaskQueue(req)

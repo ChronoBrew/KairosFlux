@@ -9,16 +9,16 @@ import (
 	"github.com/NeverENG/BanDB/pkg/proto"
 )
 
-// fakeReq 是 bannet.IRequest 的测试替身。钩子不触碰连接，GetConnection 返回 nil。
+// fakeReq 是 bannet.Request 的测试替身。钩子不触碰连接，GetConnection 返回 nil。
 type fakeReq struct {
 	msgID string
 	data  []byte
 }
 
-func (f *fakeReq) GetConnection() bannet.IConnect { return nil }
-func (f *fakeReq) GetMsgData() []byte             { return f.data }
-func (f *fakeReq) GetMsgID() string               { return f.msgID }
-func (f *fakeReq) SetMsgData(d []byte)            { f.data = d }
+func (f *fakeReq) GetConnection() bannet.Conn { return nil }
+func (f *fakeReq) GetMsgData() []byte         { return f.data }
+func (f *fakeReq) GetMsgID() string           { return f.msgID }
+func (f *fakeReq) SetMsgData(d []byte)        { f.data = d }
 
 func putReq(key, value string) *fakeReq {
 	return &fakeReq{msgID: proto.MsgPut, data: encodePut([]byte(key), []byte(value))}

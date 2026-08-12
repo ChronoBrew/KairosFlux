@@ -10,7 +10,7 @@ type Message struct {
 	Data    []byte
 }
 
-var _ IMessage = &Message{}
+var _ Frame = &Message{}
 
 func NewMessage(id string, data []byte) *Message {
 	return &Message{
