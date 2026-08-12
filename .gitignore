@@ -49,5 +49,7 @@ tmp
 bin/
 # pprof 采样脚本的临时运行目录
 .prof/
-# 各 agent 的 git worktree（内嵌仓库，不应作为 gitlink 提交）
-.claude/worktrees/
+# Claude Code 的本地状态与每机配置（settings.local.json、worktree 内嵌仓库等）
+.claude/
+# pprof 采样产物
+*.prof
