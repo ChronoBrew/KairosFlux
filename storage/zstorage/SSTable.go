@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
@@ -70,7 +71,12 @@ type SSTable struct {
 	// 避免与（测试中）并发修改全局配置形成数据竞争。
 	dir string
 
+	// mata 是元数据主副本，仅在持 mu 时修改；每次修改后即时发布一份不可变快照到 snapshot。
+	// 读路径（每次点查都要遍历元数据）从 snapshot 无锁读取，避免逐次加锁与整表拷贝。
+	// 写侧为 copy-on-write：变更频率为刷盘/合并级，远低于读。
+	// 快照按值不可变——调用方只可读取，不得原地修改其元素顺序或内容。
 	mata       []*istorage.SSTableMata
+	snapshot   atomic.Pointer[[]*istorage.SSTableMata]
 	mu         sync.RWMutex
 	indexCache map[string]*blockIndex
 	idxMu      sync.RWMutex
@@ -86,13 +92,22 @@ type SSTable struct {
 }
 
 func NewSSTable() *SSTable {
-	return &SSTable{
+	ss := &SSTable{
 		dir:        config.G.SSTablePath,
 		mata:       make([]*istorage.SSTableMata, 0),
 		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
 		fdCache:    make(map[string]*os.File),
 	}
+	ss.publishMata()
+	return ss
+}
+
+// publishMata 发布 mata 的不可变快照供读路径无锁获取。调用方须持 ss.mu。
+func (ss *SSTable) publishMata() {
+	snap := make([]*istorage.SSTableMata, len(ss.mata))
+	copy(snap, ss.mata)
+	ss.snapshot.Store(&snap)
 }
 
 // openFile 取该路径的常驻只读句柄，未缓存则打开并缓存。返回 nil 表示打开失败。
@@ -217,6 +232,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 
 	ss.mu.Lock()
 	ss.mata = metas
+	ss.publishMata()
 	ss.mu.Unlock()
 
 	for _, meta := range metas {
@@ -332,14 +348,13 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 	return nil
 }
 
+// GetAllMata 返回元数据的不可变快照，按落盘先后升序（最旧在前）。
+// 无锁零拷贝；调用方只可读取，不得原地修改。切片元素是共享指针，非对象副本。
 func (ss *SSTable) GetAllMata() []*istorage.SSTableMata {
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-
-	// 注意：返回指针的副本，但指针指向的对象是同一个！
-	result := make([]*istorage.SSTableMata, len(ss.mata))
-	copy(result, ss.mata) // 注意：复制的是指针，不是对象本身
-	return result
+	if snap := ss.snapshot.Load(); snap != nil {
+		return *snap
+	}
+	return nil
 }
 
 func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*istorage.LogEntry, error) {
@@ -812,6 +827,7 @@ func (ss *SSTable) AddMata(meta *istorage.SSTableMata) {
 	ss.mu.Lock()
 	defer ss.mu.Unlock()
 	ss.mata = append(ss.mata, meta)
+	ss.publishMata()
 }
 
 func (ss *SSTable) RemoveMata(target *istorage.SSTableMata) {
@@ -821,6 +837,7 @@ func (ss *SSTable) RemoveMata(target *istorage.SSTableMata) {
 	for i, meta := range ss.mata {
 		if meta == target {
 			ss.mata = append(ss.mata[:i], ss.mata[i+1:]...)
+			ss.publishMata()
 			return
 		}
 	}
