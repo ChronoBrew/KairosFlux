@@ -27,10 +27,10 @@ jobs:
           go-version: "1.23"
 
       - name: Build server
-        run: go build -o bin/ban-server ./Server
+        run: go build -o bin/ban-server ./cmd/ban-server
 
       - name: Build benchmark
-        run: go build -o bin/ban-bench ./benchmark
+        run: go build -o bin/ban-bench ./cmd/ban-bench
 
       - name: Start server
         run: ./bin/ban-server &

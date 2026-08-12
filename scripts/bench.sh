@@ -7,8 +7,8 @@
 # 受控且可被完全清空的目录, 保证每次压测都是干净状态。
 #
 # 用法:
-#   bash benchmark/bench.sh [ban-bench 参数...]
-#   PORT=8081 bash benchmark/bench.sh -d 10s -c 16 -n 10000 -mode mixed
+#   bash scripts/bench.sh [ban-bench 参数...]
+#   PORT=8081 bash scripts/bench.sh -d 10s -c 16 -n 10000 -mode mixed
 #
 # 透传给 ban-bench 的常用参数: -d 时长  -c 并发  -n key数  -mode put|get|delete|mixed
 set -euo pipefail
@@ -36,8 +36,8 @@ sed -e "s/\"Port\": [0-9][0-9]*/\"Port\": $PORT/" \
 
 # 3. 构建
 echo "[bench] building server & benchmark ..."
-go build -o "$REPO/bin/ban-server" ./Server
-go build -o "$REPO/bin/ban-bench" ./benchmark
+go build -o "$REPO/bin/ban-server" ./cmd/ban-server
+go build -o "$REPO/bin/ban-bench" ./cmd/ban-bench
 
 # 4. 启动服务端(CWD=RUNDIR: 优先读 RUNDIR/config/config.json, 数据落入受控位置)
 echo "[bench] starting fresh server on :$PORT ..."

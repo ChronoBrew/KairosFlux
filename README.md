@@ -93,7 +93,7 @@ flowchart TD
 
 ## 性能
 
-环境：本机 macOS、单机，16B key / 256B value，50 并发，`bash benchmark/bench.sh` 口径。
+环境：本机 macOS、单机，16B key / 256B value，50 并发，`bash scripts/bench.sh` 口径。
 读取用 20 万 key 的工作集——远超单张内存表容量，故读必然下穿到 SSTable，衡量的是真实
 磁盘读路径而非内存命中。
 
@@ -125,16 +125,16 @@ flowchart TD
 
 ```bash
 # BanNet 服务（默认读 config/config.json，监听 127.0.0.1:8080）
-cd Server && go run .
+cd cmd/ban-server && go run .
 
 # 另开终端启动客户端
-cd client && go run .
+cd cmd/ban-cli && go run .
 ```
 
 或 gRPC 服务（standalone，监听 :9090）：
 
 ```bash
-go run ./server_grpc -addr localhost:9090
+go run ./cmd/ban-grpc-server -addr localhost:9090
 ```
 
 交互：
