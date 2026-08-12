@@ -21,8 +21,9 @@ func setupTestEngine(t *testing.T) (*Engine, func()) {
 	memTable := NewMemTable()
 	engine := NewEngine(memTable)
 
-	// 启动 FlushWorker goroutine
-	go memTable.FlushWorker()
+	// 不再另起 FlushWorker：NewMemTable 已启动一个。两个 worker 会并发进入 Flush，
+	// 各自取到不同的 dirty 表后互相把 m.dirty 置 nil，导致刷盘丢数据、读回缺失
+	// （表现为 TestEngine_* 偶发失败）。
 
 	cleanup := func() {
 		// 关闭 WAL 文件（临时目录由 t.TempDir 自动清理）
