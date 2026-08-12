@@ -27,7 +27,7 @@ func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	path := ss.GetAllMata()[0].Filepath
+	path := ss.GetAllMetas()[0].Filepath
 
 	it, err := newSSTableIterator(path)
 	if err != nil {
@@ -151,7 +151,7 @@ func TestMergeRejectsUnsortedSource(t *testing.T) {
 	writeV1SSTable(t, path, []LogEntry{entry("c", "1"), entry("b", "1"), entry("a", "1")})
 
 	ss := NewSSTable()
-	merged := ss.MergeSSTable([]*SSTableMata{{Filepath: path}}, 1)
+	merged := ss.MergeSSTable([]*SSTableMeta{{Filepath: path}}, 1)
 	if merged != nil {
 		t.Error("merge should fail on a non-ascending source, got non-nil")
 	}
@@ -170,7 +170,7 @@ func TestSSTableTombstoneRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	path := ss.GetAllMata()[0].Filepath
+	path := ss.GetAllMetas()[0].Filepath
 
 	if v, ok := ss.ReadFromSSTable(path, []byte("del")); !ok || v != nil {
 		t.Errorf("point-read tombstone: ok=%v v=%q, want ok=true v=nil", ok, v)

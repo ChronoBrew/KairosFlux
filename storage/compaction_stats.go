@@ -31,8 +31,8 @@ func parseLevelFromName(name string) int {
 // 真实创建序。文件名形如 `sstable_L0_<ts>.sst` / `sstable_merged_L2_<ts>.sst` / 老格式
 // `sstable_<ts>.sst`——ts 恒为最后一个 `_` 之后、`.sst` 之前的数字段。解析失败返回 0。
 //
-// 用途（关键正确性）：读路径 getFromSSTables 按 mata 逆序判定 newest-wins（内存中 mata =
-// 创建序）。重启时若按文件名字符串排序重建 mata，`L0` 会排在 `merged` 之前，导致旧的
+// 用途（关键正确性）：读路径 getFromSSTables 按 metas 逆序判定 newest-wins（内存中 metas =
+// 创建序）。重启时若按文件名字符串排序重建 metas，`L0` 会排在 `merged` 之前，导致旧的
 // merged 文件在逆序中盖过新的 L0 文件、返回陈旧值。按创建时间戳排序才等价于内存创建序。
 func parseCreateTsFromName(name string) int64 {
 	base := strings.TrimSuffix(name, ".sst")

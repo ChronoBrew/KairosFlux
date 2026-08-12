@@ -12,7 +12,7 @@ type LogEntry struct {
 	Value []byte
 }
 
-type SSTableMata struct {
+type SSTableMeta struct {
 	Level    int
 	Filepath string
 	MinKey   []byte
@@ -23,7 +23,7 @@ type SSTableMata struct {
 	MaxKeyLoaded bool
 }
 
-func (meta *SSTableMata) EnsureMeta() {
+func (meta *SSTableMeta) EnsureMeta() {
 	meta.mu.Do(func() {
 		if meta.MaxKeyLoaded {
 			return

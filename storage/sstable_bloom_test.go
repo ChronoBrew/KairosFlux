@@ -81,7 +81,7 @@ func TestSSTableBloomRoundTrip(t *testing.T) {
 	if err := ss.WriteToSSTable(entries); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	path := ss.GetAllMata()[0].Filepath
+	path := ss.GetAllMetas()[0].Filepath
 
 	// 布隆过滤器已写入（从磁盘重新加载验证，绕过写入缓存）
 	fresh := NewSSTable()

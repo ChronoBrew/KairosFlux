@@ -20,14 +20,14 @@ type IMemTable interface {
 }
 type ISSTable interface {
 	LoadSSTableMetaList()
-	AddMata(meta *SSTableMata)
-	RemoveMata(target *SSTableMata)
-	GetLevelFiles(level int) []*SSTableMata
-	GetAllMata() []*SSTableMata
+	AddMeta(meta *SSTableMeta)
+	RemoveMeta(target *SSTableMeta)
+	GetLevelFiles(level int) []*SSTableMeta
+	GetAllMetas() []*SSTableMeta
 
 	WriteToSSTable(entry []LogEntry) error
 	ReadFromSSTable(filepath string, key []byte) ([]byte, bool)
 	ReadAllFromSSTable(filepath string) ([]*LogEntry, error)
-	MergeSSTable(files []*SSTableMata, targetLevel int) *SSTableMata
-	DeleteSSTable(meta *SSTableMata)
+	MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableMeta
+	DeleteSSTable(meta *SSTableMeta)
 }

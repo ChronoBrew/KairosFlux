@@ -10,7 +10,7 @@ import (
 
 // TestRecency_RandomizedOverwritesSurviveRestart 是 newest-wins 的随机化守卫：
 // 对一小组 key 做多轮覆盖写，穿插 flush 与 compaction，用参考 map 记录每个 key 的最新值；
-// 然后模拟重启，逐一校验读到的都是最新值。这能捕捉 mata 重建顺序错误导致的陈旧值倒挂。
+// 然后模拟重启，逐一校验读到的都是最新值。这能捕捉 metas 重建顺序错误导致的陈旧值倒挂。
 func TestRecency_RandomizedOverwritesSurviveRestart(t *testing.T) {
 	dir := t.TempDir()
 	oldPath, oldComp := config.G.SSTablePath, config.G.MaxCompactionSize
