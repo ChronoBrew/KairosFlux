@@ -68,7 +68,7 @@ func waitLeader(t *testing.T, rafts []*Raft, timeout time.Duration) *Raft {
 		leaders := 0
 		var leader *Raft
 		for _, r := range rafts {
-			if s, _ := r.GetState(); s == Leader {
+			if s, _ := r.State(); s == Leader {
 				leaders++
 				leader = r
 			}
@@ -84,7 +84,7 @@ func waitLeader(t *testing.T, rafts []*Raft, timeout time.Duration) *Raft {
 // allHaveLast 报告是否所有节点最后一条日志的命令都等于 want。
 func allHaveLast(rafts []*Raft, want string) bool {
 	for _, r := range rafts {
-		log := r.GetLog()
+		log := r.Log()
 		if len(log) == 0 || string(log[len(log)-1].Command) != want {
 			return false
 		}
@@ -118,7 +118,7 @@ func TestRaftCluster_ElectReplicateCommit(t *testing.T) {
 
 	if !waitConverge(rafts, "hello-cluster", 5*time.Second) {
 		for i, r := range rafts {
-			t.Logf("node %d log len=%d", i, len(r.GetLog()))
+			t.Logf("node %d log len=%d", i, len(r.Log()))
 		}
 		t.Fatal("command did not replicate to all nodes")
 	}

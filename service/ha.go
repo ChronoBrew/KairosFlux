@@ -39,8 +39,8 @@ func (h *HA) healthCheckLoop() {
 // checkHealth 检查健康状态
 func (h *HA) checkHealth() {
 	// 检查 Raft 状态（standalone 模式无 Raft，直接视为健康）
-	if r := h.kv.GetRaft(); r != nil {
-		state, _ := r.GetState()
+	if r := h.kv.Raft(); r != nil {
+		state, _ := r.State()
 		if state == 0 { // Follower
 			// 可以添加更多健康检查逻辑
 		}
@@ -56,12 +56,12 @@ func (h *HA) IsHealthy() bool {
 	return h.isHealthy
 }
 
-// GetLastCheck 获取最后检查时间
-func (h *HA) GetLastCheck() time.Time {
+// LastCheck 获取最后检查时间
+func (h *HA) LastCheck() time.Time {
 	return h.lastCheck
 }
 
-// GetFSM 获取 FSM 实例
-func (h *HA) GetFSM() *KVServer {
+// FSM 获取 FSM 实例
+func (h *HA) FSM() *KVServer {
 	return h.kv
 }

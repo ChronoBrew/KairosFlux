@@ -347,9 +347,9 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 	return nil
 }
 
-// GetAllMetas 返回元数据的不可变快照，按落盘先后升序（最旧在前）。
+// Metas 返回元数据的不可变快照，按落盘先后升序（最旧在前）。
 // 无锁零拷贝；调用方只可读取，不得原地修改。切片元素是共享指针，非对象副本。
-func (ss *SSTable) GetAllMetas() []*SSTableMeta {
+func (ss *SSTable) Metas() []*SSTableMeta {
 	if snap := ss.snapshot.Load(); snap != nil {
 		return *snap
 	}
@@ -847,8 +847,8 @@ func (ss *SSTable) RemoveMeta(target *SSTableMeta) {
 	}
 }
 
-// GetLevelFiles 获取指定层级的文件列表
-func (ss *SSTable) GetLevelFiles(level int) []*SSTableMeta {
+// LevelFiles 获取指定层级的文件列表
+func (ss *SSTable) LevelFiles(level int) []*SSTableMeta {
 	ss.mu.RLock()
 	defer ss.mu.RUnlock()
 

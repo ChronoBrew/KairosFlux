@@ -83,7 +83,7 @@ func (k *KVServer) Run() {
 		return
 	}
 	slog.Info("KVServer started, waiting for Raft entries")
-	for entry := range k.raft.GetApplyCh() {
+	for entry := range k.raft.ApplyCh {
 		k.Apply(entry)
 	}
 }
@@ -283,8 +283,8 @@ func (k *KVServer) Delete(key []byte) error {
 }
 */
 
-// GetRaft 获取 Raft 实例
-func (k *KVServer) GetRaft() *raft.Raft {
+// Raft 获取 Raft 实例
+func (k *KVServer) Raft() *raft.Raft {
 	return k.raft
 }
 
@@ -323,7 +323,7 @@ func (k *KVServer) WaitUntilReady() {
 	}
 	slog.Info("single-node: waiting for leader before serving clients")
 	for {
-		if state, _ := k.raft.GetState(); state == raft.Leader {
+		if state, _ := k.raft.State(); state == raft.Leader {
 			slog.Info("leader ready, opening client port")
 			return
 		}

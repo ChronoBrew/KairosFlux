@@ -675,13 +675,13 @@ func (r *Raft) WaitCommitIndex(index int) {
 	}
 }
 
-func (r *Raft) GetState() (State, int) {
+func (r *Raft) State() (State, int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state, r.Term
 }
 
-func (r *Raft) GetLog() []LogEntry {
+func (r *Raft) Log() []LogEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	logCopy := make([]LogEntry, len(r.log))
@@ -689,12 +689,8 @@ func (r *Raft) GetLog() []LogEntry {
 	return logCopy
 }
 
-func (r *Raft) GetApplyCh() chan LogEntry {
-	return r.ApplyCh
-}
-
-// GetCommitIndex 获取当前提交索引
-func (r *Raft) GetCommitIndex() int {
+// CommitIndex 获取当前提交索引
+func (r *Raft) CommitIndex() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.commitIndex

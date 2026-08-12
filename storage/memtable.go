@@ -505,7 +505,7 @@ func (m *MemTable) getFromSSTables(key []byte) ([]byte, bool) {
 	// 若改为 overlap-aware / 部分选择 compaction，该不变量会被打破（新写可滞留浅层、旧值
 	// 经深层合并获得更大 ts 而倒挂），必须改用 per-key 序号等显式 recency，否则会无声重新
 	// 引入「重启后读到陈旧值」。
-	metas := m.sst.GetAllMetas()
+	metas := m.sst.Metas()
 	for i := len(metas) - 1; i >= 0; i-- {
 		meta := metas[i]
 		// 首次访问时自动加载 MaxKey
@@ -589,7 +589,7 @@ func (m *MemTable) CompactSSTable(startLevel int) {
 	maxLevel := 10
 
 	for level := startLevel; level < maxLevel; level++ {
-		files := m.sst.GetLevelFiles(level)
+		files := m.sst.LevelFiles(level)
 
 		if len(files) < m.maxCompaction {
 			continue

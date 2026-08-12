@@ -9,16 +9,16 @@ import (
 	"github.com/NeverENG/BanDB/pkg/proto"
 )
 
-// fakeReq 是 bannet.Request 的测试替身。钩子不触碰连接，GetConnection 返回 nil。
+// fakeReq 是 bannet.Request 的测试替身。钩子不触碰连接，Conn 返回 nil。
 type fakeReq struct {
 	msgID string
 	data  []byte
 }
 
-func (f *fakeReq) GetConnection() bannet.Conn { return nil }
-func (f *fakeReq) GetMsgData() []byte         { return f.data }
-func (f *fakeReq) GetMsgID() string           { return f.msgID }
-func (f *fakeReq) SetMsgData(d []byte)        { f.data = d }
+func (f *fakeReq) Conn() bannet.Conn   { return nil }
+func (f *fakeReq) MsgData() []byte     { return f.data }
+func (f *fakeReq) MsgID() string       { return f.msgID }
+func (f *fakeReq) SetMsgData(d []byte) { f.data = d }
 
 func putReq(key, value string) *fakeReq {
 	return &fakeReq{msgID: proto.MsgPut, data: encodePut([]byte(key), []byte(value))}
@@ -96,7 +96,7 @@ func TestHandle_RedactRewritesPayload(t *testing.T) {
 	}
 
 	// 钩子改写后，整帧必须可按 PUT 格式重新解析（valueLen 前缀已重建）。
-	key, value, ok := parsePut(req.GetMsgData())
+	key, value, ok := parsePut(req.MsgData())
 	if !ok {
 		t.Fatal("改写后的帧无法解析，valueLen 前缀可能未重建")
 	}
@@ -123,7 +123,7 @@ func TestHandle_NonJSONValueUnchanged(t *testing.T) {
 	if got := f.Handle(req); got != bannet.HookPass {
 		t.Fatalf("非 JSON value 应放行，得到 %v", got)
 	}
-	_, value, _ := parsePut(req.GetMsgData())
+	_, value, _ := parsePut(req.MsgData())
 	if !bytes.Equal(value, []byte("rawbinaryblob")) {
 		t.Fatalf("非 JSON value 不应被改动，得到 %q", value)
 	}

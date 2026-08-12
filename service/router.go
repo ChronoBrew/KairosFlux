@@ -22,7 +22,7 @@ type KVStore interface {
 
 // Router 基础路由处理器
 type Router struct {
-	kv    *KVServer // 具体实例，供 GetFSM 等；测试注入 store 时可为 nil
+	kv    *KVServer // 具体实例，供 FSM 等；测试注入 store 时可为 nil
 	store KVStore   // 本地 KV 操作（生产 = kv）
 
 	// 分片路由（可选）：placement!=nil 时按 key 属主决定本地处理还是转发到 owner 节点。
@@ -111,8 +111,8 @@ func (r *Router) Handle(request bannet.Request) {
 		defer r.limiter.Release(start)
 	}
 
-	msgID := request.GetMsgID()
-	data := request.GetMsgData()
+	msgID := request.MsgID()
+	data := request.MsgData()
 
 	switch msgID {
 	case proto.MsgPut:
@@ -136,22 +136,22 @@ func statusPayload(status string) []byte {
 
 // sendErr 写回错误响应
 func sendErr(req bannet.Request) {
-	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusError))
+	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusError))
 }
 
 // sendOverloaded 写回「网关过载 shed」响应；保证每请求恰好一个响应、且可被客户端识别重试。
 func sendOverloaded(req bannet.Request) {
-	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusOverloaded))
+	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusOverloaded))
 }
 
 // sendOK 写回 PUT/DEL 成功响应
 func sendOK(req bannet.Request) {
-	req.GetConnection().SendBuffMsg(proto.MsgRespOK, statusPayload(proto.StatusOK))
+	req.Conn().SendBuffMsg(proto.MsgRespOK, statusPayload(proto.StatusOK))
 }
 
 // sendDropped 写回「被钩子按策略丢弃」响应；保证每请求恰好一个响应。
 func sendDropped(req bannet.Request) {
-	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusDropped))
+	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusDropped))
 }
 
 // handlePut 处理 PUT 操作
@@ -245,7 +245,7 @@ func (r *Router) handleGet(data []byte, request bannet.Request) {
 	binary.LittleEndian.PutUint32(response[1+len(status):1+len(status)+4], uint32(len(value)))
 	copy(response[1+len(status)+4:], value)
 
-	request.GetConnection().SendBuffMsg(proto.MsgRespOK, response)
+	request.Conn().SendBuffMsg(proto.MsgRespOK, response)
 }
 
 // handleDelete 处理 DELETE 操作
@@ -301,7 +301,7 @@ func (r *Router) handleScan(data []byte, request bannet.Request) {
 	// SCAN 暂不做分片路由：范围查询跨分片需 scatter-gather，属后续工作，当前只扫本地。
 	metrics.Scans.Add(1)
 	entries := r.store.Scan(req.Start, req.End, req.Pred)
-	request.GetConnection().SendBuffMsg(proto.MsgRespOK, proto.EncodeScanResponse(proto.StatusOK, entries))
+	request.Conn().SendBuffMsg(proto.MsgRespOK, proto.EncodeScanResponse(proto.StatusOK, entries))
 }
 
 // PostHandle 后置处理
@@ -320,7 +320,7 @@ func (r *Router) OnConnStart(conn bannet.Conn) {}
 // OnConnStop 连接关闭回调。同理不主动下发消息。
 func (r *Router) OnConnStop(conn bannet.Conn) {}
 
-// GetFSM 获取 FSM 实例
-func (r *Router) GetFSM() *KVServer {
+// FSM 获取 FSM 实例
+func (r *Router) FSM() *KVServer {
 	return r.kv
 }

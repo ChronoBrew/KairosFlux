@@ -116,7 +116,7 @@ func levelDistribution(sst *SSTable) (string, int) {
 	s := ""
 	total := 0
 	for level := 0; level < 13; level++ {
-		n := len(sst.GetLevelFiles(level))
+		n := len(sst.LevelFiles(level))
 		if n > 0 {
 			s += fmt.Sprintf("L%d=%d ", level, n)
 			total += n

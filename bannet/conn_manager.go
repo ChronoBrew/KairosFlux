@@ -20,13 +20,13 @@ func NewConnManager() *ConnManager {
 func (cm *ConnManager) Add(conn Conn) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	cm.connections[conn.GetConnID()] = conn
+	cm.connections[conn.ID()] = conn
 }
 
 func (cm *ConnManager) Remove(conn Conn) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
-	delete(cm.connections, conn.GetConnID())
+	delete(cm.connections, conn.ID())
 }
 
 func (cm *ConnManager) Get(connId uint32) Conn {

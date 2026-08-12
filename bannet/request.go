@@ -13,8 +13,8 @@ func newRequest(msg Frame, conn Conn) *request {
 		conn: conn,
 	}
 }
-func (req *request) GetMsgData() []byte {
-	return req.msg.GetData()
+func (req *request) MsgData() []byte {
+	return req.msg.Payload()
 }
 
 // SetMsgData 改写负载并同步长度，避免 DataLen 与实际数据漂移。
@@ -23,10 +23,10 @@ func (req *request) SetMsgData(data []byte) {
 	req.msg.SetMsgLen(uint32(len(data)))
 }
 
-func (req *request) GetMsgID() string {
-	return req.msg.GetMsgID()
+func (req *request) MsgID() string {
+	return req.msg.MsgID()
 }
 
-func (req *request) GetConnection() Conn {
+func (req *request) Conn() Conn {
 	return req.conn
 }

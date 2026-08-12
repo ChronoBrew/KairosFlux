@@ -49,11 +49,11 @@ func NewFilter(redactFields []string, maxValueLen int, dropBackward bool) *Filte
 // Handle 实现 PreHandle 钩子签名。返回 HookDrop 表示丢弃本帧。
 func (f *Filter) Handle(req bannet.Request) bannet.HookAction {
 	// 钩子只针对写入帧：GET/DELETE 的负载格式不同，放行不动。
-	if req.GetMsgID() != proto.MsgPut {
+	if req.MsgID() != proto.MsgPut {
 		return bannet.HookPass
 	}
 
-	key, value, ok := parsePut(req.GetMsgData())
+	key, value, ok := parsePut(req.MsgData())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
 		return bannet.HookDrop // 畸形帧：长度字段与实际数据不符

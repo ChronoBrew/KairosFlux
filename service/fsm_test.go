@@ -205,13 +205,13 @@ func TestWaitUntilReady_SingleNodeAcceptsImmediateWrite(t *testing.T) {
 	go fsm.Run()
 
 	// 选主超时下界 150ms，故刚创建时必为非 Leader —— 这正是 #86 的失败窗口。
-	if state, _ := fsm.GetRaft().GetState(); state == raft.Leader {
+	if state, _ := fsm.Raft().State(); state == raft.Leader {
 		t.Fatalf("expected non-Leader before election window elapses, got Leader")
 	}
 
 	fsm.WaitUntilReady()
 
-	if state, _ := fsm.GetRaft().GetState(); state != raft.Leader {
+	if state, _ := fsm.Raft().State(); state != raft.Leader {
 		t.Fatalf("after WaitUntilReady expected Leader, got %v", state)
 	}
 

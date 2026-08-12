@@ -255,7 +255,7 @@ func send(conn *net.TCPConn, msgID string, data []byte) error {
 
 func recv(conn *net.TCPConn) ([]byte, error) {
 	dp := bannet.NewDataPack()
-	headLen := dp.GetHeadLen()
+	headLen := dp.HeadLen()
 
 	header := make([]byte, headLen)
 	if _, err := io.ReadFull(conn, header); err != nil {
@@ -275,7 +275,7 @@ func recv(conn *net.TCPConn) ([]byte, error) {
 		}
 	}
 
-	dataLen := tempMsg.GetMsgLen()
+	dataLen := tempMsg.MsgLen()
 	if dataLen > 0 {
 		data := make([]byte, dataLen)
 		if _, err := io.ReadFull(conn, data); err != nil {

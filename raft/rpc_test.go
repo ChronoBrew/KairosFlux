@@ -99,7 +99,7 @@ func TestAppendEntriesRPC(t *testing.T) {
 		t.Errorf("Expected term 1, got %d", reply.Term)
 	}
 
-	log := r2.GetLog()
+	log := r2.Log()
 	if len(log) != 1 {
 		t.Errorf("Expected 1 log entry, got %d", len(log))
 	}
