@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package test_grpc;
 
-option go_package = "github.com/NeverENG/BanDB/test_grpc";
+option go_package = "github.com/NeverENG/BanDB/kvgrpc";
 
 service KVService {
   rpc Put(PutRequest) returns (PutResponse);

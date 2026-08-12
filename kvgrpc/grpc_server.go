@@ -1,4 +1,4 @@
-package test_grpc
+package kvgrpc
 
 import (
 	"context"

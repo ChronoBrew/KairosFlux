@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/NeverENG/BanDB/kvgrpc"
 	"github.com/NeverENG/BanDB/service"
-	"github.com/NeverENG/BanDB/test_grpc"
 )
 
 func main() {
@@ -19,7 +19,7 @@ func main() {
 
 	ha := service.NewHA(kvServer)
 
-	grpcSrv := test_grpc.NewGRPCServer(kvServer)
+	grpcSrv := kvgrpc.NewGRPCServer(kvServer)
 
 	fmt.Println("Starting gRPC Server...")
 	fmt.Printf("HA initialized, initial health status: %v\n", ha.IsHealthy())
