@@ -134,7 +134,7 @@ func (c *Client) roundTrip(msg *utils.Message) ([]byte, error) {
 // readResponse 读取一条响应帧，返回其 data 负载。
 func (c *Client) readResponse() ([]byte, error) {
 	dp := NewDataPack()
-	header := make([]byte, dp.GetHeadLen())
+	header := make([]byte, dp.HeadLen())
 	if _, err := io.ReadFull(c.conn, header); err != nil {
 		return nil, fmt.Errorf("banNet client read header: %w", err)
 	}
@@ -152,7 +152,7 @@ func (c *Client) readResponse() ([]byte, error) {
 			return nil, fmt.Errorf("banNet client read msgID: %w", err)
 		}
 	}
-	dataLen := tempMsg.GetMsgLen()
+	dataLen := tempMsg.MsgLen()
 	if dataLen == 0 {
 		return nil, nil
 	}

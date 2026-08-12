@@ -33,7 +33,7 @@ func TestScanResponseSurvivesWire(t *testing.T) {
 	}
 
 	// 客户端 readResponse 的读取路径：先解头部（此处触发 MaxPackageSize 检查）。
-	headLen := int(dp.GetHeadLen())
+	headLen := int(dp.HeadLen())
 	if len(packet) < headLen {
 		t.Fatalf("packet 过短")
 	}
@@ -44,7 +44,7 @@ func TestScanResponseSurvivesWire(t *testing.T) {
 	m := tempMsg.(*bannet.Message)
 
 	off := headLen + int(m.IDLen)
-	data := packet[off : off+int(tempMsg.GetMsgLen())]
+	data := packet[off : off+int(tempMsg.MsgLen())]
 
 	status, got, err := proto.DecodeScanResponse(data)
 	if err != nil {

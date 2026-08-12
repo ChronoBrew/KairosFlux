@@ -174,7 +174,7 @@ func (c *Client) send(msg *utils.Message) error {
 // readResponse 读取响应: 返回 msgID 与 data payload
 func (c *Client) readResponse() (string, []byte, error) {
 	dp := bannet.NewDataPack()
-	headLen := dp.GetHeadLen()
+	headLen := dp.HeadLen()
 
 	header := make([]byte, headLen)
 	if _, err := io.ReadFull(c.conn, header); err != nil {
@@ -200,7 +200,7 @@ func (c *Client) readResponse() (string, []byte, error) {
 		msgID = string(idBuf)
 	}
 
-	dataLen := tempMsg.GetMsgLen()
+	dataLen := tempMsg.MsgLen()
 	var data []byte
 	if dataLen > 0 {
 		data = make([]byte, dataLen)

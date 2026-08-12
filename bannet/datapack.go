@@ -19,22 +19,22 @@ var _ Codec = &DataPack{}
 
 func NewDataPack() *DataPack { return &DataPack{} }
 
-func (dp *DataPack) GetHeadLen() uint32 {
+func (dp *DataPack) HeadLen() uint32 {
 	return 6 // dataLen u32 + msgIDLen u16
 }
 
 // Pack 编码一帧。按最终长度一次性分配并直接写入定长头部，不经 bytes.Buffer 的增量扩容，
 // 也不经 binary.Write 的反射路径——Pack 位于每个响应的必经路径上。
 func (dp *DataPack) Pack(msg Frame) ([]byte, error) {
-	id := msg.GetMsgID()
+	id := msg.MsgID()
 	if len(id) > 0xFFFF {
 		return nil, fmt.Errorf("msgID too long: %d", len(id))
 	}
-	data := msg.GetData()
+	data := msg.Payload()
 
-	head := int(dp.GetHeadLen())
+	head := int(dp.HeadLen())
 	buf := make([]byte, head+len(id)+len(data))
-	binary.LittleEndian.PutUint32(buf[0:4], msg.GetMsgLen())
+	binary.LittleEndian.PutUint32(buf[0:4], msg.MsgLen())
 	binary.LittleEndian.PutUint16(buf[4:6], uint16(len(id)))
 	copy(buf[head:], id)
 	copy(buf[head+len(id):], data)
@@ -44,7 +44,7 @@ func (dp *DataPack) Pack(msg Frame) ([]byte, error) {
 // UnPack 只解析定长头部 (6 字节), 返回带 DataLen 与 IDLen 的占位 Message;
 // 调用方拿到 IDLen 后, 还需要从连接读取 IDLen+DataLen 字节填充 Id 与 Data。
 func (dp *DataPack) UnPack(data []byte) (Frame, error) {
-	if len(data) < int(dp.GetHeadLen()) {
+	if len(data) < int(dp.HeadLen()) {
 		return nil, errors.New("head too short")
 	}
 
@@ -57,7 +57,7 @@ func (dp *DataPack) UnPack(data []byte) (Frame, error) {
 		slog.Warn("banNet frame exceeds max package size", "dataLen", msg.DataLen, "max", config.G.MaxPackageSize)
 		return nil, errors.New("data too large")
 	}
-	// 借用 Id 暂存 IDLen 信息: 调用方先从 GetMsgID() 拿不到东西, 通过头部之后另读 IDLen 字节填回。
+	// 借用 Id 暂存 IDLen 信息: 调用方先从 MsgID() 拿不到东西, 通过头部之后另读 IDLen 字节填回。
 	// 这里用 SetMsgLen 仅保留 DataLen 不冲突, IDLen 通过返回的 Message.IDLen 提供。
 	msg.IDLen = idLen
 	return msg, nil

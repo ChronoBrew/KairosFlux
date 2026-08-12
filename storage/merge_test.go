@@ -27,7 +27,7 @@ func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	path := ss.GetAllMetas()[0].Filepath
+	path := ss.Metas()[0].Filepath
 
 	it, err := newSSTableIterator(path)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestMergeBasic(t *testing.T) {
 	if err := ss.WriteToSSTable([]LogEntry{entry("b", "2"), entry("d", "2"), entry("f", "2")}); err != nil {
 		t.Fatal(err)
 	}
-	files := ss.GetLevelFiles(0)
+	files := ss.LevelFiles(0)
 	if len(files) != 2 {
 		t.Fatalf("want 2 source files, got %d", len(files))
 	}
@@ -112,7 +112,7 @@ func TestMergeDedupKeepNewest(t *testing.T) {
 	ss.WriteToSSTable([]LogEntry{entry("dup", "v1"), entry("m", "m1")})
 	ss.WriteToSSTable([]LogEntry{entry("dup", "v2"), entry("z", "z2")})
 
-	merged := ss.MergeSSTable(ss.GetLevelFiles(0), 1)
+	merged := ss.MergeSSTable(ss.LevelFiles(0), 1)
 	if merged == nil {
 		t.Fatal("merge returned nil")
 	}
@@ -170,7 +170,7 @@ func TestSSTableTombstoneRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	path := ss.GetAllMetas()[0].Filepath
+	path := ss.Metas()[0].Filepath
 
 	if v, ok := ss.ReadFromSSTable(path, []byte("del")); !ok || v != nil {
 		t.Errorf("point-read tombstone: ok=%v v=%q, want ok=true v=nil", ok, v)
@@ -212,7 +212,7 @@ func TestMergePreservesTombstone(t *testing.T) {
 	ss.WriteToSSTable([]LogEntry{entry("k", "v")}) // srcIdx 0（旧）
 	ss.WriteToSSTable([]LogEntry{tomb("k")})       // srcIdx 1（新，墓碑）
 
-	merged := ss.MergeSSTable(ss.GetLevelFiles(0), 1)
+	merged := ss.MergeSSTable(ss.LevelFiles(0), 1)
 	if merged == nil {
 		t.Fatal("merge returned nil")
 	}

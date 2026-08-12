@@ -33,12 +33,12 @@ func TestNewRaft(t *testing.T) {
 	}
 }
 
-func TestGetState(t *testing.T) {
+func TestState(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 	defer r.Stop()
 
-	state, term := r.GetState()
+	state, term := r.State()
 	if state != Follower {
 		t.Errorf("Expected state to be Follower, got %v", state)
 	}
@@ -47,12 +47,12 @@ func TestGetState(t *testing.T) {
 	}
 }
 
-func TestGetLog(t *testing.T) {
+func TestLog(t *testing.T) {
 	peers := []string{"localhost:8000"}
 	r := NewRaftWithDataDir(peers, 0, t.TempDir())
 	defer r.Stop()
 
-	log := r.GetLog()
+	log := r.Log()
 	if len(log) != 0 {
 		t.Errorf("Expected empty log, got %d entries", len(log))
 	}
@@ -76,7 +76,7 @@ func TestElectionTimeout(t *testing.T) {
 
 	time.Sleep(400 * time.Millisecond)
 
-	state, term := r.GetState()
+	state, term := r.State()
 	if state == Follower && term == 0 {
 		t.Error("Expected election to start after timeout")
 	}
@@ -89,7 +89,7 @@ func TestLeaderAppendsLog(t *testing.T) {
 
 	time.Sleep(400 * time.Millisecond)
 
-	state, _ := r.GetState()
+	state, _ := r.State()
 	if state != Leader {
 		t.Skip("Not leader, skipping log append test")
 	}
@@ -99,7 +99,7 @@ func TestLeaderAppendsLog(t *testing.T) {
 		t.Errorf("Expected index 0, got %d", index)
 	}
 
-	log := r.GetLog()
+	log := r.Log()
 	if len(log) != 1 {
 		t.Errorf("Expected 1 log entry, got %d", len(log))
 	}
@@ -116,14 +116,14 @@ func TestLeaderSendsHeartbeats(t *testing.T) {
 
 	time.Sleep(400 * time.Millisecond)
 
-	state, _ := r.GetState()
+	state, _ := r.State()
 	if state != Leader {
 		t.Skip("Not leader, skipping heartbeat test")
 	}
 
 	time.Sleep(100 * time.Millisecond)
 
-	state, _ = r.GetState()
+	state, _ = r.State()
 	if state != Leader {
 		t.Error("Expected state to remain Leader after heartbeats")
 	}
@@ -352,7 +352,7 @@ func TestPersistAfterElection(t *testing.T) {
 	// 等待成为 Leader
 	time.Sleep(400 * time.Millisecond)
 
-	state, term := r.GetState()
+	state, term := r.State()
 	if state != Leader {
 		t.Skip("Not leader, skipping election persistence test")
 	}
@@ -362,7 +362,7 @@ func TestPersistAfterElection(t *testing.T) {
 	// 重新加载，验证 Term 已持久化
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
 	defer r2.Stop()
-	_, newTerm := r2.GetState()
+	_, newTerm := r2.State()
 
 	if newTerm < originalTerm {
 		t.Errorf("Expected Term >= %d after reload, got %d", originalTerm, newTerm)
@@ -384,7 +384,7 @@ func TestPersistAfterAppendEntry(t *testing.T) {
 	// 等待成为 Leader
 	time.Sleep(400 * time.Millisecond)
 
-	state, _ := r.GetState()
+	state, _ := r.State()
 	if state != Leader {
 		t.Skip("Not leader, skipping append entry persistence test")
 	}
@@ -398,7 +398,7 @@ func TestPersistAfterAppendEntry(t *testing.T) {
 	// 重新加载，验证日志已持久化
 	r2 := NewRaftWithDataDir(peers, 0, datadir)
 	defer r2.Stop()
-	log := r2.GetLog()
+	log := r2.Log()
 
 	if len(log) == 0 {
 		t.Error("Expected log to persist after reload")

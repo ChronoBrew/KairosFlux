@@ -51,13 +51,13 @@ func TestRaftGroupServer_DispatchesByGroupID(t *testing.T) {
 	}
 
 	// 条目只应落进组 1。
-	if got := len(g1.GetLog()); got != 1 {
+	if got := len(g1.Log()); got != 1 {
 		t.Fatalf("group 1 should have 1 entry, got %d", got)
 	}
-	if string(g1.GetLog()[0].Command) != "g1-entry" {
-		t.Fatalf("group 1 wrong command: %q", g1.GetLog()[0].Command)
+	if string(g1.Log()[0].Command) != "g1-entry" {
+		t.Fatalf("group 1 wrong command: %q", g1.Log()[0].Command)
 	}
-	if got := len(g0.GetLog()); got != 0 {
+	if got := len(g0.Log()); got != 0 {
 		t.Fatalf("group 0 must stay empty (dispatch isolation), got %d", got)
 	}
 }

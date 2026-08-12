@@ -36,13 +36,13 @@ func NewMessage2(id string, data []byte) *Message {
 	}
 }
 
-func (m *Message) GetMsgID() string {
+func (m *Message) MsgID() string {
 	return m.Id
 }
-func (m *Message) GetMsgLen() uint32 {
+func (m *Message) MsgLen() uint32 {
 	return m.DataLen
 }
-func (m *Message) GetData() []byte {
+func (m *Message) Payload() []byte {
 	return m.Data
 }
 

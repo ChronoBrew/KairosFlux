@@ -46,7 +46,7 @@ func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *
 		msgBuffChan: make(chan []byte, config.G.MaxMsgChanLen),
 		property:    make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
 	}
-	c.TCPServer.GetConnMgr().Add(c)
+	c.TCPServer.Conns().Add(c)
 	return c
 }
 
@@ -63,7 +63,7 @@ func (c *Connection) StartReader() {
 	// reader 与 headData 在循环外创建：仅本 goroutine 读取该连接，故可安全复用。
 	reader := bufio.NewReaderSize(c.Conn, connReadBufSize)
 	dp := NewDataPack()
-	headData := make([]byte, dp.GetHeadLen())
+	headData := make([]byte, dp.HeadLen())
 
 	for {
 		if _, err := io.ReadFull(reader, headData); err != nil {
@@ -88,8 +88,8 @@ func (c *Connection) StartReader() {
 		}
 
 		var data []byte
-		if msg.GetMsgLen() > 0 {
-			data = make([]byte, msg.GetMsgLen())
+		if msg.MsgLen() > 0 {
+			data = make([]byte, msg.MsgLen())
 
 			if _, err := io.ReadFull(reader, data); err != nil {
 				slog.Error("conn read body failed", "connID", c.ConnID, "error", err)
@@ -161,14 +161,14 @@ func (c *Connection) Stop() {
 		c.cancel()     // 唯一取消信号：唤醒 Writer 与 Start 的 <-ctx.Done()
 		c.Conn.Close() // 解除 Reader 的阻塞读，使其返回
 		c.TCPServer.CallConnStopFunc(c)
-		c.TCPServer.GetConnMgr().Remove(c)
+		c.TCPServer.Conns().Remove(c)
 		// 不 close msgChan / msgBuffChan：worker 可能仍在 SendBuffMsg，close 会触发 send on closed channel
 	})
 }
-func (c *Connection) GetConnID() uint32 {
+func (c *Connection) ID() uint32 {
 	return c.ConnID
 }
-func (c *Connection) GetTCPConn() *net.TCPConn {
+func (c *Connection) TCPConn() *net.TCPConn {
 	return c.Conn
 }
 
@@ -212,7 +212,7 @@ func (c *Connection) SetProperty(key string, value any) {
 	c.property[key] = value
 }
 
-func (c *Connection) GetProperty(key string) any {
+func (c *Connection) Property(key string) any {
 	c.propertyLock.RLock()
 	defer c.propertyLock.RUnlock()
 	return c.property[key]

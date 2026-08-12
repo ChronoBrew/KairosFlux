@@ -48,7 +48,7 @@ func NewServer() *Server {
 	}
 }
 
-func (s *Server) GetConnMgr() ConnRegistry {
+func (s *Server) Conns() ConnRegistry {
 	return s.ConnMgr
 }
 

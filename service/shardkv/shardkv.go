@@ -26,7 +26,7 @@ type Shard struct {
 // 【必须从构造起就运行】Raft 的 `ApplyCh <- entry` 是持锁的阻塞发送（缓冲 100）；若无人排空，
 // 累计 100 条后发送会在锁内阻塞、卡死整个组。故每分片构造即起本循环，Stop 时退出。
 func (s *Shard) applyLoop() {
-	ch := s.raft.GetApplyCh()
+	ch := s.raft.ApplyCh
 	for {
 		select {
 		case <-s.stopCh:

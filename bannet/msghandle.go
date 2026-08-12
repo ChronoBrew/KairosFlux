@@ -31,9 +31,9 @@ func (m *MsgHandle) AddRouter(msgID string, r Handler) {
 }
 
 func (m *MsgHandle) DoMsgHandle(request Request) {
-	handler, ok := m.Arip[request.GetMsgID()]
+	handler, ok := m.Arip[request.MsgID()]
 	if !ok {
-		slog.Error("banNet unregistered msgID", "msgID", request.GetMsgID())
+		slog.Error("banNet unregistered msgID", "msgID", request.MsgID())
 		return
 	}
 	if handler.PreHandle(request) == HookDrop {
@@ -51,7 +51,7 @@ func (m *MsgHandle) StartWorkerPool() {
 }
 
 func (m *MsgHandle) SendMsgToTaskQueue(request Request) {
-	workerID := request.GetConnection().GetConnID() % m.WorkerPoolSize
+	workerID := request.Conn().ID() % m.WorkerPoolSize
 
 	// 优先投递到专属 Worker
 	select {
