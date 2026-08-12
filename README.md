@@ -187,8 +187,14 @@ case err != nil:
 错误一律为哨兵值，用 `errors.Is` 判别：`ErrKeyNotFound`、`ErrOverloaded`、`ErrDropped`、
 `ErrServer`、`ErrClosed`、`ErrProtocol`。
 
-多语言接入走 gRPC：`kvgrpc/kv.proto` 用 protoc 生成对应语言的客户端即可（当前 proto 覆盖
-Put/Get/Delete，不含 Scan）。
+### 对外契约只有两样
+
+`client` 包（本 SDK）与上面的 BanNet 协议规范。除此之外的包都是内部实现，可能随版本变动。
+
+仓库内另有一条 gRPC 传输（`internal/kvgrpc`），但它**不是对外接口**，已置于 `internal/`
+之下由编译器强制——模块外无法导入。把 `.proto` 交给使用方自行生成客户端，等于把内部传输
+实现当成公开 API：使用方要装 protoc 工具链、要理解 protobuf，还得跟着我们的 proto 变更走。
+需要多语言接入时，应当在 BanNet 协议之上提供各语言 SDK 或一个网关，而不是暴露 protobuf。
 
 BanNet 协议：6 字节定长帧头 + 变长 msgID + 负载，多字节整数一律小端。
 

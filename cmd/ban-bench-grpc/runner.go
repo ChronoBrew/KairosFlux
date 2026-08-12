@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NeverENG/BanDB/kvgrpc"
+	"github.com/NeverENG/BanDB/internal/kvgrpc"
 )
 
 type Config struct {
