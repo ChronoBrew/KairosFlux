@@ -2,31 +2,35 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	bandb "github.com/NeverENG/BanDB/client"
 	"github.com/NeverENG/BanDB/pkg/predicate"
-	"github.com/NeverENG/BanDB/pkg/proto"
 )
+
+// cmdTimeout 是交互模式下单条命令的超时。
+const interactiveTimeout = 5 * time.Second
 
 // InteractiveClient 交互式客户端
 type InteractiveClient struct {
-	client *Client
+	client *bandb.Client
 	reader *bufio.Reader
 }
 
 // NewInteractiveClient 创建交互式客户端
 func NewInteractiveClient(addr string) (*InteractiveClient, error) {
-	client := NewClient(addr)
-
-	// 连接服务器
-	err := client.Connect()
+	client, err := bandb.New(bandb.Options{Addrs: []string{addr}})
 	if err != nil {
-		return nil, fmt.Errorf("连接失败: %v", err)
+		return nil, err
 	}
 
-	fmt.Printf("已连接到 %s\n", addr)
+	// SDK 惰性建连，首条命令才真正拨号，故此处不宣称「已连接」。
+	fmt.Printf("目标服务端 %s\n", addr)
 	fmt.Println("输入命令进行操作，输入 'quit' 或 'exit' 退出")
 	fmt.Println("支持命令: put <key> <value>, get <key>, delete <key>, scan <start|-> <end|-> [field op operand]")
 	fmt.Println()
@@ -111,7 +115,9 @@ func (ic *InteractiveClient) handlePut(parts []string) {
 	key := parts[1]
 	value := strings.Join(parts[2:], " ") // 支持 value 中有空格
 
-	err := ic.client.SendPut([]byte(key), []byte(value))
+	ctx, cancel := context.WithTimeout(context.Background(), interactiveTimeout)
+	defer cancel()
+	err := ic.client.Put(ctx, []byte(key), []byte(value))
 	if err != nil {
 		fmt.Printf("❌ 错误: %v\n", err)
 		return
@@ -129,7 +135,13 @@ func (ic *InteractiveClient) handleGet(parts []string) {
 
 	key := parts[1]
 
-	value, err := ic.client.SendGet([]byte(key))
+	ctx, cancel := context.WithTimeout(context.Background(), interactiveTimeout)
+	defer cancel()
+	value, err := ic.client.Get(ctx, []byte(key))
+	if errors.Is(err, bandb.ErrKeyNotFound) {
+		fmt.Printf("键不存在: %s\n", key)
+		return
+	}
 	if err != nil {
 		fmt.Printf("❌ 错误: %v\n", err)
 		return
@@ -147,7 +159,9 @@ func (ic *InteractiveClient) handleDelete(parts []string) {
 
 	key := parts[1]
 
-	err := ic.client.SendDelete([]byte(key))
+	ctx, cancel := context.WithTimeout(context.Background(), interactiveTimeout)
+	defer cancel()
+	err := ic.client.Delete(ctx, []byte(key))
 	if err != nil {
 		fmt.Printf("❌ 错误: %v\n", err)
 		return
@@ -164,11 +178,8 @@ func (ic *InteractiveClient) handleScan(parts []string) {
 		return
 	}
 
-	req := proto.ScanRequest{
-		Start: dashToEmpty(parts[1]),
-		End:   dashToEmpty(parts[2]),
-		Pred:  predicate.Predicate{Op: predicate.OpNone},
-	}
+	start, end := dashToEmpty(parts[1]), dashToEmpty(parts[2])
+	pred := predicate.Predicate{Op: predicate.OpNone}
 
 	if len(parts) >= 6 {
 		op, ok := parseOp(parts[4])
@@ -176,13 +187,15 @@ func (ic *InteractiveClient) handleScan(parts []string) {
 			fmt.Printf("不支持的算子: %s (支持 > >= < <= == !=)\n", parts[4])
 			return
 		}
-		req.Pred = predicate.Predicate{Field: parts[3], Op: op, Operand: strings.Join(parts[5:], " ")}
+		pred = predicate.Predicate{Field: parts[3], Op: op, Operand: strings.Join(parts[5:], " ")}
 	} else if len(parts) > 3 {
 		fmt.Println("谓词需 3 段: field op operand，例: az > 9.9")
 		return
 	}
 
-	entries, err := ic.client.SendScan(req)
+	ctx, cancel := context.WithTimeout(context.Background(), interactiveTimeout)
+	defer cancel()
+	entries, err := ic.client.Scan(ctx, start, end, pred)
 	if err != nil {
 		fmt.Printf("❌ 错误: %v\n", err)
 		return
