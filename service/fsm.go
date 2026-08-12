@@ -2,7 +2,6 @@ package service
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -237,10 +236,12 @@ func (k *KVServer) replaySnapshot(entry raft.LogEntry) {
 	}
 }
 
+// Get 读取 key 的最新值。key 不存在时返回 storage.ErrKeyNotFound，调用方以
+// errors.Is 判别，从而与读盘失败等真实故障区分开。
 func (k *KVServer) Get(key []byte) ([]byte, error) {
 	value, err := k.storage.Get(key)
 	if value == nil && err == nil {
-		return nil, errors.New("key not found")
+		return nil, storage.ErrKeyNotFound
 	}
 	return value, err
 }

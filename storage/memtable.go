@@ -2,7 +2,6 @@ package storage
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand"
@@ -125,13 +124,13 @@ func (m *MemTable) Get(key []byte) ([]byte, error) {
 	m.mu.RUnlock()
 
 	if active == nil || active.head == nil {
-		return nil, errors.New("NO DATA IN MEM")
+		return nil, ErrMemTableUnavailable
 	}
 
 	// 先在 active 中查找（最新数据）。命中墓碑(val==nil)即已删除，不再下穿。
 	if val, found := active.search(key); found {
 		if val == nil {
-			return nil, errors.New("Key not found")
+			return nil, ErrKeyNotFound
 		}
 		return val, nil
 	}
@@ -139,7 +138,7 @@ func (m *MemTable) Get(key []byte) ([]byte, error) {
 	if dirty != nil && dirty.head != nil {
 		if val, found := dirty.search(key); found {
 			if val == nil {
-				return nil, errors.New("Key not found")
+				return nil, ErrKeyNotFound
 			}
 			return val, nil
 		}
@@ -147,12 +146,12 @@ func (m *MemTable) Get(key []byte) ([]byte, error) {
 
 	if val, found := m.getFromSSTables(key); found {
 		if val == nil { // SSTable 中的墓碑
-			return nil, errors.New("Key not found")
+			return nil, ErrKeyNotFound
 		}
 		return val, nil
 	}
 
-	return nil, errors.New("Key not found")
+	return nil, ErrKeyNotFound
 }
 
 // firstGTE 返回第一个 Key >= key 的节点；key 为空表示从头开始。无则返回 nil。
@@ -279,7 +278,7 @@ func (m *MemTable) Put(key []byte, value []byte) error {
 	if m.active == nil || m.active.head == nil {
 		m.mu.Unlock()
 		m.credits.Release(full) // 写入未发生，归还信用
-		return errors.New("NO DATA IN MEMTABLE")
+		return ErrMemTableUnavailable
 	}
 
 	delta := m.active.insert(key, value)
@@ -367,7 +366,7 @@ func (m *MemTable) Delete(key []byte) error {
 	if m.active == nil || m.active.head == nil {
 		m.mu.Unlock()
 		m.credits.Release(full)
-		return errors.New("NO DATA IN MEMTABLE")
+		return ErrMemTableUnavailable
 	}
 
 	// 写入墓碑(Value==nil)而非物理删除：物理删除只能去掉 active 中的节点，
@@ -551,7 +550,7 @@ func (m *MemTable) FlushToSSTable(entries []LogEntry) error {
 
 	// 写入 SSTable（SSTable 内部有锁保护元数据并发安全）
 	if err := m.sst.WriteToSSTable(sorted); err != nil {
-		return fmt.Errorf("FlushToSSTable write error: %w", err)
+		return fmt.Errorf("storage: flush snapshot to sstable: %w", err)
 	}
 
 	// 触发 Compaction 检查

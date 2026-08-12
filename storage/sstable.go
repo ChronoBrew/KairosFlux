@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -249,7 +248,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 // WriteToSSTable 将有序 entries 写入 SSTable 文件（含块索引）
 func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 	if len(entries) == 0 {
-		return errors.New("dont keep")
+		return ErrNoEntries
 	}
 
 	// L0：memtable 刷盘落到 level 0；level 编进文件名以便重启恢复。
