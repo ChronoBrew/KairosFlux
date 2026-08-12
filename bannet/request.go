@@ -1,32 +1,32 @@
 package bannet
 
-type Request struct {
-	msg  IMessage
-	conn IConnect
+type request struct {
+	msg  Frame
+	conn Conn
 }
 
-var _ IRequest = &Request{}
+var _ Request = &request{}
 
-func NewRequest(msg IMessage, conn IConnect) *Request {
-	return &Request{
+func newRequest(msg Frame, conn Conn) *request {
+	return &request{
 		msg:  msg,
 		conn: conn,
 	}
 }
-func (req *Request) GetMsgData() []byte {
+func (req *request) GetMsgData() []byte {
 	return req.msg.GetData()
 }
 
 // SetMsgData 改写负载并同步长度，避免 DataLen 与实际数据漂移。
-func (req *Request) SetMsgData(data []byte) {
+func (req *request) SetMsgData(data []byte) {
 	req.msg.SetData(data)
 	req.msg.SetMsgLen(uint32(len(data)))
 }
 
-func (req *Request) GetMsgID() string {
+func (req *request) GetMsgID() string {
 	return req.msg.GetMsgID()
 }
 
-func (req *Request) GetConnection() IConnect {
+func (req *request) GetConnection() Conn {
 	return req.conn
 }

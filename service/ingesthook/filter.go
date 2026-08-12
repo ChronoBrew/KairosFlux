@@ -47,7 +47,7 @@ func NewFilter(redactFields []string, maxValueLen int, dropBackward bool) *Filte
 }
 
 // Handle 实现 PreHandle 钩子签名。返回 HookDrop 表示丢弃本帧。
-func (f *Filter) Handle(req bannet.IRequest) bannet.HookAction {
+func (f *Filter) Handle(req bannet.Request) bannet.HookAction {
 	// 钩子只针对写入帧：GET/DELETE 的负载格式不同，放行不动。
 	if req.GetMsgID() != proto.MsgPut {
 		return bannet.HookPass

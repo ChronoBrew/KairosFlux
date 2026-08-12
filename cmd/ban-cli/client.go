@@ -158,7 +158,7 @@ func (c *Client) SendScan(req proto.ScanRequest) ([]proto.ScanEntry, error) {
 // send 打包并写出一条消息
 func (c *Client) send(msg *utils.Message) error {
 	dp := bannet.NewDataPack()
-	// utils.Message 实现了 bannet.IMessage 接口（同样的方法集）
+	// utils.Message 实现了 bannet.Frame 接口（同样的方法集）
 	packet, err := dp.Pack(msg)
 	if err != nil {
 		return fmt.Errorf("failed to pack message: %v", err)
