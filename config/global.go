@@ -34,6 +34,10 @@ type GlobalConfig struct {
 	// 字节级令牌桶背压：超出预算时写入阻塞，等 flush 归还信用。<=0 关闭背压。
 	MemTableMaxInflightBytes int64
 
+	// BlockCacheBytes SSTable 数据块缓存的字节预算，使热数据点查不触达磁盘。
+	// <=0 关闭缓存（每次点查均从文件读取目标块）。
+	BlockCacheBytes int64
+
 	MaxConn        int
 	MaxPackageSize uint32
 
@@ -111,6 +115,7 @@ func defaultGlobalConfig() *GlobalConfig {
 		MaxMemTableLevel:         32,
 		MaxMemTableSize:          1024,
 		MemTableMaxInflightBytes: 64 << 20, // 64MiB 未刷盘字节预算
+		BlockCacheBytes:          64 << 20, // 64MiB SSTable 数据块缓存
 		WALPath:                  filepath.Join(logDir, "wal.log"),
 		SSTablePath:              logDir,
 		Peers:                    []string{"localhost:8080"}, // 默认单节点
