@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"log/slog"
 
-	"github.com/NeverENG/BanDB/network/banIface"
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/admission"
 	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/pkg/predicate"
@@ -34,9 +34,9 @@ type Router struct {
 	limiter *admission.Limiter
 
 	// 前置处理函数；返回 HookDrop 表示丢弃本帧
-	preHandleFunc func(request banIface.IRequest) banIface.HookAction
+	preHandleFunc func(request bannet.IRequest) bannet.HookAction
 	// 后置处理函数
-	postHandleFunc func(request banIface.IRequest)
+	postHandleFunc func(request bannet.IRequest)
 }
 
 // NewRouter 创建新的路由处理器
@@ -77,30 +77,30 @@ func (r *Router) SetLimiter(l *admission.Limiter) {
 }
 
 // SetPreHandle 设置前置处理函数
-func (r *Router) SetPreHandle(f func(request banIface.IRequest) banIface.HookAction) {
+func (r *Router) SetPreHandle(f func(request bannet.IRequest) bannet.HookAction) {
 	r.preHandleFunc = f
 }
 
 // SetPostHandle 设置后置处理函数
-func (r *Router) SetPostHandle(f func(request banIface.IRequest)) {
+func (r *Router) SetPostHandle(f func(request bannet.IRequest)) {
 	r.postHandleFunc = f
 }
 
 // PreHandle 前置处理。返回 HookDrop 时由本函数回写唯一的「丢弃」响应，
 // 使纯请求-响应协议不发生响应错位（见 OnConnStart 注释）。
-func (r *Router) PreHandle(request banIface.IRequest) banIface.HookAction {
+func (r *Router) PreHandle(request bannet.IRequest) bannet.HookAction {
 	if r.preHandleFunc == nil {
-		return banIface.HookPass
+		return bannet.HookPass
 	}
 	action := r.preHandleFunc(request)
-	if action == banIface.HookDrop {
+	if action == bannet.HookDrop {
 		sendDropped(request)
 	}
 	return action
 }
 
 // Handle 处理请求。开启准入时先按并发上限准入：过载则 shed（回 overloaded 响应）不进处理。
-func (r *Router) Handle(request banIface.IRequest) {
+func (r *Router) Handle(request bannet.IRequest) {
 	if r.limiter != nil {
 		start, ok := r.limiter.Acquire()
 		if !ok {
@@ -135,27 +135,27 @@ func statusPayload(status string) []byte {
 }
 
 // sendErr 写回错误响应
-func sendErr(req banIface.IRequest) {
+func sendErr(req bannet.IRequest) {
 	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusError))
 }
 
 // sendOverloaded 写回「网关过载 shed」响应；保证每请求恰好一个响应、且可被客户端识别重试。
-func sendOverloaded(req banIface.IRequest) {
+func sendOverloaded(req bannet.IRequest) {
 	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusOverloaded))
 }
 
 // sendOK 写回 PUT/DEL 成功响应
-func sendOK(req banIface.IRequest) {
+func sendOK(req bannet.IRequest) {
 	req.GetConnection().SendBuffMsg(proto.MsgRespOK, statusPayload(proto.StatusOK))
 }
 
 // sendDropped 写回「被钩子按策略丢弃」响应；保证每请求恰好一个响应。
-func sendDropped(req banIface.IRequest) {
+func sendDropped(req bannet.IRequest) {
 	req.GetConnection().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusDropped))
 }
 
 // handlePut 处理 PUT 操作
-func (r *Router) handlePut(data []byte, request banIface.IRequest) {
+func (r *Router) handlePut(data []byte, request bannet.IRequest) {
 	// 解析数据格式：key_len + key + value_len + value
 	if len(data) < 8 {
 		slog.Warn("[WARN] handlePut: data too short", "len", len(data))
@@ -204,7 +204,7 @@ func (r *Router) handlePut(data []byte, request banIface.IRequest) {
 }
 
 // handleGet 处理 GET 操作
-func (r *Router) handleGet(data []byte, request banIface.IRequest) {
+func (r *Router) handleGet(data []byte, request bannet.IRequest) {
 	if len(data) < 4 {
 		return
 	}
@@ -249,7 +249,7 @@ func (r *Router) handleGet(data []byte, request banIface.IRequest) {
 }
 
 // handleDelete 处理 DELETE 操作
-func (r *Router) handleDelete(data []byte, request banIface.IRequest) {
+func (r *Router) handleDelete(data []byte, request bannet.IRequest) {
 	if len(data) < 4 {
 		return
 	}
@@ -290,7 +290,7 @@ func (r *Router) handleDelete(data []byte, request banIface.IRequest) {
 }
 
 // handleScan 处理 SCAN 边缘范围查询：解码范围+谓词，服务端筛选后只回传命中切片。
-func (r *Router) handleScan(data []byte, request banIface.IRequest) {
+func (r *Router) handleScan(data []byte, request bannet.IRequest) {
 	req, err := proto.DecodeScanRequest(data)
 	if err != nil {
 		slog.Warn("[WARN] handleScan: decode failed", "error", err)
@@ -305,7 +305,7 @@ func (r *Router) handleScan(data []byte, request banIface.IRequest) {
 }
 
 // PostHandle 后置处理
-func (r *Router) PostHandle(request banIface.IRequest) {
+func (r *Router) PostHandle(request bannet.IRequest) {
 	if r.postHandleFunc != nil {
 		r.postHandleFunc(request)
 	}
@@ -315,10 +315,10 @@ func (r *Router) PostHandle(request banIface.IRequest) {
 // 不向客户端主动下发任何消息：这是纯请求-响应协议，连接建立时推送一条
 // 未经请求的问候会让客户端把它误读为下一个请求的响应，造成整条连接的
 // 响应错位（每条连接首个操作失败）。
-func (r *Router) OnConnStart(conn banIface.IConnect) {}
+func (r *Router) OnConnStart(conn bannet.IConnect) {}
 
 // OnConnStop 连接关闭回调。同理不主动下发消息。
-func (r *Router) OnConnStop(conn banIface.IConnect) {}
+func (r *Router) OnConnStop(conn bannet.IConnect) {}
 
 // GetFSM 获取 FSM 实例
 func (r *Router) GetFSM() *KVServer {

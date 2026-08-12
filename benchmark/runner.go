@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NeverENG/BanDB/network/banNet"
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/proto"
 	"github.com/NeverENG/BanDB/pkg/utils"
 )
@@ -244,7 +244,7 @@ func dial(addr string) (*net.TCPConn, error) {
 
 func send(conn *net.TCPConn, msgID string, data []byte) error {
 	msg := utils.NewMessage2(msgID, data)
-	dp := banNet.NewDataPack()
+	dp := bannet.NewDataPack()
 	packed, err := dp.Pack(msg)
 	if err != nil {
 		return err
@@ -254,7 +254,7 @@ func send(conn *net.TCPConn, msgID string, data []byte) error {
 }
 
 func recv(conn *net.TCPConn) ([]byte, error) {
-	dp := banNet.NewDataPack()
+	dp := bannet.NewDataPack()
 	headLen := dp.GetHeadLen()
 
 	header := make([]byte, headLen)
@@ -267,7 +267,7 @@ func recv(conn *net.TCPConn) ([]byte, error) {
 		return nil, err
 	}
 
-	mImpl := tempMsg.(*banNet.Message)
+	mImpl := tempMsg.(*bannet.Message)
 	if mImpl.IDLen > 0 {
 		idBuf := make([]byte, mImpl.IDLen)
 		if _, err := io.ReadFull(conn, idBuf); err != nil {

@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NeverENG/BanDB/network/banNet"
+	"github.com/NeverENG/BanDB/bannet"
 )
 
 // PeerPool 维护到各节点的 BanNet 客户端连接（懒建、缓存），供分片转发复用。
@@ -21,7 +21,7 @@ type PeerPool struct {
 type peerConn struct {
 	mu     sync.Mutex
 	addr   string
-	client *banNet.Client
+	client *bannet.Client
 }
 
 // NewPeerPool 创建一个转发连接池。timeout 为每次拨号/读写的超时。
@@ -42,12 +42,12 @@ func (p *PeerPool) conn(addr string) *peerConn {
 }
 
 // withClient 在 peer 连接上串行执行 fn；懒建连接，fn 出错则丢弃连接以便下次重连。
-func (p *PeerPool) withClient(addr string, fn func(*banNet.Client) error) error {
+func (p *PeerPool) withClient(addr string, fn func(*bannet.Client) error) error {
 	pc := p.conn(addr)
 	pc.mu.Lock()
 	defer pc.mu.Unlock()
 	if pc.client == nil {
-		c := banNet.NewClient(addr, p.timeout)
+		c := bannet.NewClient(addr, p.timeout)
 		if err := c.Connect(); err != nil {
 			return err
 		}
@@ -63,14 +63,14 @@ func (p *PeerPool) withClient(addr string, fn func(*banNet.Client) error) error 
 
 // Put 转发 PUT 到 addr 节点。
 func (p *PeerPool) Put(addr string, key, value []byte) error {
-	return p.withClient(addr, func(c *banNet.Client) error { return c.Put(key, value) })
+	return p.withClient(addr, func(c *bannet.Client) error { return c.Put(key, value) })
 }
 
 // Get 转发 GET 到 addr 节点，返回 value 与是否命中。
 func (p *PeerPool) Get(addr string, key []byte) ([]byte, bool, error) {
 	var value []byte
 	var found bool
-	err := p.withClient(addr, func(c *banNet.Client) error {
+	err := p.withClient(addr, func(c *bannet.Client) error {
 		v, ok, err := c.Get(key)
 		value, found = v, ok
 		return err
@@ -80,7 +80,7 @@ func (p *PeerPool) Get(addr string, key []byte) ([]byte, bool, error) {
 
 // Delete 转发 DELETE 到 addr 节点。
 func (p *PeerPool) Delete(addr string, key []byte) error {
-	return p.withClient(addr, func(c *banNet.Client) error { return c.Delete(key) })
+	return p.withClient(addr, func(c *bannet.Client) error { return c.Delete(key) })
 }
 
 // Close 关闭所有缓存连接。

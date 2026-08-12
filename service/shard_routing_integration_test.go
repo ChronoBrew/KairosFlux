@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/network/banNet"
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
 	"github.com/NeverENG/BanDB/service/cluster"
@@ -72,7 +72,7 @@ func TestShardRouting_MultiNode(t *testing.T) {
 		pool := cluster.NewPeerPool(2 * time.Second)
 		router.SetRouting(placement, addr, pool)
 
-		srv := banNet.NewServer().(*banNet.Server)
+		srv := bannet.NewServer().(*bannet.Server)
 		host, portStr, _ := net.SplitHostPort(addr)
 		port, _ := strconv.Atoi(portStr)
 		srv.IP = host
@@ -108,7 +108,7 @@ func TestShardRouting_MultiNode(t *testing.T) {
 	value := []byte("payload-v1")
 
 	// 经入口节点写入 → 应被转发到属主。
-	c := banNet.NewClient(entry, 2*time.Second)
+	c := bannet.NewClient(entry, 2*time.Second)
 	if err := c.Connect(); err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestShardRouting_MultiNode(t *testing.T) {
 
 	// 从第三个节点（既非入口也非属主）读 → 仍应转发到属主命中。
 	third := indexOfOther(peers, 0, ownerIdx)
-	c3 := banNet.NewClient(peers[third], 2*time.Second)
+	c3 := bannet.NewClient(peers[third], 2*time.Second)
 	if err := c3.Connect(); err != nil {
 		t.Fatal(err)
 	}

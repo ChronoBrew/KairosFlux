@@ -1,4 +1,4 @@
-package banNet
+package bannet
 
 import (
 	"encoding/binary"

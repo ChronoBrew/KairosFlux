@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/NeverENG/BanDB/network/banNet"
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/proto"
 	"github.com/NeverENG/BanDB/pkg/utils"
 )
@@ -157,8 +157,8 @@ func (c *Client) SendScan(req proto.ScanRequest) ([]proto.ScanEntry, error) {
 
 // send 打包并写出一条消息
 func (c *Client) send(msg *utils.Message) error {
-	dp := banNet.NewDataPack()
-	// utils.Message 实现了 banIface.IMessage 接口（同样的方法集）
+	dp := bannet.NewDataPack()
+	// utils.Message 实现了 bannet.IMessage 接口（同样的方法集）
 	packet, err := dp.Pack(msg)
 	if err != nil {
 		return fmt.Errorf("failed to pack message: %v", err)
@@ -173,7 +173,7 @@ func (c *Client) send(msg *utils.Message) error {
 
 // readResponse 读取响应: 返回 msgID 与 data payload
 func (c *Client) readResponse() (string, []byte, error) {
-	dp := banNet.NewDataPack()
+	dp := bannet.NewDataPack()
 	headLen := dp.GetHeadLen()
 
 	header := make([]byte, headLen)
@@ -186,7 +186,7 @@ func (c *Client) readResponse() (string, []byte, error) {
 		return "", nil, fmt.Errorf("failed to unpack header: %v", err)
 	}
 
-	mImpl, ok := tempMsg.(*banNet.Message)
+	mImpl, ok := tempMsg.(*bannet.Message)
 	if !ok {
 		return "", nil, fmt.Errorf("unexpected message type")
 	}

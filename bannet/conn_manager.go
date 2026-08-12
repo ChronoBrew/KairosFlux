@@ -1,37 +1,35 @@
-package banNet
+package bannet
 
 import (
 	"sync"
-
-	"github.com/NeverENG/BanDB/network/banIface"
 )
 
 type ConnManager struct {
 	mu          sync.RWMutex
-	connections map[uint32]banIface.IConnect
+	connections map[uint32]IConnect
 }
 
-var _ banIface.IConnManager = &ConnManager{}
+var _ IConnManager = &ConnManager{}
 
 func NewConnManager() *ConnManager {
 	return &ConnManager{
-		connections: make(map[uint32]banIface.IConnect),
+		connections: make(map[uint32]IConnect),
 	}
 }
 
-func (cm *ConnManager) Add(conn banIface.IConnect) {
+func (cm *ConnManager) Add(conn IConnect) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	cm.connections[conn.GetConnID()] = conn
 }
 
-func (cm *ConnManager) Remove(conn banIface.IConnect) {
+func (cm *ConnManager) Remove(conn IConnect) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
 	delete(cm.connections, conn.GetConnID())
 }
 
-func (cm *ConnManager) Get(connId uint32) banIface.IConnect {
+func (cm *ConnManager) Get(connId uint32) IConnect {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
 	if conn, ok := cm.connections[connId]; ok {
@@ -48,11 +46,11 @@ func (cm *ConnManager) ClearConn() {
 	// 先在锁内快照并清空连接表，再在锁外逐个 Stop——Stop 内部会回调 Remove 再次加锁，
 	// 若在持锁时调用会自死锁（sync.Mutex 不可重入）。
 	cm.mu.Lock()
-	conns := make([]banIface.IConnect, 0, len(cm.connections))
+	conns := make([]IConnect, 0, len(cm.connections))
 	for _, conn := range cm.connections {
 		conns = append(conns, conn)
 	}
-	cm.connections = make(map[uint32]banIface.IConnect)
+	cm.connections = make(map[uint32]IConnect)
 	cm.mu.Unlock()
 
 	for _, conn := range conns {

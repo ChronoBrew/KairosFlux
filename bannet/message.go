@@ -1,8 +1,6 @@
-package banNet
+package bannet
 
-import (
-	"github.com/NeverENG/BanDB/network/banIface"
-)
+import ()
 
 type Message struct {
 	ID string
@@ -12,7 +10,7 @@ type Message struct {
 	Data    []byte
 }
 
-var _ banIface.IMessage = &Message{}
+var _ IMessage = &Message{}
 
 func NewMessage(id string, data []byte) *Message {
 	return &Message{

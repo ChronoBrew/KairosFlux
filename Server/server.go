@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/NeverENG/BanDB/network/banNet"
+	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/pkg/proto"
 	"github.com/NeverENG/BanDB/service"
@@ -27,7 +27,7 @@ func main() {
 	ha := service.NewHA(KVServer)
 
 	// 初始化网络服务
-	server := banNet.NewServer()
+	server := bannet.NewServer()
 
 	// 创建路由
 	router := service.NewRouter(KVServer)

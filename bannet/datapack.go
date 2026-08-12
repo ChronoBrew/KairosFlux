@@ -1,4 +1,4 @@
-package banNet
+package bannet
 
 import (
 	"encoding/binary"
@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/network/banIface"
 )
 
 // 报文格式:
@@ -16,7 +15,7 @@ import (
 
 type DataPack struct{}
 
-var _ banIface.IDataPack = &DataPack{}
+var _ IDataPack = &DataPack{}
 
 func NewDataPack() *DataPack { return &DataPack{} }
 
@@ -26,7 +25,7 @@ func (dp *DataPack) GetHeadLen() uint32 {
 
 // Pack 编码一帧。按最终长度一次性分配并直接写入定长头部，不经 bytes.Buffer 的增量扩容，
 // 也不经 binary.Write 的反射路径——Pack 位于每个响应的必经路径上。
-func (dp *DataPack) Pack(msg banIface.IMessage) ([]byte, error) {
+func (dp *DataPack) Pack(msg IMessage) ([]byte, error) {
 	id := msg.GetMsgID()
 	if len(id) > 0xFFFF {
 		return nil, fmt.Errorf("msgID too long: %d", len(id))
@@ -44,7 +43,7 @@ func (dp *DataPack) Pack(msg banIface.IMessage) ([]byte, error) {
 
 // UnPack 只解析定长头部 (6 字节), 返回带 DataLen 与 IDLen 的占位 Message;
 // 调用方拿到 IDLen 后, 还需要从连接读取 IDLen+DataLen 字节填充 Id 与 Data。
-func (dp *DataPack) UnPack(data []byte) (banIface.IMessage, error) {
+func (dp *DataPack) UnPack(data []byte) (IMessage, error) {
 	if len(data) < int(dp.GetHeadLen()) {
 		return nil, errors.New("head too short")
 	}
