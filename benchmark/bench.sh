@@ -27,7 +27,9 @@ mkdir -p "$RUNDIR/config"
 #    (Host/Port 即监听地址, Peers[Me] 必须等于它, 否则单节点 Raft 会去连别的
 #     地址——例如你正在运行的另一个服务端——导致选不出 Leader、写入全部失败)。
 #    数据路径保持相对值, 随 CWD(RUNDIR) 落入受控、可清空的目录。
-sed -e "s/\"Port\": [0-9]\+/\"Port\": $PORT/" \
+#    注意 [0-9][0-9]* 而非 [0-9]\+: BSD sed(macOS) 的 BRE 不认 \+, 会静默不替换,
+#    导致服务端仍监听配置里的原端口, PORT= 覆盖失效。
+sed -e "s/\"Port\": [0-9][0-9]*/\"Port\": $PORT/" \
     -e "s/\"Host\": \"[^\"]*\"/\"Host\": \"127.0.0.1\"/" \
     -e "1s/^{/{ \"Peers\": [\"127.0.0.1:$PORT\"], \"Me\": 0,/" \
     "$REPO/config/config.json" > "$RUNDIR/config/config.json"
@@ -44,16 +46,24 @@ SRV_PID=$!
 cleanup() { kill "$SRV_PID" 2>/dev/null || true; }
 trap cleanup EXIT
 
-# 5. 等服务端就绪(最多 30s): 端口可连 **且** Raft 已选出 Leader。
-#    只等端口会有竞态——端口先于 Leader 选举打开, 紧接着的 pre-populate 写入
+# 5. 等服务端就绪(最多 30s): 端口可连 **且**(raft 模式下)Raft 已选出 Leader。
+#    raft 模式只等端口会有竞态——端口先于 Leader 选举打开, 紧接着的 pre-populate 写入
 #    会打到尚未成为 Leader 的节点, AppendEntry 失败导致整批写入报错。
+#    但 standalone 模式不选主, "becoming leader" 永不出现: 无条件要求它会让就绪探测
+#    必然超时, 整个压测一条也跑不起来。故按模式决定是否要求该日志。
+if grep -q '"Mode"[[:space:]]*:[[:space:]]*"raft"' "$RUNDIR/config/config.json"; then
+  NEED_LEADER=1
+else
+  NEED_LEADER=0
+fi
 for _ in $(seq 1 60); do
   if ! kill -0 "$SRV_PID" 2>/dev/null; then
     echo "[bench] server exited before becoming ready; log:" >&2
     cat "$SRVLOG" >&2
     exit 1
   fi
-  if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null && grep -q "becoming leader" "$SRVLOG"; then
+  if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null &&
+     { [ "$NEED_LEADER" = 0 ] || grep -q "becoming leader" "$SRVLOG"; }; then
     exec 3>&- 3<&-
     ready=1
     break
