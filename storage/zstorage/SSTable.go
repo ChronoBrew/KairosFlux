@@ -43,6 +43,25 @@ type BlockIndexEntry struct {
 	BlockOffset int64
 }
 
+// blockIndex 单个 SSTable 文件的块索引及数据区结束偏移。
+//
+// 磁盘上的索引只记录每块起始偏移，故块长度由「下一块起始 − 本块起始」推出，最后一块
+// 的结束即数据区结束（footer 中的 indexOffset）。缓存 dataEnd 使块长度完全可计算，
+// 从而支持按精确长度单次读取整块，无需变更磁盘格式。
+type blockIndex struct {
+	entries []BlockIndexEntry
+	dataEnd int64
+}
+
+// blockExtent 返回第 i 块在文件中的 [start,end) 字节范围。
+func (bi *blockIndex) blockExtent(i int) (int64, int64) {
+	start := bi.entries[i].BlockOffset
+	if i+1 < len(bi.entries) {
+		return start, bi.entries[i+1].BlockOffset
+	}
+	return start, bi.dataEnd
+}
+
 var _ istorage.ISSTable = &SSTable{}
 
 type SSTable struct {
@@ -53,18 +72,59 @@ type SSTable struct {
 
 	mata       []*istorage.SSTableMata
 	mu         sync.RWMutex
-	indexCache map[string][]BlockIndexEntry
+	indexCache map[string]*blockIndex
 	idxMu      sync.RWMutex
 	bloomCache map[string]*PartitionedBloom // 值为 nil 表示老格式(已确认无布隆)
 	bloomMu    sync.RWMutex
+
+	// fdCache 按路径复用的常驻只读文件句柄，避免每次点查都 open/close 一次文件。
+	// 读路径一律使用 ReadAt：其不依赖文件内偏移，故同一句柄可被任意多个并发读者共享。
+	// 缓存规模由 SSTable 文件数界定（compaction 持续收敛文件数）；句柄在 DeleteSSTable
+	// 中关闭并剔除，否则每轮 compaction 泄漏一个 fd。
+	fdCache map[string]*os.File
+	fdMu    sync.RWMutex
 }
 
 func NewSSTable() *SSTable {
 	return &SSTable{
 		dir:        config.G.SSTablePath,
 		mata:       make([]*istorage.SSTableMata, 0),
-		indexCache: make(map[string][]BlockIndexEntry),
+		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
+		fdCache:    make(map[string]*os.File),
+	}
+}
+
+// openFile 取该路径的常驻只读句柄，未缓存则打开并缓存。返回 nil 表示打开失败。
+func (ss *SSTable) openFile(path string) *os.File {
+	ss.fdMu.RLock()
+	f, ok := ss.fdCache[path]
+	ss.fdMu.RUnlock()
+	if ok {
+		return f
+	}
+
+	ss.fdMu.Lock()
+	defer ss.fdMu.Unlock()
+	if f, ok := ss.fdCache[path]; ok { // 双检：并发者可能已填入
+		return f
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	ss.fdCache[path] = f
+	return f
+}
+
+// closeFile 关闭并剔除该路径的常驻句柄（文件被删除时调用）。
+func (ss *SSTable) closeFile(path string) {
+	ss.fdMu.Lock()
+	f, ok := ss.fdCache[path]
+	delete(ss.fdCache, path)
+	ss.fdMu.Unlock()
+	if ok {
+		f.Close()
 	}
 }
 
@@ -134,8 +194,8 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		// 使 getFromSSTables 的 [MinKey,MaxKey] 范围过滤把命中 key 整段跳过 → 重启后
 		// 已刷盘数据全部读不到。老格式无 footer，loadBlockIndexFromFile 返回 nil，
 		// 保留 MaxKeyLoaded=false 由 EnsureMeta 顺序扫描兜底（对纯数据文件正确）。
-		if idx := ss.loadBlockIndexFromFile(fullPath); len(idx) > 0 {
-			meta.MaxKey = idx[len(idx)-1].LastKey
+		if idx := ss.loadBlockIndexFromFile(fullPath); idx != nil && len(idx.entries) > 0 {
+			meta.MaxKey = idx.entries[len(idx.entries)-1].LastKey
 			meta.MaxKeyLoaded = true
 		}
 
@@ -247,7 +307,7 @@ func (ss *SSTable) WriteToSSTable(entries []istorage.LogEntry) error {
 		cache[i] = BlockIndexEntry{LastKey: b.lastKey, BlockOffset: b.blockOffset}
 	}
 	ss.idxMu.Lock()
-	ss.indexCache[fullPath] = cache
+	ss.indexCache[fullPath] = &blockIndex{entries: cache, dataEnd: indexStart}
 	ss.idxMu.Unlock()
 
 	if err := file.Sync(); err != nil {
@@ -441,7 +501,7 @@ func (ss *SSTable) loadBloomFromFile(filepath string) *PartitionedBloom {
 }
 
 // getBlockIndex 从缓存取块索引，miss 时从文件加载
-func (ss *SSTable) getBlockIndex(filepath string) []BlockIndexEntry {
+func (ss *SSTable) getBlockIndex(filepath string) *blockIndex {
 	ss.idxMu.RLock()
 	idx, ok := ss.indexCache[filepath]
 	ss.idxMu.RUnlock()
@@ -458,8 +518,8 @@ func (ss *SSTable) getBlockIndex(filepath string) []BlockIndexEntry {
 	return idx
 }
 
-// loadBlockIndexFromFile 从文件末尾读取块索引
-func (ss *SSTable) loadBlockIndexFromFile(filepath string) []BlockIndexEntry {
+// loadBlockIndexFromFile 从文件末尾读取块索引及数据区结束偏移
+func (ss *SSTable) loadBlockIndexFromFile(filepath string) *blockIndex {
 	f, err := os.Open(filepath)
 	if err != nil {
 		return nil
@@ -483,7 +543,7 @@ func (ss *SSTable) loadBlockIndexFromFile(filepath string) []BlockIndexEntry {
 	if _, err := f.Seek(indexOffset, io.SeekStart); err != nil {
 		return nil
 	}
-	idx := make([]BlockIndexEntry, blockCount)
+	entries := make([]BlockIndexEntry, blockCount)
 	for i := uint32(0); i < blockCount; i++ {
 		var keyLen uint32
 		if err := binary.Read(f, binary.BigEndian, &keyLen); err != nil {
@@ -497,13 +557,16 @@ func (ss *SSTable) loadBlockIndexFromFile(filepath string) []BlockIndexEntry {
 		if err := binary.Read(f, binary.BigEndian, &offset); err != nil {
 			return nil
 		}
-		idx[i] = BlockIndexEntry{LastKey: key, BlockOffset: offset}
+		entries[i] = BlockIndexEntry{LastKey: key, BlockOffset: offset}
 	}
-	return idx
+	// indexOffset 既是块索引起点，也是数据区终点——即最后一块的结束偏移。
+	return &blockIndex{entries: entries, dataEnd: indexOffset}
 }
 
-// searchBlock 二分索引定位块 → 只读目标块内扫描
-func (ss *SSTable) searchBlock(filepath string, key []byte, idx []BlockIndexEntry) ([]byte, bool) {
+// searchBlock 二分块索引定位目标块，单次 ReadAt 读入整块后在内存中扫描。
+// 每次点查恒定一次 read syscall，与块内条目数无关。
+func (ss *SSTable) searchBlock(filepath string, key []byte, bi *blockIndex) ([]byte, bool) {
+	idx := bi.entries
 	lo, hi := 0, len(idx)-1
 	for lo < hi {
 		mid := (lo + hi) / 2
@@ -517,36 +580,40 @@ func (ss *SSTable) searchBlock(filepath string, key []byte, idx []BlockIndexEntr
 		return nil, false
 	}
 
-	f, err := os.Open(filepath)
-	if err != nil {
-		return nil, false
-	}
-	defer f.Close()
-
-	if _, err := f.Seek(idx[lo].BlockOffset, io.SeekStart); err != nil {
+	start, end := bi.blockExtent(lo)
+	if end <= start {
 		return nil, false
 	}
 
-	for j := 0; j < SSTableBlockSize; j++ {
-		var kLen uint32
-		if err := binary.Read(f, binary.BigEndian, &kLen); err != nil {
+	f := ss.openFile(filepath)
+	if f == nil {
+		return nil, false
+	}
+	buf := make([]byte, end-start)
+	// ReadAt 不使用文件内偏移，故共享句柄可被并发读者安全复用。
+	if _, err := f.ReadAt(buf, start); err != nil {
+		return nil, false
+	}
+
+	for off := 0; off+4 <= len(buf); {
+		kLen := int(binary.BigEndian.Uint32(buf[off:]))
+		off += 4
+		if kLen < 0 || off+kLen+4 > len(buf) {
 			break
 		}
-		k := make([]byte, kLen)
-		if _, err := io.ReadFull(f, k); err != nil {
-			break
-		}
-		var vLen uint32
-		if err := binary.Read(f, binary.BigEndian, &vLen); err != nil {
-			break
-		}
+		k := buf[off : off+kLen]
+		off += kLen
+		vLen := binary.BigEndian.Uint32(buf[off:])
+		off += 4
+
 		tomb := vLen == tombstoneValLen
 		var v []byte
-		if !tomb { // 墓碑无 value 字节，跳过读取
-			v = make([]byte, vLen)
-			if _, err := io.ReadFull(f, v); err != nil {
+		if !tomb { // 墓碑无 value 字节
+			if off+int(vLen) > len(buf) {
 				break
 			}
+			v = buf[off : off+int(vLen)]
+			off += int(vLen)
 		}
 
 		cmp := bytes.Compare(k, key)
@@ -554,7 +621,12 @@ func (ss *SSTable) searchBlock(filepath string, key []byte, idx []BlockIndexEntr
 			if tomb { // 命中墓碑：found 但已删除
 				return nil, true
 			}
-			return v, true
+			// 必须拷贝：v 是整块 buf 的子切片，直接返回会让整块常驻内存。
+			// 用 make+copy 而非 append([]byte(nil), ...)：后者在 v 为空时返回 nil，
+			// 会把「空 value」误变成「墓碑」（约定 nil=墓碑）。
+			out := make([]byte, len(v))
+			copy(out, v)
+			return out, true
 		}
 		if cmp > 0 {
 			break
@@ -706,7 +778,7 @@ func (ss *SSTable) MergeSSTable(files []*istorage.SSTableMata, targetLevel int) 
 		cache[i] = BlockIndexEntry{LastKey: b.lastKey, BlockOffset: b.blockOffset}
 	}
 	ss.idxMu.Lock()
-	ss.indexCache[fullPath] = cache
+	ss.indexCache[fullPath] = &blockIndex{entries: cache, dataEnd: indexStart}
 	ss.idxMu.Unlock()
 
 	if err := file.Sync(); err != nil {
@@ -772,6 +844,8 @@ func (ss *SSTable) DeleteSSTable(meta *istorage.SSTableMata) {
 	if err := os.Remove(meta.Filepath); err != nil {
 		slog.Warn("failed to delete SSTable", "file", meta.Filepath, "error", err)
 	}
+	// 与索引/布隆缓存同时剔除常驻句柄，否则每轮 compaction 泄漏一个 fd。
+	ss.closeFile(meta.Filepath)
 	ss.idxMu.Lock()
 	delete(ss.indexCache, meta.Filepath)
 	ss.idxMu.Unlock()
