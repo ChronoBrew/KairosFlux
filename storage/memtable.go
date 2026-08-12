@@ -567,19 +567,6 @@ func (m *MemTable) FlushToSSTable(entries []LogEntry) error {
 	return nil
 }
 
-func (m *MemTable) WriteSSTable() error {
-	m.mu.RLock()
-	active := m.active
-	m.mu.RUnlock()
-
-	err := m.sst.WriteToSSTable(collectAllEntry(active))
-	select {
-	case m.compactCh <- true:
-	default:
-	}
-	return err
-}
-
 func (m *MemTable) ListenCompactCh() {
 	for {
 		select {
