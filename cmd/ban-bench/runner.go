@@ -243,7 +243,7 @@ func dial(addr string) (*net.TCPConn, error) {
 }
 
 func send(conn *net.TCPConn, msgID string, data []byte) error {
-	msg := utils.NewMessage2(msgID, data)
+	msg := bannet.NewMessage(msgID, data)
 	dp := bannet.NewDataPack()
 	packed, err := dp.Pack(msg)
 	if err != nil {

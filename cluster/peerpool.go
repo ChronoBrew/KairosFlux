@@ -1,98 +1,111 @@
 package cluster
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"time"
 
-	"github.com/NeverENG/BanDB/bannet"
+	bandb "github.com/NeverENG/BanDB/client"
 )
 
-// PeerPool 维护到各节点的 BanNet 客户端连接（懒建、缓存），供分片转发复用。
+// peerMaxRetries 是转发到属主节点时的重试次数，取 0（不重试）。
 //
-// 并发正确性：单条 BanNet 连接是请求-响应式，不能被多个 goroutine 交错读写（否则帧
-// 错位）。故每个 peer 用一把锁串行化其连接上的调用；出错则丢弃连接、下次重连。
-// 需要更高并发时可扩为每 peer 一个连接池，此处先保正确。
+// 转发发生在「客户端 → 入口节点 → 属主节点」链路的第二跳，而入口侧的客户端 SDK 自身
+// 已带重试。若此处再重试，过载时两级会相乘放大请求量，正好在最不该加压的时刻加压。
+// 网络瞬时故障由客户端那一层的重试覆盖即可。
+const peerMaxRetries = -1 // client.Options 中负值表示不重试
+
+// PeerPool 维护到各 peer 节点的客户端，供分片转发复用。
+//
+// 每个 peer 一个 client.Client：BanNet 是请求-响应协议，一条连接必须收到响应才能发下
+// 一帧，故对同一 peer 的并发转发由 SDK 内部的连接池以多条连接承担，而非串行排队。
 type PeerPool struct {
 	mu      sync.Mutex
 	timeout time.Duration
-	peers   map[string]*peerConn
+	peers   map[string]*bandb.Client
 }
 
-type peerConn struct {
-	mu     sync.Mutex
-	addr   string
-	client *bannet.Client
-}
-
-// NewPeerPool 创建一个转发连接池。timeout 为每次拨号/读写的超时。
+// NewPeerPool 创建一个转发连接池。timeout 为每次拨号/请求的超时。
 func NewPeerPool(timeout time.Duration) *PeerPool {
-	return &PeerPool{timeout: timeout, peers: map[string]*peerConn{}}
+	return &PeerPool{timeout: timeout, peers: map[string]*bandb.Client{}}
 }
 
-// conn 取（或创建）某 peer 的连接槽。
-func (p *PeerPool) conn(addr string) *peerConn {
+// client 取（或惰性创建）到该 peer 的客户端。
+func (p *PeerPool) client(addr string) (*bandb.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	pc, ok := p.peers[addr]
-	if !ok {
-		pc = &peerConn{addr: addr}
-		p.peers[addr] = pc
+	if c, ok := p.peers[addr]; ok {
+		return c, nil
 	}
-	return pc
+	c, err := bandb.New(bandb.Options{
+		Addrs:          []string{addr},
+		DialTimeout:    p.timeout,
+		RequestTimeout: p.timeout,
+		MaxRetries:     peerMaxRetries,
+	})
+	if err != nil {
+		return nil, err
+	}
+	p.peers[addr] = c
+	return c, nil
 }
 
-// withClient 在 peer 连接上串行执行 fn；懒建连接，fn 出错则丢弃连接以便下次重连。
-func (p *PeerPool) withClient(addr string, fn func(*bannet.Client) error) error {
-	pc := p.conn(addr)
-	pc.mu.Lock()
-	defer pc.mu.Unlock()
-	if pc.client == nil {
-		c := bannet.NewClient(addr, p.timeout)
-		if err := c.Connect(); err != nil {
-			return err
-		}
-		pc.client = c
-	}
-	if err := fn(pc.client); err != nil {
-		_ = pc.client.Close()
-		pc.client = nil // 下次重连
-		return err
-	}
-	return nil
+// ctx 返回一个受 timeout 约束的上下文。
+func (p *PeerPool) ctx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), p.timeout)
 }
 
 // Put 转发 PUT 到 addr 节点。
 func (p *PeerPool) Put(addr string, key, value []byte) error {
-	return p.withClient(addr, func(c *bannet.Client) error { return c.Put(key, value) })
+	c, err := p.client(addr)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return c.Put(ctx, key, value)
 }
 
 // Get 转发 GET 到 addr 节点，返回 value 与是否命中。
+//
+// 「未命中」与「属主节点出错」严格区分：仅 ErrKeyNotFound 记为未命中，其余错误原样
+// 上抛。二者混同会让上游把远端故障当成「这个 key 不存在」，从而返回错误的空结果。
 func (p *PeerPool) Get(addr string, key []byte) ([]byte, bool, error) {
-	var value []byte
-	var found bool
-	err := p.withClient(addr, func(c *bannet.Client) error {
-		v, ok, err := c.Get(key)
-		value, found = v, ok
-		return err
-	})
-	return value, found, err
+	c, err := p.client(addr)
+	if err != nil {
+		return nil, false, err
+	}
+	ctx, cancel := p.ctx()
+	defer cancel()
+
+	value, err := c.Get(ctx, key)
+	switch {
+	case errors.Is(err, bandb.ErrKeyNotFound):
+		return nil, false, nil
+	case err != nil:
+		return nil, false, err
+	}
+	return value, true, nil
 }
 
 // Delete 转发 DELETE 到 addr 节点。
 func (p *PeerPool) Delete(addr string, key []byte) error {
-	return p.withClient(addr, func(c *bannet.Client) error { return c.Delete(key) })
+	c, err := p.client(addr)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := p.ctx()
+	defer cancel()
+	return c.Delete(ctx, key)
 }
 
-// Close 关闭所有缓存连接。
+// Close 关闭所有缓存的客户端。
 func (p *PeerPool) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for _, pc := range p.peers {
-		pc.mu.Lock()
-		if pc.client != nil {
-			_ = pc.client.Close()
-			pc.client = nil
-		}
-		pc.mu.Unlock()
+	for addr, c := range p.peers {
+		_ = c.Close()
+		delete(p.peers, addr)
 	}
 }
