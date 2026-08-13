@@ -6,11 +6,11 @@ import (
 	"log/slog"
 
 	"github.com/NeverENG/BanDB/bannet"
+	"github.com/NeverENG/BanDB/cluster"
 	"github.com/NeverENG/BanDB/pkg/admission"
 	"github.com/NeverENG/BanDB/pkg/metrics"
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
-	"github.com/NeverENG/BanDB/service/cluster"
 	"github.com/NeverENG/BanDB/storage"
 )
 

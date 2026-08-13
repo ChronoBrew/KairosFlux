@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/NeverENG/BanDB/cluster"
 	"github.com/NeverENG/BanDB/raft"
-	"github.com/NeverENG/BanDB/service/cluster"
 )
 
 // ShardReadArgs / ShardReadReply 是转发读 RPC 的报文：向某分片副本读取一个 key。

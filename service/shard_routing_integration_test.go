@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
+	"github.com/NeverENG/BanDB/cluster"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/pkg/predicate"
 	"github.com/NeverENG/BanDB/pkg/proto"
-	"github.com/NeverENG/BanDB/service/cluster"
 )
 
 // memKV 是隔离的内存 KV，用作每个节点的本地 store——从而在一个进程内起多节点、

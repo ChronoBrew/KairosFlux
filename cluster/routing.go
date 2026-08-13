@@ -1,11 +1,21 @@
-// Package cluster 实现分片分布式集群的路由与控制面骨架。
+// Package cluster 是分片集群的控制面：决定「一个 key 归属哪个分片、哪个物理节点」，
+// 以及节点间的读择优与转发连接复用。它与存储、传输解耦，只依赖 bannet 做跨节点调用。
 //
-// 设计动机：BanDB 的定位是「数仓写入前置缓冲引擎」，向分片集群演进时需要
-// 一层与存储解耦的「放置与路由控制面」（借鉴 dubbo-go / PD 的思路）。本包
-// 只承担控制面职责——决定「一个 key 归属哪个物理节点 / 哪个分片」，以及节点
-// 存活的注册发现；真实的跨节点数据迁移与传输属于传输层重写范围，本包以桩标注。
+// 已在生产路径上运行的部分：
 //
-// 零第三方依赖：一致性哈希仅使用标准库 hash/crc32。
+//   - HashRing / ShardOf / ShardReplicas —— 一致性哈希归属与分片副本集，
+//     由 service/shardkv 与 service.Router 使用。
+//   - P（P2C）—— 两选一的延迟感知读择优，由 shardkv 的转发读使用。
+//   - PeerPool —— 按地址复用的跨节点转发连接池，由 Router 的属主转发使用。
+//
+// 仍是骨架、当前不产生行为的部分：
+//
+//   - Registry 与 Placement 的存活视图。集群尚无心跳（Heartbeat 无调用方），
+//     调用方传入远超进程寿命的 TTL，故所有节点恒被视为存活，Placement.OwnerOf
+//     等价于 HashRing.NodeFor。接入心跳后它才开始起作用。
+//   - Placement.Failover 能把节点摘出环，但目前没有故障检测来触发它。
+//
+// 零第三方依赖：一致性哈希仅用标准库 hash/crc32。
 package cluster
 
 import (
