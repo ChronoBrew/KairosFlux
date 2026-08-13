@@ -31,6 +31,10 @@ type Connection struct {
 
 	property     map[string]any
 	propertyLock sync.RWMutex
+
+	// 构造时从全局配置快照的两项策略，避免在每帧读取路径上访问可变全局状态。
+	maxPackageSize uint32
+	useWorkerPool  bool
 }
 
 func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *Server) *Connection {
@@ -45,6 +49,9 @@ func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *
 		msgChan:     make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
 		msgBuffChan: make(chan []byte, config.G.MaxMsgChanLen),
 		property:    make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
+
+		maxPackageSize: config.G.MaxPackageSize,
+		useWorkerPool:  config.G.WorkerPoolSize > 0,
 	}
 	c.TCPServer.Conns().Add(c)
 	return c
@@ -75,6 +82,12 @@ func (c *Connection) StartReader() {
 			slog.Error("conn unpack header failed", "connID", c.ConnID, "error", err)
 			return
 		}
+		// 帧长上限在此执行：读取负载之前拒绝超限帧，避免按对端声称的长度分配内存。
+		if c.maxPackageSize > 0 && msg.MsgLen() > c.maxPackageSize {
+			slog.Warn("conn frame exceeds max package size",
+				"connID", c.ConnID, "dataLen", msg.MsgLen(), "max", c.maxPackageSize)
+			return
+		}
 
 		// 头部之后, 先按 IDLen 读取 msgID 字符串
 		if msg.IDLen > 0 {
@@ -97,8 +110,8 @@ func (c *Connection) StartReader() {
 		}
 		msg.SetData(data)
 		req := newRequest(msg, c)
-		// 根据有没有启动 WorkPool 选择不同的结果
-		if config.G.WorkerPoolSize > 0 {
+		// 根据有没有启动 worker 池选择投递方式
+		if c.useWorkerPool {
 			c.MsgHandle.SendMsgToTaskQueue(req)
 		} else {
 			go c.MsgHandle.DoMsgHandle(req)
