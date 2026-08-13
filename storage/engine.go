@@ -71,7 +71,12 @@ func NewEngine() *Engine {
 	go mt.FlushWorker()
 	go mt.ListenCompactCh()
 
-	go mt.sst.LoadSSTableMetaList()
+	// 元信息扫描必须同步完成：引擎在知道磁盘上有哪些 SSTable 之前不能对外服务。
+	// 此前它是 goroutine，且 LoadSSTableMetaList 会整体替换 metas，于是与并发的 AddMeta
+	// 相争——启动时 WAL 重放触发的 flush 刚登记好元信息，就可能被随后完成的扫描抹掉，
+	// 那个 SSTable 的数据直到下次重启前都读不到。文件级的块索引/布隆预热仍是异步的，
+	// 那只是缓存预热，与顺序无关。
+	mt.sst.LoadSSTableMetaList()
 	return mt
 }
 

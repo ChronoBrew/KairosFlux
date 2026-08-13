@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/NeverENG/BanDB/config"
 )
@@ -104,7 +103,6 @@ func TestTruncatedTailNotSkippedByRangeFilter(t *testing.T) {
 	// 引擎重启：其内部会 LoadSSTableMetaList，随后 Get 走 [MinKey,MaxKey] 过滤。
 	e := NewEngine()
 	t.Cleanup(func() { e.Close() })
-	waitForSSTableMetas(t, e, 1)
 
 	// zzz 是排序最靠后的 key：上界一旦被猜小，它必然第一个被漏掉。
 	for _, kv := range entries {
@@ -116,16 +114,4 @@ func TestTruncatedTailNotSkippedByRangeFilter(t *testing.T) {
 			t.Fatalf("Get %s = %q, want %q", kv.Key, got, kv.Value)
 		}
 	}
-}
-
-// waitForSSTableMetas 等待引擎异步加载完 SSTable 元信息（NewEngine 中以 goroutine 启动）。
-func waitForSSTableMetas(t *testing.T, e *Engine, want int) {
-	t.Helper()
-	for i := 0; i < 200; i++ {
-		if len(e.sst.Metas()) >= want {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("2s 内未加载到 %d 个 SSTable 元信息", want)
 }
