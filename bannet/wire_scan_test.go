@@ -41,7 +41,7 @@ func TestScanResponseSurvivesWire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UnPack 拒绝了大响应（MaxPackageSize 太小？）: %v", err)
 	}
-	m := tempMsg.(*bannet.Message)
+	m := tempMsg
 
 	off := headLen + int(m.IDLen)
 	data := packet[off : off+int(tempMsg.MsgLen())]

@@ -1,13 +1,13 @@
 package bannet
 
 type request struct {
-	msg  Frame
+	msg  *Message
 	conn Conn
 }
 
 var _ Request = &request{}
 
-func newRequest(msg Frame, conn Conn) *request {
+func newRequest(msg *Message, conn Conn) *request {
 	return &request{
 		msg:  msg,
 		conn: conn,
