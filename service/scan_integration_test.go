@@ -1,11 +1,12 @@
 package service
 
 import (
-	"path/filepath"
-	"testing"
-
+	"fmt"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/predicate"
+	"path/filepath"
+	"testing"
+	"time"
 )
 
 // TestKVServer_Scan 端到端验证边缘查询：写入若干 IMU 帧后，按时间范围 + 谓词扫描，
@@ -61,6 +62,54 @@ func TestKVServer_Scan(t *testing.T) {
 		}
 		if string(e.Value) != w {
 			t.Fatalf("%s 值不符: %s", e.Key, e.Value)
+		}
+	}
+}
+
+// TestScanCoversFlushedData 守护 SCAN 与下游投递的取数范围：已落盘的数据必须仍在扫描
+// 结果中。
+//
+// 这条契约此前不成立：存储层的扫描只遍历两张内存表。后果不止 SCAN 命令少返回结果——
+// 下游投递（delivery.KVSource）正是按游标反复调用本方法取数，一旦 flush 快于投递
+// （阈值上万条 vs 每秒百条，必然如此），落盘的记录就再也不会被投递，即静默漏投。
+func TestScanCoversFlushedData(t *testing.T) {
+	dir := t.TempDir()
+	oldWAL, oldSST, oldMax := config.G.WALPath, config.G.SSTablePath, config.G.MaxMemTableSize
+	config.G.WALPath = filepath.Join(dir, "wal.log")
+	config.G.SSTablePath = dir
+	config.G.MaxMemTableSize = 20 // 极小阈值：写入过程中必然多次 flush
+	t.Cleanup(func() {
+		config.G.WALPath, config.G.SSTablePath, config.G.MaxMemTableSize = oldWAL, oldSST, oldMax
+	})
+
+	kv := NewKVServer()
+	t.Cleanup(func() { kv.Close() })
+
+	const n = 300
+	for i := 0; i < n; i++ {
+		cmd := Command{
+			Type:  CommandPut,
+			Key:   []byte(fmt.Sprintf("k%05d", i)),
+			Value: []byte(fmt.Sprintf(`{"v":%d}`, i)),
+		}
+		if err := kv.Write(cmd); err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+	// 等后台 flush 落定，使多数数据已在 SSTable 中。
+	time.Sleep(500 * time.Millisecond)
+
+	got := kv.Scan([]byte("k00000"), []byte("k99999"), predicate.Predicate{Op: predicate.OpNone})
+	if len(got) != n {
+		t.Fatalf("扫描应覆盖全部 %d 条（含已落盘），实际 %d 条", n, len(got))
+	}
+	seen := make(map[string]bool, len(got))
+	for _, e := range got {
+		seen[string(e.Key)] = true
+	}
+	for i := 0; i < n; i++ {
+		if k := fmt.Sprintf("k%05d", i); !seen[k] {
+			t.Fatalf("扫描结果缺少 %s", k)
 		}
 	}
 }

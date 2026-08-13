@@ -173,7 +173,7 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableM
 	slog.Info("merging SSTable files", "files", len(files), "targetLevel", targetLevel)
 
 	// 为每个源文件打开流式迭代器（srcIdx = 在 files 中的序号，越大越新）
-	iters := make([]*sstableIterator, 0, len(files))
+	iters := make([]entryIterator, 0, len(files))
 	for _, meta := range files {
 		it, err := newSSTableIterator(meta.Filepath)
 		if err != nil {

@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"encoding/binary"
 	"io"
 	"os"
@@ -12,11 +13,54 @@ import (
 // 可以安全持有上一次 Next 返回的 key/value——K 路归并的最小堆依赖此性质。
 // 若未来为了性能改成复用单个缓冲区，会静默破坏堆中已入队的元素。
 type sstableIterator struct {
-	f       *os.File
-	dataEnd int64 // 数据区结束偏移；<=0 表示读到 EOF（兼容无 Footer 的老文件）
-	key     []byte
-	value   []byte
-	err     error
+	f *os.File
+	// exhausted 表示已确定该文件不含目标范围内的条目，Next 直接返回 false。
+	exhausted bool
+	dataEnd   int64 // 数据区结束偏移；<=0 表示读到 EOF（兼容无 Footer 的老文件）
+	key       []byte
+	value     []byte
+	err       error
+}
+
+// newSSTableIteratorFrom 打开文件并借块索引直接跳到可能含 start 的那一块，避免从文件头
+// 顺序跳过。
+//
+// 这对按游标推进的扫描是决定性的：投递每取一批就以新游标再扫一次，若每次都从头顺序跳到
+// 游标处，总代价随数据量平方增长。二分块索引后每次只从目标块开始读。
+//
+// 无块索引（老格式或尾部残缺）时退回从头读，由调用方的范围裁剪保证正确性。
+func newSSTableIteratorFrom(ss *SSTable, path string, start []byte) (*sstableIterator, error) {
+	it, err := newSSTableIterator(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(start) == 0 {
+		return it, nil
+	}
+	bi := ss.getBlockIndex(path)
+	if bi == nil || len(bi.entries) == 0 {
+		return it, nil
+	}
+	// 二分找第一个 lastKey >= start 的块：start 只可能落在该块或其后。
+	lo, hi := 0, len(bi.entries)-1
+	for lo < hi {
+		mid := (lo + hi) / 2
+		if bytes.Compare(start, bi.entries[mid].LastKey) <= 0 {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	if bytes.Compare(start, bi.entries[lo].LastKey) > 0 {
+		// 越过最后一块的末键：该文件不含 >= start 的条目。
+		it.exhausted = true
+		return it, nil
+	}
+	if _, err := it.f.Seek(bi.entries[lo].BlockOffset, io.SeekStart); err != nil {
+		it.Close()
+		return nil, err
+	}
+	return it, nil
 }
 
 // newSSTableIterator 打开文件并定位到数据区起点。
@@ -56,7 +100,7 @@ func sstableDataEnd(f *os.File) int64 {
 
 // Next 前进到下一条；返回 false 表示已耗尽或出错（用 Err 区分）。
 func (it *sstableIterator) Next() bool {
-	if it.err != nil {
+	if it.err != nil || it.exhausted {
 		return false
 	}
 	if it.dataEnd > 0 {
@@ -106,3 +150,76 @@ func (it *sstableIterator) Key() []byte   { return it.key }
 func (it *sstableIterator) Value() []byte { return it.value }
 func (it *sstableIterator) Err() error    { return it.err }
 func (it *sstableIterator) Close() error  { return it.f.Close() }
+
+// sliceIterator 在一份已排序的条目切片上迭代，供内存表参与归并。
+//
+// 为何先拷贝成切片而不直接遍历跳表：跳表由写入方并发改写，无锁遍历会跟到只连了一半的
+// 节点（这正是 Get 曾经的缺陷）。而归并过程要读磁盘，若全程持锁则写入会停等 I/O。
+// 折中是在锁内把范围内的条目拷出来，锁外做归并——拷贝量由内存表大小天然有界。
+type sliceIterator struct {
+	entries []LogEntry
+	pos     int
+}
+
+func newSliceIterator(entries []LogEntry) *sliceIterator {
+	return &sliceIterator{entries: entries, pos: -1}
+}
+
+func (it *sliceIterator) Next() bool {
+	it.pos++
+	return it.pos < len(it.entries)
+}
+
+func (it *sliceIterator) Key() []byte {
+	if it.pos < 0 || it.pos >= len(it.entries) {
+		return nil
+	}
+	return it.entries[it.pos].Key
+}
+
+func (it *sliceIterator) Value() []byte {
+	if it.pos < 0 || it.pos >= len(it.entries) {
+		return nil
+	}
+	return it.entries[it.pos].Value
+}
+
+func (it *sliceIterator) Err() error   { return nil }
+func (it *sliceIterator) Close() error { return nil }
+
+// rangeIterator 把底层源裁剪到 [start,end] 闭区间：跳过小于 start 的条目，越过 end 即结束。
+// start/end 为 nil 表示该侧不限。
+type rangeIterator struct {
+	src   entryIterator
+	start []byte
+	end   []byte
+	done  bool
+}
+
+func newRangeIterator(src entryIterator, start, end []byte) *rangeIterator {
+	return &rangeIterator{src: src, start: start, end: end}
+}
+
+func (it *rangeIterator) Next() bool {
+	if it.done {
+		return false
+	}
+	for it.src.Next() {
+		k := it.src.Key()
+		if len(it.start) > 0 && bytes.Compare(k, it.start) < 0 {
+			continue // 尚未到下界
+		}
+		if len(it.end) > 0 && bytes.Compare(k, it.end) > 0 {
+			it.done = true // 源为升序，越过上界即可停
+			return false
+		}
+		return true
+	}
+	it.done = true
+	return false
+}
+
+func (it *rangeIterator) Key() []byte   { return it.src.Key() }
+func (it *rangeIterator) Value() []byte { return it.src.Value() }
+func (it *rangeIterator) Err() error    { return it.src.Err() }
+func (it *rangeIterator) Close() error  { return it.src.Close() }
