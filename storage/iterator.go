@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"io"
@@ -14,6 +15,12 @@ import (
 // 若未来为了性能改成复用单个缓冲区，会静默破坏堆中已入队的元素。
 type sstableIterator struct {
 	f *os.File
+	// r 是带缓冲的读取器。此前逐字段直接从 *os.File 读（键长、键、值长、值），每条记录
+	// 约四次 read syscall；一层缓冲即把它摊薄到每若干条一次内核往返。
+	r *bufio.Reader
+	// pos 是已从文件消费的字节偏移。加了缓冲后不能再用 Seek(0, SeekCurrent) 判断位置——
+	// 那返回的是底层文件偏移，已被预读推到缓冲区末尾，会让迭代提前判定越过 dataEnd。
+	pos int64
 	// exhausted 表示已确定该文件不含目标范围内的条目，Next 直接返回 false。
 	exhausted bool
 	dataEnd   int64 // 数据区结束偏移；<=0 表示读到 EOF（兼容无 Footer 的老文件）
@@ -21,6 +28,9 @@ type sstableIterator struct {
 	value     []byte
 	err       error
 }
+
+// iterReadBufSize 是迭代器的读缓冲大小。取值需覆盖若干条记录，使内核往返次数与记录数解耦。
+const iterReadBufSize = 64 << 10
 
 // newSSTableIteratorFrom 打开文件并借块索引直接跳到可能含 start 的那一块，避免从文件头
 // 顺序跳过。
@@ -56,10 +66,13 @@ func newSSTableIteratorFrom(ss *SSTable, path string, start []byte) (*sstableIte
 		it.exhausted = true
 		return it, nil
 	}
-	if _, err := it.f.Seek(bi.entries[lo].BlockOffset, io.SeekStart); err != nil {
+	off := bi.entries[lo].BlockOffset
+	if _, err := it.f.Seek(off, io.SeekStart); err != nil {
 		it.Close()
 		return nil, err
 	}
+	it.r.Reset(it.f) // 缓冲里可能已预读了 seek 前的字节，必须丢弃
+	it.pos = off
 	return it, nil
 }
 
@@ -74,7 +87,7 @@ func newSSTableIterator(path string) (*sstableIterator, error) {
 		f.Close()
 		return nil, err
 	}
-	return &sstableIterator{f: f, dataEnd: dataEnd}, nil
+	return &sstableIterator{f: f, r: bufio.NewReaderSize(f, iterReadBufSize), dataEnd: dataEnd}, nil
 }
 
 // sstableDataEnd 读 Footer 返回数据区结束偏移；老格式或异常返回 -1（读到 EOF）。
@@ -103,44 +116,41 @@ func (it *sstableIterator) Next() bool {
 	if it.err != nil || it.exhausted {
 		return false
 	}
-	if it.dataEnd > 0 {
-		pos, err := it.f.Seek(0, io.SeekCurrent)
-		if err != nil {
-			it.err = err
-			return false
-		}
-		if pos >= it.dataEnd {
-			return false
-		}
+	if it.dataEnd > 0 && it.pos >= it.dataEnd {
+		return false
 	}
 
-	var keyLen uint32
-	if err := binary.Read(it.f, binary.BigEndian, &keyLen); err != nil {
-		if err != io.EOF {
+	var hdr [4]byte
+	if _, err := io.ReadFull(it.r, hdr[:]); err != nil {
+		if err != io.EOF && err != io.ErrUnexpectedEOF {
 			it.err = err
 		}
 		return false
 	}
+	keyLen := binary.BigEndian.Uint32(hdr[:])
 	key := make([]byte, keyLen)
-	if _, err := io.ReadFull(it.f, key); err != nil {
+	if _, err := io.ReadFull(it.r, key); err != nil {
 		it.err = err
 		return false
 	}
-	var valLen uint32
-	if err := binary.Read(it.f, binary.BigEndian, &valLen); err != nil {
+	if _, err := io.ReadFull(it.r, hdr[:]); err != nil {
 		it.err = err
 		return false
 	}
+	valLen := binary.BigEndian.Uint32(hdr[:])
+
 	if valLen == tombstoneValLen { // 墓碑：无 value 字节，value 还原为 nil
+		it.pos += int64(8) + int64(keyLen)
 		it.key = key
 		it.value = nil
 		return true
 	}
 	val := make([]byte, valLen)
-	if _, err := io.ReadFull(it.f, val); err != nil {
+	if _, err := io.ReadFull(it.r, val); err != nil {
 		it.err = err
 		return false
 	}
+	it.pos += int64(8) + int64(keyLen) + int64(valLen)
 	it.key = key
 	it.value = val
 	return true
