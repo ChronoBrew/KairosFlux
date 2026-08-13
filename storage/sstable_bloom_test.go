@@ -8,8 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // makeSortedEntries 生成跨多个仓库、整体有序的 entries。
@@ -72,19 +70,17 @@ func writeV1SSTable(t *testing.T, path string, entries []LogEntry) {
 // TestSSTableBloomRoundTrip 写入(含布隆)→读取：存在的 key 命中，
 // 不存在的 key 返回 false，且布隆过滤器被正确写入并加载。
 func TestSSTableBloomRoundTrip(t *testing.T) {
-	old := config.G.SSTablePath
-	config.G.SSTablePath = t.TempDir()
-	defer func() { config.G.SSTablePath = old }()
+	opts := testOptions(t)
 
 	entries := makeSortedEntries(200)
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	if err := ss.WriteToSSTable(entries); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	path := ss.Metas()[0].Filepath
 
 	// 布隆过滤器已写入（从磁盘重新加载验证，绕过写入缓存）
-	fresh := NewSSTable()
+	fresh := NewSSTable(opts)
 	if bloom := fresh.getBloom(path); bloom == nil {
 		t.Fatal("expected bloom filter in v2 file, got nil")
 	}
@@ -107,16 +103,14 @@ func TestSSTableBloomRoundTrip(t *testing.T) {
 // TestSSTableBackwardCompatV1 旧格式文件(无布隆)仍能被正确读取，
 // 且 getBloom 返回 nil（不误判为有布隆）。
 func TestSSTableBackwardCompatV1(t *testing.T) {
-	old := config.G.SSTablePath
 	dir := t.TempDir()
-	config.G.SSTablePath = dir
-	defer func() { config.G.SSTablePath = old }()
+	opts := Options{Dir: dir}
 
 	entries := makeSortedEntries(80)
 	path := filepath.Join(dir, "sstable_v1.sst")
 	writeV1SSTable(t, path, entries)
 
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	if bloom := ss.getBloom(path); bloom != nil {
 		t.Fatal("v1 file must have no bloom, got non-nil")
 	}

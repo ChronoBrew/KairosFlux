@@ -52,7 +52,7 @@ type KVServer struct {
 func NewKVServer() *KVServer {
 	// 初始化存储
 	kv := &KVServer{
-		storage: storage.NewEngine(),
+		storage: storage.NewEngine(storage.DefaultOptions()),
 	}
 
 	if config.G.Mode == config.ModeStandalone {

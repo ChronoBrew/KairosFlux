@@ -5,8 +5,6 @@ import (
 	"runtime"
 	"testing"
 	"time"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestCompactionBench 是 compaction 压测台：确定性地驱动真实的 flush + compaction 级联，
@@ -17,16 +15,13 @@ import (
 func TestCompactionBench(t *testing.T) {
 	// 小 memtable + 小 compaction 阈值，逼出频繁 flush 与多级 compaction。
 	dir := t.TempDir()
-	oldPath, oldComp := config.G.SSTablePath, config.G.MaxCompactionSize
-	config.G.SSTablePath = dir
-	config.G.MaxCompactionSize = 4
-	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
+	opts := Options{Dir: dir, MaxCompactionSize: 4}
 
 	ResetCompactionStats()
 
 	// 不经 NewEngine（避免启动异步 FlushWorker/ListenCompactCh 造成非确定性），
 	// 只用 sst，手动驱动 flush 与 compaction。
-	mt := newBareMemTable(NewSSTable())
+	mt := newBareMemTable(NewSSTable(opts), opts)
 
 	const (
 		flushes   = 300
@@ -90,7 +85,7 @@ func TestCompactionBench(t *testing.T) {
 	}
 
 	// === 模拟重启：LoadSSTableMetaList 把所有文件 Level 归 0（level 未持久化）===
-	sst2 := NewSSTable()
+	sst2 := NewSSTable(opts)
 	sst2.LoadSSTableMetaList()
 	time.Sleep(150 * time.Millisecond) // 等异步预热 goroutine 落定，避免与后续 compaction 竞争
 	dist2, total2 := levelDistribution(sst2)
@@ -101,7 +96,7 @@ func TestCompactionBench(t *testing.T) {
 	}
 	t.Logf("文件总数=%d  per-level=%s  ← %s", total2, dist2, collapsed)
 
-	mt2 := newBareMemTable(sst2)
+	mt2 := newBareMemTable(sst2, opts)
 	before := ReadCompactionStats()
 	t0 := time.Now()
 	mt2.CompactSSTable(0)

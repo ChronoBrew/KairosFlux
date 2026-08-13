@@ -3,7 +3,6 @@
 package storage
 
 import (
-	"github.com/NeverENG/BanDB/config"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -80,14 +79,16 @@ type SSTable struct {
 	blocks *blockCache
 }
 
-func NewSSTable() *SSTable {
+// NewSSTable 按 opts 构造 SSTable 集合的管理者。
+func NewSSTable(opts Options) *SSTable {
+	opts = opts.withDefaults()
 	ss := &SSTable{
-		dir:        config.G.SSTablePath,
+		dir:        opts.Dir,
 		metas:      make([]*SSTableMeta, 0),
 		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
 		fdCache:    make(map[string]*os.File),
-		blocks:     newBlockCache(config.G.BlockCacheBytes),
+		blocks:     newBlockCache(opts.BlockCacheBytes),
 	}
 	ss.publishMetas()
 	return ss

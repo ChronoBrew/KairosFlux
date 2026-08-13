@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestCompaction_LevelPersistedAcrossRestart 是「重启不塌缩」的回归守卫：
@@ -13,12 +11,9 @@ import (
 // 断言 per-level 分布被保留，而非全部塌缩到 L0（后者会在重启后触发全量重写）。
 func TestCompaction_LevelPersistedAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
-	oldPath, oldComp := config.G.SSTablePath, config.G.MaxCompactionSize
-	config.G.SSTablePath = dir
-	config.G.MaxCompactionSize = 4
-	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
+	opts := Options{Dir: dir, MaxCompactionSize: 4}
 
-	mt := newBareMemTable(NewSSTable())
+	mt := newBareMemTable(NewSSTable(opts), opts)
 	val := make([]byte, 32)
 	global := 0
 	for f := 0; f < 40; f++ {
@@ -40,7 +35,7 @@ func TestCompaction_LevelPersistedAcrossRestart(t *testing.T) {
 	}
 
 	// 模拟重启：全新 SSTable 从磁盘恢复。
-	sst2 := NewSSTable()
+	sst2 := NewSSTable(opts)
 	sst2.LoadSSTableMetaList()
 	time.Sleep(150 * time.Millisecond)
 	after, totalAfter := levelDistribution(sst2)

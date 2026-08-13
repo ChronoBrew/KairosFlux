@@ -4,20 +4,15 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestGetMissingKeyIsErrKeyNotFound 固定「key 不存在」的错误契约：调用方须能以
 // errors.Is 判别，从而与读盘失败等真实故障区分。此前该错误在四处各自 errors.New
 // 一个新对象，任何调用方都无法判别，只能一律当作失败处理。
 func TestGetMissingKeyIsErrKeyNotFound(t *testing.T) {
-	dir := t.TempDir()
-	oldSST := config.G.SSTablePath
-	config.G.SSTablePath = dir
-	t.Cleanup(func() { config.G.SSTablePath = oldSST })
+	opts := testOptions(t)
 
-	mt := NewEngine()
+	mt := NewEngine(opts)
 	t.Cleanup(func() { mt.Close() })
 
 	if err := mt.Put([]byte("present"), []byte("v")); err != nil {
@@ -43,11 +38,9 @@ func TestGetMissingKeyIsErrKeyNotFound(t *testing.T) {
 
 // TestWriteEmptySSTableIsErrNoEntries 固定空条目集落盘的错误契约。
 func TestWriteEmptySSTableIsErrNoEntries(t *testing.T) {
-	oldSST := config.G.SSTablePath
-	config.G.SSTablePath = filepath.Join(t.TempDir(), "sst")
-	t.Cleanup(func() { config.G.SSTablePath = oldSST })
+	opts := Options{Dir: filepath.Join(t.TempDir(), "sst")}
 
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	if err := ss.WriteToSSTable(nil); !errors.Is(err, ErrNoEntries) {
 		t.Fatalf("写入空条目集应为 ErrNoEntries, 实际: %v", err)
 	}

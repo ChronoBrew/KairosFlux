@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"os"
 	"testing"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // writeSSTables 写出 n 个各含若干 key 的 SSTable，返回它们的路径。
@@ -39,11 +37,9 @@ func writeSSTables(t *testing.T, ss *SSTable, n, perFile int) []string {
 // 故 root 下会失效——检测到仍能创建文件时直接跳过，而不是给出假绿。
 func TestCompactionFailureKeepsSourceFiles(t *testing.T) {
 	dir := t.TempDir()
-	oldSST := config.G.SSTablePath
-	config.G.SSTablePath = dir
-	t.Cleanup(func() { config.G.SSTablePath = oldSST })
+	opts := Options{Dir: dir}
 
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	paths := writeSSTables(t, ss, 3, 50)
 
 	if err := os.Chmod(dir, 0o500); err != nil { // r-x：可读可遍历，不可创建新文件
@@ -87,14 +83,9 @@ func TestCompactionFailureKeepsSourceFiles(t *testing.T) {
 // 在合并失败时不得删除任何源文件，且全部 key 仍可读。
 func TestCompactSSTableKeepsSourcesOnMergeFailure(t *testing.T) {
 	dir := t.TempDir()
-	oldSST, oldCompact := config.G.SSTablePath, config.G.MaxCompactionSize
-	config.G.SSTablePath = dir
-	config.G.MaxCompactionSize = 2 // 两个文件即触发合并
-	t.Cleanup(func() {
-		config.G.SSTablePath, config.G.MaxCompactionSize = oldSST, oldCompact
-	})
+	opts := Options{Dir: dir, MaxCompactionSize: 2} // 两个文件即触发合并
 
-	e := NewEngine()
+	e := NewEngine(opts)
 	t.Cleanup(func() { e.Close() })
 	paths := writeSSTables(t, e.sst, 3, 30)
 

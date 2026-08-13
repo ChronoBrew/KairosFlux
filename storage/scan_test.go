@@ -20,7 +20,7 @@ func newMemWith(active, dirty *SkipList) *Engine {
 }
 
 func sl(pairs ...[2]string) *SkipList {
-	s := newSkipList()
+	s := newSkipList(32, 0.5)
 	for _, p := range pairs {
 		var val []byte
 		if p[1] != "" {

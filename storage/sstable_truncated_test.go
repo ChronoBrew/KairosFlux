@@ -3,10 +3,7 @@ package storage
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestTruncatedTailStillReadable 验证尾部残缺的 SSTable 仍能读到其数据段里的 key。
@@ -18,13 +15,10 @@ import (
 //
 // 现在的约定是：MaxKey 不可信就不施加上界。多扫一个文件是可接受的代价，漏读不是。
 func TestTruncatedTailStillReadable(t *testing.T) {
-	dir := t.TempDir()
-	oldSST := config.G.SSTablePath
-	config.G.SSTablePath = dir
-	t.Cleanup(func() { config.G.SSTablePath = oldSST })
+	opts := testOptions(t)
 
 	// 写一个正常的 SSTable（含完整尾部）。
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	entries := make([]LogEntry, 0, 200)
 	for i := 0; i < 200; i++ {
 		entries = append(entries, LogEntry{
@@ -47,7 +41,7 @@ func TestTruncatedTailStillReadable(t *testing.T) {
 	}
 
 	// 模拟重启：重新加载元信息（此时读不到 footer）。
-	fresh := NewSSTable()
+	fresh := NewSSTable(opts)
 	fresh.LoadSSTableMetaList()
 	metas := fresh.Metas()
 	if len(metas) != 1 {
@@ -76,16 +70,9 @@ func TestTruncatedTailStillReadable(t *testing.T) {
 // 范围过滤整段跳过。这是上一个用例的端到端版本——ReadFromSSTable 直接按路径读，绕过了
 // 范围过滤，而真正出问题的正是过滤那一步。
 func TestTruncatedTailNotSkippedByRangeFilter(t *testing.T) {
-	dir := t.TempDir()
-	oldSST, oldWAL, oldMax := config.G.SSTablePath, config.G.WALPath, config.G.MaxMemTableSize
-	config.G.SSTablePath = dir
-	config.G.WALPath = filepath.Join(dir, "wal.log")
-	config.G.MaxMemTableSize = 4 // 极小阈值，逼迫尽快 flush 出 SSTable
-	t.Cleanup(func() {
-		config.G.SSTablePath, config.G.WALPath, config.G.MaxMemTableSize = oldSST, oldWAL, oldMax
-	})
+	opts := Options{Dir: t.TempDir(), MaxMemTableSize: 4}
 
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	entries := []LogEntry{
 		{Key: []byte("aaa"), Value: []byte("v-aaa")},
 		{Key: []byte("mmm"), Value: []byte("v-mmm")},
@@ -101,7 +88,7 @@ func TestTruncatedTailNotSkippedByRangeFilter(t *testing.T) {
 	}
 
 	// 引擎重启：其内部会 LoadSSTableMetaList，随后 Get 走 [MinKey,MaxKey] 过滤。
-	e := NewEngine()
+	e := NewEngine(opts)
 	t.Cleanup(func() { e.Close() })
 
 	// zzz 是排序最靠后的 key：上界一旦被猜小，它必然第一个被漏掉。

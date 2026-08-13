@@ -3,25 +3,21 @@ package storage
 import (
 	"path/filepath"
 	"testing"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 func entry(k, v string) LogEntry {
 	return LogEntry{Key: []byte(k), Value: []byte(v)}
 }
 
-func withTempSSTDir(t *testing.T) {
+func withTempSSTDir(t *testing.T) Options {
 	t.Helper()
-	old := config.G.SSTablePath
-	config.G.SSTablePath = t.TempDir()
-	t.Cleanup(func() { config.G.SSTablePath = old })
+	return Options{Dir: t.TempDir()}
 }
 
 // TestSSTableIteratorStopsAtDataEnd 迭代器只读数据区, 不把块索引/布隆当作条目。
 func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
-	withTempSSTDir(t)
-	ss := NewSSTable()
+	opts := withTempSSTDir(t)
+	ss := NewSSTable(opts)
 	if err := ss.WriteToSSTable([]LogEntry{
 		entry("k1", "v1"), entry("k2", "v2"), entry("k3", "v3"),
 	}); err != nil {
@@ -55,8 +51,8 @@ func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
 
 // TestMergeBasic 多个不相交源合并: 全部 key 有序保留、可经现有读路径读取、布隆可用。
 func TestMergeBasic(t *testing.T) {
-	withTempSSTDir(t)
-	ss := NewSSTable()
+	opts := withTempSSTDir(t)
+	ss := NewSSTable(opts)
 	if err := ss.WriteToSSTable([]LogEntry{entry("a", "1"), entry("c", "1"), entry("e", "1")}); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +91,7 @@ func TestMergeBasic(t *testing.T) {
 		t.Errorf("read d: ok=%v v=%q", ok, v)
 	}
 	// 布隆已写入且能否决缺失 key
-	if NewSSTable().getBloom(merged.Filepath) == nil {
+	if NewSSTable(opts).getBloom(merged.Filepath) == nil {
 		t.Error("merged file should carry a bloom filter")
 	}
 	if _, ok := ss.ReadFromSSTable(merged.Filepath, []byte("zzz")); ok {
@@ -105,8 +101,8 @@ func TestMergeBasic(t *testing.T) {
 
 // TestMergeDedupKeepNewest 同 key 出现在多个源时, srcIdx 最大(最新)者胜出且只出现一次。
 func TestMergeDedupKeepNewest(t *testing.T) {
-	withTempSSTDir(t)
-	ss := NewSSTable()
+	opts := withTempSSTDir(t)
+	ss := NewSSTable(opts)
 	// 三个文件按加入顺序 srcIdx = 0,1,2; "dup" 的最新值应为 v2
 	ss.WriteToSSTable([]LogEntry{entry("a", "a0"), entry("dup", "v0")})
 	ss.WriteToSSTable([]LogEntry{entry("dup", "v1"), entry("m", "m1")})
@@ -145,12 +141,12 @@ func TestMergeDedupKeepNewest(t *testing.T) {
 
 // TestMergeRejectsUnsortedSource 源非升序时归并应失败(返回 nil), 而非静默产出错误结果。
 func TestMergeRejectsUnsortedSource(t *testing.T) {
-	withTempSSTDir(t)
-	path := filepath.Join(config.G.SSTablePath, "bad.sst")
+	opts := withTempSSTDir(t)
+	path := filepath.Join(opts.Dir, "bad.sst")
 	// 降序 key — 违反归并前提
 	writeV1SSTable(t, path, []LogEntry{entry("c", "1"), entry("b", "1"), entry("a", "1")})
 
-	ss := NewSSTable()
+	ss := NewSSTable(opts)
 	merged := ss.MergeSSTable([]*SSTableMeta{{Filepath: path}}, 1)
 	if merged != nil {
 		t.Error("merge should fail on a non-ascending source, got non-nil")
@@ -163,8 +159,8 @@ func tomb(k string) LogEntry { return LogEntry{Key: []byte(k), Value: nil} }
 // TestSSTableTombstoneRoundTrip 墓碑经 SSTable 写→点查→ReadAll→迭代器全链路：
 // 哨兵长度不触发巨型分配，墓碑还原为 found+nil，真实值不受影响。
 func TestSSTableTombstoneRoundTrip(t *testing.T) {
-	withTempSSTDir(t)
-	ss := NewSSTable()
+	opts := withTempSSTDir(t)
+	ss := NewSSTable(opts)
 	if err := ss.WriteToSSTable([]LogEntry{
 		entry("a", "1"), tomb("del"), entry("z", "3"),
 	}); err != nil {
@@ -207,8 +203,8 @@ func TestSSTableTombstoneRoundTrip(t *testing.T) {
 // TestMergePreservesTombstone 旧文件含值、新文件含同 key 墓碑：归并须保留墓碑
 // (newest 胜出)，compaction 后点查仍为已删除，而不是把旧值复活。
 func TestMergePreservesTombstone(t *testing.T) {
-	withTempSSTDir(t)
-	ss := NewSSTable()
+	opts := withTempSSTDir(t)
+	ss := NewSSTable(opts)
 	ss.WriteToSSTable([]LogEntry{entry("k", "v")}) // srcIdx 0（旧）
 	ss.WriteToSSTable([]LogEntry{tomb("k")})       // srcIdx 1（新，墓碑）
 

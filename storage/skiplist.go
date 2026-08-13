@@ -14,7 +14,12 @@ type SkipList struct {
 	size     int
 	level    int
 	head     *SkipNode
-	byteSize int64 // 当前表内 key+value 的累计字节数（覆盖写按增量维护）
+	byteSize int64
+
+	// maxLevel 与 p 是本表的层高上限与升层概率，构造时固定。此前它们是包级变量且在
+	// import 时取自全局配置，既无法按实例配置，也让测试改配置成为空操作。
+	maxLevel int
+	p        float64 // 当前表内 key+value 的累计字节数（覆盖写按增量维护）
 }
 
 // SkipNode 是跳表节点。Next 的长度即该节点的层高。
@@ -25,9 +30,11 @@ type SkipNode struct {
 }
 
 // newSkipList 创建一个新的空跳表
-func newSkipList() *SkipList {
+func newSkipList(maxLevel int, p float64) *SkipList {
 	return &SkipList{
-		head: newSkipNode(maxLevel, nil, nil),
+		head:     newSkipNode(maxLevel, nil, nil),
+		maxLevel: maxLevel,
+		p:        p,
 	}
 }
 
@@ -40,10 +47,10 @@ func newSkipNode(level int, key []byte, value []byte) *SkipNode {
 	}
 }
 
-// randomLevel 生成随机层级
-func randomLevel() int {
+// randomLevel 生成新节点的随机层级。
+func (sl *SkipList) randomLevel() int {
 	level := 1
-	for rand.Float64() < probability && level < maxLevel {
+	for rand.Float64() < sl.p && level < sl.maxLevel {
 		level++
 	}
 	return level
@@ -85,7 +92,7 @@ func (sl *SkipList) search(key []byte) ([]byte, bool) {
 
 // Put 插入或更新键值对，始终操作 active 表
 func (sl *SkipList) insert(key []byte, value []byte) int64 {
-	update := make([]*SkipNode, maxLevel)
+	update := make([]*SkipNode, sl.maxLevel)
 	p := sl.head
 
 	for i := sl.level - 1; i >= 0; i-- {
@@ -106,7 +113,7 @@ func (sl *SkipList) insert(key []byte, value []byte) int64 {
 	}
 
 	// 生成新节点的随机层级
-	newLevel := randomLevel()
+	newLevel := sl.randomLevel()
 	if newLevel > sl.level {
 		for i := sl.level; i < newLevel; i++ {
 			update[i] = sl.head
@@ -129,7 +136,7 @@ func (sl *SkipList) insert(key []byte, value []byte) int64 {
 
 // Delete 删除指定 key 的节点，始终操作 active 表
 func (sl *SkipList) delete(key []byte) bool {
-	update := make([]*SkipNode, maxLevel)
+	update := make([]*SkipNode, sl.maxLevel)
 	p := sl.head
 
 	for i := sl.level - 1; i >= 0; i-- {
