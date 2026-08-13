@@ -133,45 +133,88 @@ func (m *Engine) Get(key []byte) ([]byte, error) {
 	return nil, ErrKeyNotFound
 }
 
-// firstGTE 返回第一个 Key >= key 的节点；key 为空表示从头开始。无则返回 nil。
+// ScanRange 在 [start,end] 闭区间升序遍历最新可见键值，跳过墓碑，对每条命中调用 fn；
+// fn 返回 false 可提前停止。start/end 为空分别表示下界/上界不限。
+//
+// 覆盖 active + dirty + 全部 SSTable。此前它只遍历两张内存表，已 flush 的数据对扫描完全
+// 不可见——SCAN 命令因此只返回热数据，而按游标取数的下游投递会跳过所有已落盘的记录。
+//
+// 实现为多路归并：内存表在锁内按范围拷出快照，SSTable 以文件迭代器参与，源序按新旧排列
+// （SSTable 由旧到新，其后 dirty，最后 active），故同一 key 只保留最新版本；最新版本是
+// 墓碑时整条跳过。
+//
+// 拷贝内存表而非全程持锁，是因为归并要读磁盘：持锁会让写入停等 I/O，无锁遍历跳表又会与
+// 并发写相争。拷贝量由内存表大小天然有界。
+//
+// fn 内若需在调用返回后继续持有 key/value，应自行拷贝。
 func (m *Engine) ScanRange(start, end []byte, fn func(key, value []byte) bool) {
+	// 锁内：拷出两张内存表在范围内的条目。
 	m.mu.RLock()
-	defer m.mu.RUnlock()
+	activeEntries := collectRange(m.active, start, end)
+	dirtyEntries := collectRange(m.dirty, start, end)
+	m.mu.RUnlock()
 
-	var a, d *SkipNode
-	if m.active != nil {
-		a = m.active.firstGTE(start)
+	metas := m.sst.Metas() // 不可变快照，按落盘先后升序（最旧在前）
+
+	// 源序即新旧序：srcIdx 越大越新，归并去重时保留它。
+	sources := make([]entryIterator, 0, len(metas)+2)
+	for _, meta := range metas {
+		it, err := newSSTableIteratorFrom(m.sst, meta.Filepath, start)
+		if err != nil {
+			slog.Warn("scan: skip unreadable sstable", "file", meta.Filepath, "error", err)
+			continue
+		}
+		sources = append(sources, newRangeIterator(it, start, end))
 	}
-	if m.dirty != nil {
-		d = m.dirty.firstGTE(start)
+	if len(dirtyEntries) > 0 {
+		sources = append(sources, newSliceIterator(dirtyEntries))
+	}
+	if len(activeEntries) > 0 {
+		sources = append(sources, newSliceIterator(activeEntries))
+	}
+	if len(sources) == 0 {
+		return
 	}
 
-	for a != nil || d != nil {
-		// 选更小的 key；相等时 active 为最新版本，用 active 值并同步推进 dirty。
-		var key, val []byte
-		switch {
-		case d == nil || (a != nil && bytes.Compare(a.Key, d.Key) < 0):
-			key, val = a.Key, a.Value
-			a = a.Next[0]
-		case a == nil || bytes.Compare(d.Key, a.Key) < 0:
-			key, val = d.Key, d.Value
-			d = d.Next[0]
-		default: // a.Key == d.Key：active 覆盖 dirty
-			key, val = a.Key, a.Value
-			a = a.Next[0]
-			d = d.Next[0]
-		}
+	mi, err := newMergeIterator(sources)
+	if err != nil {
+		slog.Error("scan: init merge failed", "error", err)
+		_ = mi.Close()
+		return
+	}
+	defer mi.Close()
 
-		if len(end) > 0 && bytes.Compare(key, end) > 0 {
-			return // 升序遍历已越过上界，可停
+	for mi.Next() {
+		if mi.Value() == nil {
+			continue // 最新版本是墓碑：该 key 已删除
 		}
-		if val == nil {
-			continue // 墓碑：跳过
-		}
-		if !fn(key, val) {
+		if !fn(mi.Key(), mi.Value()) {
 			return
 		}
 	}
+	if err := mi.Err(); err != nil {
+		slog.Error("scan: merge iteration failed", "error", err)
+	}
+}
+
+// collectRange 拷出跳表中 [start,end] 内的条目（含墓碑），调用方须持 m.mu。
+// 保留墓碑：它要在归并中 shadow 更旧的 SSTable 版本。
+func collectRange(sl *SkipList, start, end []byte) []LogEntry {
+	if sl == nil {
+		return nil
+	}
+	var out []LogEntry
+	for p := sl.firstGTE(start); p != nil; p = p.Next[0] {
+		if len(end) > 0 && bytes.Compare(p.Key, end) > 0 {
+			break
+		}
+		e := LogEntry{Key: append([]byte(nil), p.Key...)}
+		if p.Value != nil { // 保留 nil-vs-空切片语义：nil=墓碑
+			e.Value = append([]byte(nil), p.Value...)
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // SnapshotLive 返回 active+dirty 合并后的全部键值快照（active 覆盖 dirty），

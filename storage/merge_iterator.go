@@ -6,9 +6,19 @@ import (
 	"fmt"
 )
 
+// entryIterator 是参与归并的有序源：按 key 升序逐条产出 (key, value)。
+// SSTable 文件与内存表快照都实现它，从而可在同一次归并中混合。
+type entryIterator interface {
+	Next() bool
+	Key() []byte
+	Value() []byte
+	Err() error
+	Close() error
+}
+
 // mergeSource 一个参与归并的源迭代器及其 srcIdx（约定：越大越新）。
 type mergeSource struct {
-	it     *sstableIterator
+	it     entryIterator
 	srcIdx int
 	key    []byte
 	value  []byte
@@ -46,13 +56,13 @@ func (h *mergeHeap) Pop() any {
 // compaction 单 goroutine 路径，故不内置锁。
 type mergeIterator struct {
 	h       mergeHeap
-	sources []*sstableIterator // 持有以便 Close
+	sources []entryIterator // 持有以便 Close
 	curKey  []byte
 	curVal  []byte
 	err     error
 }
 
-func newMergeIterator(iters []*sstableIterator) (*mergeIterator, error) {
+func newMergeIterator(iters []entryIterator) (*mergeIterator, error) {
 	m := &mergeIterator{sources: iters}
 	h := make(mergeHeap, 0, len(iters))
 	for idx, it := range iters {

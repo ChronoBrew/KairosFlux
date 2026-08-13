@@ -259,9 +259,9 @@ func (k *KVServer) Get(key []byte) ([]byte, error) {
 // maxScanResults 限制单次扫描返回条目数，防止无谓词大范围扫描撑爆内存。
 const maxScanResults = 10000
 
-// Scan 在 [start,end] 闭区间扫描 MemTable 热数据，对满足谓词的条目收集 key/value
-// 拷贝后返回（只回传命中切片）。底层切片归 MemTable 所有，故必须拷贝。
-// 达到上限时截断并告警。
+// Scan 在 [start,end] 闭区间扫描全部数据（内存表 + 已落盘的 SSTable），对满足谓词的
+// 条目收集 key/value 拷贝后返回（只回传命中切片）。底层切片归存储层所有，故必须拷贝。
+// 达到 maxScanResults 上限时截断并告警。
 func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry {
 	out := make([]proto.ScanEntry, 0)
 	k.storage.ScanRange(start, end, func(key, value []byte) bool {
