@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
+	bandb "github.com/NeverENG/BanDB/client"
 	"github.com/NeverENG/BanDB/cluster"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/pkg/predicate"
@@ -108,12 +110,9 @@ func TestShardRouting_MultiNode(t *testing.T) {
 	value := []byte("payload-v1")
 
 	// 经入口节点写入 → 应被转发到属主。
-	c := bannet.NewClient(entry, 2*time.Second)
-	if err := c.Connect(); err != nil {
-		t.Fatal(err)
-	}
-	defer c.Close()
-	if err := c.Put(key, value); err != nil {
+	ctx := context.Background()
+	c := newTestClient(t, entry)
+	if err := c.Put(ctx, key, value); err != nil {
 		t.Fatalf("put via entry failed: %v", err)
 	}
 
@@ -126,9 +125,9 @@ func TestShardRouting_MultiNode(t *testing.T) {
 	}
 
 	// 从入口读（转发读）→ 命中。
-	got, found, err := c.Get(key)
-	if err != nil || !found {
-		t.Fatalf("get via entry: found=%v err=%v", found, err)
+	got, err := c.Get(ctx, key)
+	if err != nil {
+		t.Fatalf("get via entry: %v", err)
 	}
 	if string(got) != string(value) {
 		t.Fatalf("get via entry = %q, want %q", got, value)
@@ -136,18 +135,14 @@ func TestShardRouting_MultiNode(t *testing.T) {
 
 	// 从第三个节点（既非入口也非属主）读 → 仍应转发到属主命中。
 	third := indexOfOther(peers, 0, ownerIdx)
-	c3 := bannet.NewClient(peers[third], 2*time.Second)
-	if err := c3.Connect(); err != nil {
-		t.Fatal(err)
-	}
-	defer c3.Close()
-	got3, found3, err := c3.Get(key)
-	if err != nil || !found3 || string(got3) != string(value) {
-		t.Fatalf("get via third node: got=%q found=%v err=%v", got3, found3, err)
+	c3 := newTestClient(t, peers[third])
+	got3, err := c3.Get(ctx, key)
+	if err != nil || string(got3) != string(value) {
+		t.Fatalf("get via third node: got=%q err=%v", got3, err)
 	}
 
 	// 删除经入口转发 → 属主 store 不再有该 key。
-	if err := c.Delete(key); err != nil {
+	if err := c.Delete(ctx, key); err != nil {
 		t.Fatalf("delete via entry failed: %v", err)
 	}
 	if stores[ownerIdx].has(string(key)) {
@@ -172,4 +167,19 @@ func indexOfOther(ss []string, a, b int) int {
 		}
 	}
 	return -1
+}
+
+// newTestClient 建一个指向 addr 的 SDK 客户端，随测试结束关闭。
+func newTestClient(t *testing.T, addr string) *bandb.Client {
+	t.Helper()
+	c, err := bandb.New(bandb.Options{
+		Addrs:          []string{addr},
+		DialTimeout:    2 * time.Second,
+		RequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	return c
 }
