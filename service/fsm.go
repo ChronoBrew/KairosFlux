@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/pkg/predicate"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/predicate"
+	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/raft"
 	"github.com/NeverENG/BanDB/storage"
 )

@@ -189,7 +189,8 @@ case err != nil:
 
 ### 对外契约只有两样
 
-`client` 包（本 SDK）与上面的 BanNet 协议规范。除此之外的包都是内部实现，可能随版本变动。
+`client`（SDK）、`proto`（协议常量与编解码）、`predicate`（SCAN 谓词）三个包，加上上面的
+BanNet 协议规范。这一边界由编译器强制：其余实现包都在 `internal/` 之下，模块外无法导入。
 
 仓库内另有一条 gRPC 传输（`internal/kvgrpc`），但它**不是对外接口**，已置于 `internal/`
 之下由编译器强制——模块外无法导入。把 `.proto` 交给使用方自行生成客户端，等于把内部传输

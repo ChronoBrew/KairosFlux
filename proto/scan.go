@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/NeverENG/BanDB/pkg/predicate"
+	"github.com/NeverENG/BanDB/predicate"
 )
 
 // SCAN 请求负载布局（小端）：

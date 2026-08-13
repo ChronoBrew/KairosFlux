@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/pkg/credit"
-	"github.com/NeverENG/BanDB/pkg/metrics"
+	"github.com/NeverENG/BanDB/internal/credit"
+	"github.com/NeverENG/BanDB/internal/metrics"
 )
 
 var (

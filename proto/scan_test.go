@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/NeverENG/BanDB/pkg/predicate"
+	"github.com/NeverENG/BanDB/predicate"
 )
 
 func TestScanRequestRoundTrip(t *testing.T) {

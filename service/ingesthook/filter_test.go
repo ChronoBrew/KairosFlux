@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // fakeReq 是 bannet.Request 的测试替身。钩子不触碰连接，Conn 返回 nil。

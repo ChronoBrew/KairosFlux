@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // TestScanResponseSurvivesWire 复现并守护 SCAN 的网络缝：一个多条命中的响应

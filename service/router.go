@@ -7,10 +7,10 @@ import (
 
 	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/cluster"
-	"github.com/NeverENG/BanDB/pkg/admission"
-	"github.com/NeverENG/BanDB/pkg/metrics"
-	"github.com/NeverENG/BanDB/pkg/predicate"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/internal/admission"
+	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/NeverENG/BanDB/predicate"
+	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/storage"
 )
 

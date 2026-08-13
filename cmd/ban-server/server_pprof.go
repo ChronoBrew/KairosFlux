@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/pkg/metrics"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/service"
 	"github.com/NeverENG/BanDB/service/ingesthook"
 )
