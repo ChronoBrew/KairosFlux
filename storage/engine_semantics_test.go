@@ -17,7 +17,7 @@ func TestMemTable_PutAndDelete(t *testing.T) {
 		config.G.WALPath = oldWALPath
 	}()
 
-	memTable := NewMemTable()
+	memTable := NewEngine()
 	t.Log("MemTable created")
 
 	err := memTable.Put([]byte("key1"), []byte("value1"))
@@ -66,7 +66,7 @@ func setupMemTableTempEnv(t *testing.T, walName string) {
 // 墓碑必须在 active 与落盘后都 shadow 旧值，且后续 Put 可复活该 key。
 func TestMemTableDeleteFlushedKeyNoResurrect(t *testing.T) {
 	setupMemTableTempEnv(t, "test_tombstone_wal.log")
-	m := NewMemTable()
+	m := NewEngine()
 
 	if err := m.Put([]byte("k"), []byte("v")); err != nil {
 		t.Fatalf("put: %v", err)
@@ -99,7 +99,7 @@ func TestMemTableDeleteFlushedKeyNoResurrect(t *testing.T) {
 // Put(k, []byte{}) 经 flush 落盘后, Get 必须返回 found+空, 而非未找到。
 func TestMemTableEmptyValueNotTombstone(t *testing.T) {
 	setupMemTableTempEnv(t, "test_emptyval_wal.log")
-	m := NewMemTable()
+	m := NewEngine()
 
 	if err := m.Put([]byte("e"), []byte{}); err != nil {
 		t.Fatalf("put empty: %v", err)
@@ -136,7 +136,7 @@ func TestGetReturnsNewestAcrossSSTables(t *testing.T) {
 		config.G.MaxMemTableSize = oldMax
 	}()
 
-	m := NewMemTable()
+	m := NewEngine()
 
 	if err := m.Put([]byte("k"), []byte("v1")); err != nil {
 		t.Fatalf("put v1: %v", err)

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"log/slog"
-	"math/rand"
 	"sync"
 
 	"github.com/NeverENG/BanDB/config"
@@ -17,19 +16,22 @@ var (
 	probability = config.G.MaxMemTableP
 )
 
-// SkipList 跳表数据结构，封装跳表的 size、level 和 head 指针
-type SkipList struct {
-	size     int
-	level    int
-	head     *SkipNode
-	byteSize int64 // 当前表内 key+value 的累计字节数（覆盖写按增量维护）
-}
-
-// MemTable 基于跳表的双表 memtable 实现
-// active:  当前写入表，接收所有 Put/Delete 操作
-// dirty:   正在 flush 的不可变快照，flush 完成后置 nil
-// 采用双表模式避免 Flush 与写入之间的数据竞争
-type MemTable struct {
+// Engine 是 LSM 存储引擎：它同时持有内存中的表与磁盘上的 SSTable 集合，并驱动二者
+// 之间的流转。
+//
+// 注意区分：这里的「内存表」是 SkipList（见 skiplist.go），Engine 是持有它们并连同
+// SSTable 一起管理的整条链路。
+//
+// 内存侧采用双表：
+//   - active 接收所有 Put/Delete；
+//   - dirty 是正在 flush 的不可变快照，flush 完成后置 nil。
+//
+// 双表使 flush 能在锁外进行：交换后 dirty 不再被写入，Get 仍可回退查询它，
+// 从而避免 flush 与写入相互阻塞。
+//
+// 读顺序 active → dirty → SSTable；写入受字节级信用背压约束，超预算即阻塞等待 flush
+// 归还信用。后台两个协程分别负责 flush 与 compaction。
+type Engine struct {
 	active *SkipList
 	dirty  *SkipList // 正在 flush 中的不可变表，可能仍包含未 flush 的旧数据（供 Get 回退查询）
 	mu     sync.RWMutex
@@ -50,22 +52,8 @@ type MemTable struct {
 }
 
 // SkipNode 跳表节点
-type SkipNode struct {
-	Next  []*SkipNode
-	Key   []byte
-	Value []byte
-}
-
-// newSkipList 创建一个新的空跳表
-func newSkipList() *SkipList {
-	return &SkipList{
-		head: newSkipNode(maxLevel, nil, nil),
-	}
-}
-
-// NewMemTable 创建新的 MemTable
-func NewMemTable() *MemTable {
-	mt := &MemTable{
+func NewEngine() *Engine {
+	mt := &Engine{
 		active:        newSkipList(),
 		FlushChan:     make(chan bool, 1),
 		compactCh:     make(chan bool, 1),
@@ -86,25 +74,7 @@ func NewMemTable() *MemTable {
 }
 
 // newSkipNode 创建新的跳表节点
-func newSkipNode(level int, key []byte, value []byte) *SkipNode {
-	return &SkipNode{
-		Next:  make([]*SkipNode, level),
-		Key:   key,
-		Value: value,
-	}
-}
-
-// randomLevel 生成随机层级
-func randomLevel() int {
-	level := 1
-	for rand.Float64() < probability && level < maxLevel {
-		level++
-	}
-	return level
-}
-
-// Size 返回 active 表中的元素个数
-func (m *MemTable) Size() int {
+func (m *Engine) Size() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	if m.active == nil {
@@ -115,7 +85,7 @@ func (m *MemTable) Size() int {
 
 // Get 获取指定 key 的值
 // 查找顺序：active → dirty → SSTable
-func (m *MemTable) Get(key []byte) ([]byte, error) {
+func (m *Engine) Get(key []byte) ([]byte, error) {
 	// active 的查找必须持锁：Put/Delete 会并发改写其节点指针，无锁遍历可能跟到只连了
 	// 一半的新节点，读出错值甚至解引用空指针。SSTable 查找不持锁——它要读磁盘，持锁会让
 	// 写入停等 I/O；dirty 一经交换便不再被写入，故也无需持锁。
@@ -156,26 +126,7 @@ func (m *MemTable) Get(key []byte) ([]byte, error) {
 }
 
 // firstGTE 返回第一个 Key >= key 的节点；key 为空表示从头开始。无则返回 nil。
-func (sl *SkipList) firstGTE(key []byte) *SkipNode {
-	p := sl.head
-	if p == nil {
-		return nil
-	}
-	for i := sl.level - 1; i >= 0; i-- {
-		for p.Next[i] != nil && bytes.Compare(p.Next[i].Key, key) < 0 {
-			p = p.Next[i]
-		}
-	}
-	return p.Next[0]
-}
-
-// ScanRange 在 [start,end] 闭区间内升序遍历 active+dirty 合并后的最新可见键值，
-// 跳过墓碑(value==nil)，对每条命中调用 fn；fn 返回 false 可提前停止。
-// start/end 为空分别表示下界/上界不限。
-//
-// 全程持读锁：热窗口范围扫描有界且短，期间写入与 flush 会等待。fn 内若需在调用
-// 返回后继续持有 key/value，应自行拷贝——底层切片归 MemTable 所有。
-func (m *MemTable) ScanRange(start, end []byte, fn func(key, value []byte) bool) {
+func (m *Engine) ScanRange(start, end []byte, fn func(key, value []byte) bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -219,7 +170,7 @@ func (m *MemTable) ScanRange(start, end []byte, fn func(key, value []byte) bool)
 // 与 ScanRange 不同：保留墓碑(value==nil)。用于 WAL checkpoint 重写——未 flush 的
 // 热数据（含删除墓碑）必须完整保留，否则重放时被删的 key 会从 SSTable 复活。
 // 拷贝底层字节，返回后可安全持有。
-func (m *MemTable) SnapshotLive() []LogEntry {
+func (m *Engine) SnapshotLive() []LogEntry {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -256,22 +207,7 @@ func (m *MemTable) SnapshotLive() []LogEntry {
 }
 
 // search 在跳表中查找指定 key，返回值和是否找到
-func (sl *SkipList) search(key []byte) ([]byte, bool) {
-	p := sl.head
-	for i := sl.level - 1; i >= 0; i-- {
-		for p.Next[i] != nil && bytes.Compare(p.Next[i].Key, key) < 0 {
-			p = p.Next[i]
-		}
-	}
-	p = p.Next[0]
-	if p != nil && bytes.Compare(p.Key, key) == 0 {
-		return p.Value, true
-	}
-	return nil, false
-}
-
-// Put 插入或更新键值对，始终操作 active 表
-func (m *MemTable) Put(key []byte, value []byte) error {
+func (m *Engine) Put(key []byte, value []byte) error {
 	full := int64(len(key)) + int64(len(value))
 	m.acquireCredit(full) // 字节级令牌桶背压：信用不足则阻塞
 
@@ -298,7 +234,7 @@ func (m *MemTable) Put(key []byte, value []byte) error {
 }
 
 // acquireCredit 为本次写入预占 n 字节信用；不足时先触发 flush 以归还信用，再阻塞等待。
-func (m *MemTable) acquireCredit(n int64) {
+func (m *Engine) acquireCredit(n int64) {
 	if m.credits.TryAcquire(n) {
 		return
 	}
@@ -308,58 +244,14 @@ func (m *MemTable) acquireCredit(n int64) {
 }
 
 // InflightBytes 返回当前未 flush（active + 正在刷的 dirty）占用的字节信用，供观测/压测使用。
-func (m *MemTable) InflightBytes() int64 {
+func (m *Engine) InflightBytes() int64 {
 	return m.credits.Used()
 }
 
 // insert 在跳表中插入键值对（无锁版本，由调用者保证线程安全）
 // insert 插入或覆盖 key，并返回本次操作使 byteSize 变化的增量（覆盖写可能为负）。
 // 调用方用该增量做背压信用对账。
-func (sl *SkipList) insert(key []byte, value []byte) int64 {
-	update := make([]*SkipNode, maxLevel)
-	p := sl.head
-
-	for i := sl.level - 1; i >= 0; i-- {
-		for p.Next[i] != nil && bytes.Compare(p.Next[i].Key, key) < 0 {
-			p = p.Next[i]
-		}
-		update[i] = p
-	}
-
-	// 检查 key 是否已存在
-	p = p.Next[0]
-	if p != nil && bytes.Compare(p.Key, key) == 0 {
-		// key 已存在，更新值：byteSize 按新旧 value 差值调整
-		delta := int64(len(value)) - int64(len(p.Value))
-		p.Value = value
-		sl.byteSize += delta
-		return delta
-	}
-
-	// 生成新节点的随机层级
-	newLevel := randomLevel()
-	if newLevel > sl.level {
-		for i := sl.level; i < newLevel; i++ {
-			update[i] = sl.head
-		}
-		sl.level = newLevel
-	}
-
-	// 创建新节点并插入每一层
-	newNode := newSkipNode(newLevel, key, value)
-	for i := 0; i < newLevel; i++ {
-		newNode.Next[i] = update[i].Next[i]
-		update[i].Next[i] = newNode
-	}
-
-	sl.size++
-	delta := int64(len(key)) + int64(len(value))
-	sl.byteSize += delta
-	return delta
-}
-
-// Delete 删除指定 key 的节点，始终操作 active 表
-func (m *MemTable) Delete(key []byte) error {
+func (m *Engine) Delete(key []byte) error {
 	full := int64(len(key)) // 墓碑 value 为 nil
 	m.acquireCredit(full)
 
@@ -387,43 +279,12 @@ func (m *MemTable) Delete(key []byte) error {
 }
 
 // delete 从跳表中删除节点，返回是否成功删除
-func (sl *SkipList) delete(key []byte) bool {
-	update := make([]*SkipNode, maxLevel)
-	p := sl.head
-
-	for i := sl.level - 1; i >= 0; i-- {
-		for p.Next[i] != nil && bytes.Compare(p.Next[i].Key, key) < 0 {
-			p = p.Next[i]
-		}
-		update[i] = p
-	}
-
-	p = p.Next[0]
-	if p == nil || bytes.Compare(p.Key, key) != 0 {
-		return false
-	}
-
-	for i := 0; i < sl.level; i++ {
-		if update[i].Next[i] != p {
-			break
-		}
-		update[i].Next[i] = p.Next[i]
-	}
-
-	for sl.level > 0 && sl.head.Next[sl.level-1] == nil {
-		sl.level--
-	}
-
-	sl.size--
-	return true
-}
-
-func (m *MemTable) Close() error {
+func (m *Engine) Close() error {
 	close(m.stopCh)
 	return nil
 }
 
-func (m *MemTable) StartFlush() {
+func (m *Engine) StartFlush() {
 	select {
 	case m.FlushChan <- true:
 	default:
@@ -436,7 +297,7 @@ func (m *MemTable) StartFlush() {
 //  2. 创建新的空 active 表用于接受后续写入
 //  3. 释放锁，在锁外将 dirty 数据写入 SSTable
 //  4. flush 完成后将 dirty 置 nil
-func (m *MemTable) Flush() {
+func (m *Engine) Flush() {
 	// 步骤 1-2: 持锁进行交换（快速操作）
 	m.mu.Lock()
 	// dirty 非 nil 说明上一次 flush 失败遗留，本次直接重试它，不再交换（避免覆盖丢数据）
@@ -470,7 +331,7 @@ func (m *MemTable) Flush() {
 	slog.Debug("flush completed")
 }
 
-func (m *MemTable) FlushWorker() {
+func (m *Engine) FlushWorker() {
 	for {
 		select {
 		case <-m.FlushChan:
@@ -482,21 +343,7 @@ func (m *MemTable) FlushWorker() {
 }
 
 // collectAllEntry 收集跳表中的所有 entry（从第 0 层按序遍历）
-func collectAllEntry(sl *SkipList) []LogEntry {
-	logEntries := make([]LogEntry, 0, sl.size)
-
-	p := sl.head.Next[0]
-	for p != nil {
-		logEntries = append(logEntries, LogEntry{
-			Key:   p.Key,
-			Value: p.Value,
-		})
-		p = p.Next[0]
-	}
-	return logEntries
-}
-
-func (m *MemTable) getFromSSTables(key []byte) ([]byte, bool) {
+func (m *Engine) getFromSSTables(key []byte) ([]byte, bool) {
 	// 新→旧遍历：metas 按落盘先后追加（最旧在前），故逆序取首个命中即为最新版本，
 	// 避免旧 SSTable 的陈旧值盖过新 SSTable 中对同一 key 的覆盖写。
 	//
@@ -530,7 +377,7 @@ func (m *MemTable) getFromSSTables(key []byte) ([]byte, bool) {
 
 // FlushToSSTable 将 entries 写入临时跳表并立即 Flush 到 SSTable
 // 不经过 active 表，不影响正常读写，专用于快照重放等场景
-func (m *MemTable) FlushToSSTable(entries []LogEntry) error {
+func (m *Engine) FlushToSSTable(entries []LogEntry) error {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -564,7 +411,7 @@ func (m *MemTable) FlushToSSTable(entries []LogEntry) error {
 	return nil
 }
 
-func (m *MemTable) ListenCompactCh() {
+func (m *Engine) ListenCompactCh() {
 	for {
 		select {
 		case <-m.compactCh:
@@ -575,7 +422,7 @@ func (m *MemTable) ListenCompactCh() {
 	}
 }
 
-func (m *MemTable) CompactSSTable(startLevel int) {
+func (m *Engine) CompactSSTable(startLevel int) {
 	maxLevel := 10
 
 	for level := startLevel; level < maxLevel; level++ {

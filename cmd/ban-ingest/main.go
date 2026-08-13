@@ -90,7 +90,7 @@ type Result struct {
 }
 
 // setupEngine 指向临时目录并以小 memtable 创建引擎，返回引擎与清理函数。
-func setupEngine(memTableSize int) (*storage.MemTable, func()) {
+func setupEngine(memTableSize int) (*storage.Engine, func()) {
 	tmp, err := os.MkdirTemp("", "bandb-ingest-*")
 	if err != nil {
 		panic(err)
@@ -99,7 +99,7 @@ func setupEngine(memTableSize int) (*storage.MemTable, func()) {
 	config.G.WALPath = filepath.Join(tmp, "wal.log")
 	config.G.MaxMemTableSize = memTableSize
 
-	memTable := storage.NewMemTable()
+	memTable := storage.NewEngine()
 	cleanup := func() {
 		_ = memTable.Close()
 		os.RemoveAll(tmp)
@@ -108,7 +108,7 @@ func setupEngine(memTableSize int) (*storage.MemTable, func()) {
 }
 
 // memSampler 每 100ms 采样一次堆内存与未 flush 字节信用，返回停止函数（调用后回填峰值）。
-func memSampler(mt *storage.MemTable, heapPeak, sysPeak, inflightPeak *uint64) func() {
+func memSampler(mt *storage.Engine, heapPeak, sysPeak, inflightPeak *uint64) func() {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(1)

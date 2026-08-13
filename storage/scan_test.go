@@ -6,7 +6,7 @@ import (
 )
 
 // collect 把 [start,end] 扫描结果收成 key:value 串对，便于断言顺序与内容。
-func collect(m *MemTable, start, end []byte) [][2]string {
+func collect(m *Engine, start, end []byte) [][2]string {
 	var out [][2]string
 	m.ScanRange(start, end, func(k, v []byte) bool {
 		out = append(out, [2]string{string(k), string(v)})
@@ -15,8 +15,8 @@ func collect(m *MemTable, start, end []byte) [][2]string {
 	return out
 }
 
-func newMemWith(active, dirty *SkipList) *MemTable {
-	return &MemTable{active: active, dirty: dirty}
+func newMemWith(active, dirty *SkipList) *Engine {
+	return &Engine{active: active, dirty: dirty}
 }
 
 func sl(pairs ...[2]string) *SkipList {
