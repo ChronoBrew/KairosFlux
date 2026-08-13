@@ -7,7 +7,7 @@ import (
 	"github.com/NeverENG/BanDB/config"
 )
 
-func setupTestEngine(t *testing.T) (*MemTable, func()) {
+func setupTestEngine(t *testing.T) (*Engine, func()) {
 	oldWALPath := config.G.WALPath
 	oldMaxSize := config.G.MaxMemTableSize
 	oldSSTPath := config.G.SSTablePath
@@ -18,9 +18,9 @@ func setupTestEngine(t *testing.T) (*MemTable, func()) {
 	config.G.SSTablePath = dir
 	config.G.MaxMemTableSize = 100
 
-	memTable := NewMemTable()
+	memTable := NewEngine()
 
-	// 不再另起 FlushWorker：NewMemTable 已启动一个。两个 worker 会并发进入 Flush，
+	// 不再另起 FlushWorker：NewEngine 已启动一个。两个 worker 会并发进入 Flush，
 	// 各自取到不同的 dirty 表后互相把 m.dirty 置 nil，导致 flush 丢数据、读回缺失
 	// （表现为 TestEngine_* 偶发失败）。
 
@@ -169,7 +169,7 @@ func TestEngine_PutTriggersFlush(t *testing.T) {
 	config.G.WALPath = filepath.Join(dir, "wal.log")
 	config.G.SSTablePath = dir
 
-	mt := NewMemTable()
+	mt := NewEngine()
 
 	for i := 0; i < 10; i++ {
 		key := []byte(string(rune('a' + i)))

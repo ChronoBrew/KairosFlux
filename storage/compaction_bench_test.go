@@ -24,7 +24,7 @@ func TestCompactionBench(t *testing.T) {
 
 	ResetCompactionStats()
 
-	// 不经 NewMemTable（避免启动异步 FlushWorker/ListenCompactCh 造成非确定性），
+	// 不经 NewEngine（避免启动异步 FlushWorker/ListenCompactCh 造成非确定性），
 	// 只用 sst，手动驱动 flush 与 compaction。
 	mt := newBareMemTable(NewSSTable())
 

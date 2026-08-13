@@ -17,7 +17,7 @@ func TestGetMissingKeyIsErrKeyNotFound(t *testing.T) {
 	config.G.SSTablePath = dir
 	t.Cleanup(func() { config.G.SSTablePath = oldSST })
 
-	mt := NewMemTable()
+	mt := NewEngine()
 	t.Cleanup(func() { mt.Close() })
 
 	if err := mt.Put([]byte("present"), []byte("v")); err != nil {

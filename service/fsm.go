@@ -35,7 +35,7 @@ type Command struct {
 
 type KVServer struct {
 	raft    *raft.Raft
-	storage *storage.MemTable
+	storage *storage.Engine
 	wal     *storage.WAL // standalone 模式的存储层 WAL；raft 模式为 nil
 
 	// cpMu 协调写入与 WAL checkpoint：每次写用 RLock 把 wal.Append+storage.Put
@@ -52,7 +52,7 @@ type KVServer struct {
 func NewKVServer() *KVServer {
 	// 初始化存储
 	kv := &KVServer{
-		storage: storage.NewMemTable(),
+		storage: storage.NewEngine(),
 	}
 
 	if config.G.Mode == config.ModeStandalone {

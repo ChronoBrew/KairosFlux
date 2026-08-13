@@ -29,7 +29,7 @@ func TestReloadRecoversFlushedKeys(t *testing.T) {
 	}()
 
 	const n = 50
-	mt := NewMemTable()
+	mt := NewEngine()
 	for i := 0; i < n; i++ {
 		key := []byte(fmt.Sprintf("k%04d", i))
 		if err := mt.Put(key, []byte(fmt.Sprintf("v%04d", i))); err != nil {
@@ -40,7 +40,7 @@ func TestReloadRecoversFlushedKeys(t *testing.T) {
 	_ = mt.Close()                     // 停后台协程，避免与重载实例抢同一目录
 
 	// 模拟重启：同一目录新建 MemTable，从 SSTable 重新加载。
-	mt2 := NewMemTable()
+	mt2 := NewEngine()
 	defer mt2.Close()
 	time.Sleep(200 * time.Millisecond) // 等 SSTable 元数据/索引异步加载
 
