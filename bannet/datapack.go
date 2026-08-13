@@ -4,9 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"log/slog"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // 报文格式:
@@ -41,7 +38,13 @@ func (dp *DataPack) Pack(msg *Message) ([]byte, error) {
 	return buf, nil
 }
 
-// UnPack 只解析定长头部 (6 字节), 返回带 DataLen 与 IDLen 的占位 Message;
+// UnPack 只解析定长头部。
+//
+// 它不校验帧长上限：那是策略而非编解码，由连接侧在读取负载前执行（见 Connection.
+// StartReader）。此前该校验在此处每帧读两次全局配置——把策略留在边界，解码器才能保持
+// 无状态、不依赖全局。
+//
+// 原注释：只解析定长头部 (6 字节), 返回带 DataLen 与 IDLen 的占位 Message;
 // 调用方拿到 IDLen 后, 还需要从连接读取 IDLen+DataLen 字节填充 Id 与 Data。
 func (dp *DataPack) UnPack(data []byte) (*Message, error) {
 	if len(data) < int(dp.HeadLen()) {
@@ -53,10 +56,6 @@ func (dp *DataPack) UnPack(data []byte) (*Message, error) {
 	msg.DataLen = binary.LittleEndian.Uint32(data[0:4])
 	idLen := binary.LittleEndian.Uint16(data[4:6])
 
-	if config.G.MaxPackageSize > 0 && msg.DataLen > config.G.MaxPackageSize {
-		slog.Warn("banNet frame exceeds max package size", "dataLen", msg.DataLen, "max", config.G.MaxPackageSize)
-		return nil, errors.New("data too large")
-	}
 	// 借用 Id 暂存 IDLen 信息: 调用方先从 MsgID() 拿不到东西, 通过头部之后另读 IDLen 字节填回。
 	// 这里用 SetMsgLen 仅保留 DataLen 不冲突, IDLen 通过返回的 Message.IDLen 提供。
 	msg.IDLen = idLen
