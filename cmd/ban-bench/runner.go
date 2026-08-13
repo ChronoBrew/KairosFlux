@@ -12,7 +12,6 @@ import (
 
 	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/pkg/proto"
-	"github.com/NeverENG/BanDB/pkg/utils"
 )
 
 type Config struct {
@@ -315,7 +314,7 @@ func put(conn *net.TCPConn, key, value []byte) error {
 	binary.LittleEndian.PutUint32(keyLen, uint32(len(key)))
 	binary.LittleEndian.PutUint32(valLen, uint32(len(value)))
 
-	data := utils.ByteBuilder(keyLen, valLen, key, value)
+	data := concatBytes(keyLen, valLen, key, value)
 	if err := send(conn, proto.MsgPut, data); err != nil {
 		return err
 	}
@@ -333,7 +332,7 @@ func put(conn *net.TCPConn, key, value []byte) error {
 func get(conn *net.TCPConn, key []byte) ([]byte, error) {
 	keyLen := make([]byte, 4)
 	binary.LittleEndian.PutUint32(keyLen, uint32(len(key)))
-	data := utils.ByteBuilder(keyLen, key)
+	data := concatBytes(keyLen, key)
 
 	if err := send(conn, proto.MsgGet, data); err != nil {
 		return nil, err
@@ -359,7 +358,7 @@ func get(conn *net.TCPConn, key []byte) ([]byte, error) {
 func del(conn *net.TCPConn, key []byte) error {
 	keyLen := make([]byte, 4)
 	binary.LittleEndian.PutUint32(keyLen, uint32(len(key)))
-	data := utils.ByteBuilder(keyLen, key)
+	data := concatBytes(keyLen, key)
 
 	if err := send(conn, proto.MsgDelete, data); err != nil {
 		return err
@@ -378,4 +377,17 @@ func del(conn *net.TCPConn, key []byte) error {
 func makeKey(idx int, keySize int) []byte {
 	s := fmt.Sprintf("%0*x", keySize, idx)
 	return []byte(s)
+}
+
+// concatBytes 按总长度一次分配后拼接多个字节切片。
+func concatBytes(parts ...[]byte) []byte {
+	n := 0
+	for _, p := range parts {
+		n += len(p)
+	}
+	out := make([]byte, 0, n)
+	for _, p := range parts {
+		out = append(out, p...)
+	}
+	return out
 }
