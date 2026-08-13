@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -11,6 +12,7 @@ import (
 	"github.com/NeverENG/BanDB/predicate"
 	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/raft"
+	"github.com/NeverENG/BanDB/service/delivery/offset"
 	"github.com/NeverENG/BanDB/storage"
 )
 
@@ -184,6 +186,25 @@ func (k *KVServer) Checkpoint() {
 	}
 }
 
+// ReclaimDelivered 丢弃已整体投递完的 SSTable，返回回收的文件数。
+//
+// bound 取自投递已提交的游标，但会先被压到 offset 保留前缀之下——游标本身就以
+// `__offset__/<sink>` 为 key 存在同一 KV 空间里，若某个文件同时含业务数据与该游标，
+// 而 bound 又大于它，整份文件会连游标一起被删；游标一丢，投递将从头重投全部数据。
+// 压到保留前缀之下即可保证：任何含保留 key 的文件其 MaxKey 都不小于 bound，故必被保留。
+//
+// 代价是 key 排在 `__offset__/` 之后的数据不会被回收。这是当前 offset 与业务数据共用
+// 一个 key 空间带来的限制；把 offset 移出可扫描空间才能解除，属独立改动。
+func (k *KVServer) ReclaimDelivered(bound []byte) int {
+	if len(bound) == 0 {
+		return 0
+	}
+	if reserved := []byte(offset.ReservedPrefix); bytes.Compare(bound, reserved) > 0 {
+		bound = reserved
+	}
+	return k.storage.ReclaimUpTo(bound)
+}
+
 // Close 优雅停机：停止存储后台协程并关闭 standalone WAL（raft 模式 wal 为 nil）。
 func (k *KVServer) Close() error {
 	if k.storage != nil {
@@ -261,8 +282,14 @@ const maxScanResults = 10000
 
 // Scan 在 [start,end] 闭区间扫描全部数据（内存表 + 已落盘的 SSTable），对满足谓词的
 // 条目收集 key/value 拷贝后返回（只回传命中切片）。底层切片归存储层所有，故必须拷贝。
-// 达到 maxScanResults 上限时截断并告警。
-func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry {
+//
+// limit 为本次最多返回的条目数，<=0 取默认上限 maxScanResults。它必须一路传到扫描里：
+// 按游标分批取数的调用方（下游投递）每批只要几百条，若扫描总是物化到默认上限再由调用方
+// 丢弃其余，每批的代价就是 O(剩余数据量)，总代价随数据量平方增长。
+func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate, limit int) []proto.ScanEntry {
+	if limit <= 0 || limit > maxScanResults {
+		limit = maxScanResults
+	}
 	out := make([]proto.ScanEntry, 0)
 	k.storage.ScanRange(start, end, func(key, value []byte) bool {
 		if !pred.Eval(value) {
@@ -272,8 +299,10 @@ func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate) []proto.Sca
 			Key:   append([]byte(nil), key...),
 			Value: append([]byte(nil), value...),
 		})
-		if len(out) >= maxScanResults {
-			slog.Warn("scan truncated at result limit", "limit", maxScanResults)
+		if len(out) >= limit {
+			if limit == maxScanResults {
+				slog.Warn("scan truncated at result limit", "limit", limit)
+			}
 			return false
 		}
 		return true

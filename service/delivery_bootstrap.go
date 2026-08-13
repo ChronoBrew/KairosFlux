@@ -24,7 +24,11 @@ func StartDeliveryFromConfig(ctx context.Context, kv *KVServer) {
 		slog.Error("delivery: open file sink failed, delivery disabled", "path", config.G.DeliveryFilePath, "error", err)
 		return
 	}
-	store := offset.NewKVOffsetStore(NewOffsetCommitter(kv))
+	var store offset.OffsetStore = offset.NewKVOffsetStore(NewOffsetCommitter(kv))
+	if config.G.RetentionEnabled {
+		store = &reclaimingOffsetStore{inner: store, kv: kv}
+		slog.Info("delivery: retention enabled, delivered sstables will be reclaimed")
+	}
 	src := delivery.NewKVSource(kv, nil)
 	interval := time.Duration(config.G.DeliveryIntervalMs) * time.Millisecond
 	d := delivery.NewDelivererWithOffset(src, sink, sink.Name(), store, config.G.DeliveryBatchSize, interval)
@@ -48,4 +52,27 @@ func newDeliverySink() (delivery.Sink, error) {
 		return delivery.NewIdempotentFileSink("file", config.G.DeliveryFilePath)
 	}
 	return delivery.NewFileSink("file", config.G.DeliveryFilePath)
+}
+
+// reclaimingOffsetStore 在游标提交成功后回收已整体投递完的 SSTable。
+//
+// 挂在提交之后而非投递之后：游标落地才代表「这批不会再被重投」，此时回收才不会删掉仍需
+// 重投的数据。提交失败则不回收——宁可多留，不可早删。
+//
+// 做成装饰器是为了不改投递主体：Deliverer 只认 OffsetStore 接口，回收对它是透明的。
+type reclaimingOffsetStore struct {
+	inner offset.OffsetStore
+	kv    *KVServer
+}
+
+func (s *reclaimingOffsetStore) Load(sink string) ([]byte, error) { return s.inner.Load(sink) }
+
+func (s *reclaimingOffsetStore) Commit(sink string, cursor []byte) error {
+	if err := s.inner.Commit(sink, cursor); err != nil {
+		return err
+	}
+	if n := s.kv.ReclaimDelivered(cursor); n > 0 {
+		slog.Info("retention: reclaimed sstables below delivered cursor", "sink", sink, "files", n)
+	}
+	return nil
 }

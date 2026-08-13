@@ -19,7 +19,7 @@ import (
 type KVStore interface {
 	Write(cmd Command) error
 	Get(key []byte) ([]byte, error)
-	Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry
+	Scan(start, end []byte, pred predicate.Predicate, limit int) []proto.ScanEntry
 }
 
 // Router 基础路由处理器
@@ -316,7 +316,7 @@ func (r *Router) handleScan(data []byte, request bannet.Request) {
 
 	// SCAN 暂不做分片路由：范围查询跨分片需 scatter-gather，属后续工作，当前只扫本地。
 	metrics.Scans.Add(1)
-	entries := r.store.Scan(req.Start, req.End, req.Pred)
+	entries := r.store.Scan(req.Start, req.End, req.Pred, 0)
 	request.Conn().SendBuffMsg(proto.MsgRespOK, proto.EncodeScanResponse(proto.StatusOK, entries))
 }
 

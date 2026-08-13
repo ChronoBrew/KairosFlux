@@ -16,10 +16,21 @@ type Source interface {
 	Fetch(cursor []byte, limit int) (batch []Record, next []byte, err error)
 }
 
+// 【语义边界，重要】KVSource 按 key 升序推进游标，因此只保证「key 单调递增地到达」时不漏投。
+// 若写入是乱序的——例如多个 writer 并发写入分散在整个键空间的 key——投递游标可能已经越过
+// 某个位置，而更小的 key 此后才落地：那些记录永远排在游标之前，不会再被投递。
+//
+// 实测：2000 条记录若在投递启动前写完，10 轮取满 2000 条；若与 20 个并发 writer 同时进行，
+// 游标会冲到很后面，只投出约 310 条。
+//
+// 这不是本类型能单独解决的：要覆盖乱序到达，游标需改为按「写入序」而非「key 序」推进
+// （例如为每条写入分配单调序号并按其建立索引），属独立设计。当前实现适用于时间序 key
+// （如 imu:dev0:<ts>）这类天然单调的摄入场景。
+//
 // KVScanner 抽象出 deliverer 依赖的存储读能力（由 service.KVServer 满足），
 // 定义在此以避免 delivery 反向依赖 service，防止 import 环。
 type KVScanner interface {
-	Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry
+	Scan(start, end []byte, pred predicate.Predicate, limit int) []proto.ScanEntry
 }
 
 // KVSource 基于 KV 范围扫描把缓冲数据作为有序投递源：按 key 升序，
@@ -35,7 +46,9 @@ func NewKVSource(kv KVScanner, end []byte) *KVSource {
 }
 
 func (s *KVSource) Fetch(cursor []byte, limit int) ([]Record, []byte, error) {
-	entries := s.kv.Scan(cursor, s.end, predicate.Predicate{Op: predicate.OpNone})
+	// 把 limit 传下去：本轮只需 limit 条，扫描不必物化整个剩余区间。多要一条余量，
+	// 以免恰好被跳过的保留 key（游标自身）占掉配额导致本批空转。
+	entries := s.kv.Scan(cursor, s.end, predicate.Predicate{Op: predicate.OpNone}, limit+1)
 	reserved := []byte(offset.ReservedPrefix)
 	batch := make([]Record, 0, limit)
 	var lastScanned []byte
