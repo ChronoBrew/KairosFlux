@@ -171,17 +171,17 @@ func TestConcurrentUsage(t *testing.T) {
 				key := []byte(fmt.Sprintf("w%d-k%d", w, i))
 				val := []byte(fmt.Sprintf("w%d-v%d", w, i))
 				if err := c.Put(ctx, key, val); err != nil {
-					errCh <- fmt.Errorf("Put %s: %w", key, err)
+					errCh <- fmt.Errorf("put %s: %w", key, err)
 					return
 				}
 				got, err := c.Get(ctx, key)
 				if err != nil {
-					errCh <- fmt.Errorf("Get %s: %w", key, err)
+					errCh <- fmt.Errorf("get %s: %w", key, err)
 					return
 				}
 				// 串话会表现为读到别的 key 的值。
 				if string(got) != string(val) {
-					errCh <- fmt.Errorf("Get %s = %q, want %q（疑似响应串话）", key, got, val)
+					errCh <- fmt.Errorf("get %s = %q, want %q（疑似响应串话）", key, got, val)
 					return
 				}
 			}

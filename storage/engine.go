@@ -36,8 +36,10 @@ type Engine struct {
 	dirty  *SkipList // 正在 flush 中的不可变表，可能仍包含未 flush 的旧数据（供 Get 回退查询）
 	mu     sync.RWMutex
 
-	FlushChan chan bool
-	compactCh chan bool
+	// flushCh 与 compactCh 是纯信号：值不携带信息，故用 struct{}。缓冲 1 + 非阻塞发送
+	// 使重复触发被合并为一次待处理信号。
+	flushCh   chan struct{}
+	compactCh chan struct{}
 	stopCh    chan struct{}
 
 	sst *SSTable
@@ -55,8 +57,8 @@ type Engine struct {
 func NewEngine() *Engine {
 	mt := &Engine{
 		active:        newSkipList(),
-		FlushChan:     make(chan bool, 1),
-		compactCh:     make(chan bool, 1),
+		flushCh:       make(chan struct{}, 1),
+		compactCh:     make(chan struct{}, 1),
 		stopCh:        make(chan struct{}),
 		sst:           NewSSTable(),
 		credits:       credit.New(config.G.MemTableMaxInflightBytes),
@@ -286,7 +288,7 @@ func (m *Engine) Close() error {
 
 func (m *Engine) StartFlush() {
 	select {
-	case m.FlushChan <- true:
+	case m.flushCh <- struct{}{}:
 	default:
 	}
 }
@@ -334,7 +336,7 @@ func (m *Engine) Flush() {
 func (m *Engine) FlushWorker() {
 	for {
 		select {
-		case <-m.FlushChan:
+		case <-m.flushCh:
 			m.Flush()
 		case <-m.stopCh:
 			return
@@ -403,7 +405,7 @@ func (m *Engine) FlushToSSTable(entries []LogEntry) error {
 
 	// 触发 Compaction 检查
 	select {
-	case m.compactCh <- true:
+	case m.compactCh <- struct{}{}:
 	default:
 	}
 

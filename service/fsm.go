@@ -273,7 +273,7 @@ func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate) []proto.Sca
 			Value: append([]byte(nil), value...),
 		})
 		if len(out) >= maxScanResults {
-			slog.Warn("[WARN] scan: 结果达到上限，已截断", "cap", maxScanResults)
+			slog.Warn("scan truncated at result limit", "limit", maxScanResults)
 			return false
 		}
 		return true

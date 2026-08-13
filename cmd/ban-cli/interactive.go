@@ -119,11 +119,11 @@ func (ic *InteractiveClient) handlePut(parts []string) {
 	defer cancel()
 	err := ic.client.Put(ctx, []byte(key), []byte(value))
 	if err != nil {
-		fmt.Printf("❌ 错误: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		return
 	}
 
-	fmt.Println("✅ OK")
+	fmt.Println("OK")
 }
 
 // handleGet 处理 GET 命令
@@ -143,7 +143,7 @@ func (ic *InteractiveClient) handleGet(parts []string) {
 		return
 	}
 	if err != nil {
-		fmt.Printf("❌ 错误: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		return
 	}
 
@@ -163,11 +163,11 @@ func (ic *InteractiveClient) handleDelete(parts []string) {
 	defer cancel()
 	err := ic.client.Delete(ctx, []byte(key))
 	if err != nil {
-		fmt.Printf("❌ 错误: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		return
 	}
 
-	fmt.Println("✅ OK")
+	fmt.Println("OK")
 }
 
 // handleScan 处理 SCAN 命令: scan <start|-> <end|-> [field op operand]
@@ -197,7 +197,7 @@ func (ic *InteractiveClient) handleScan(parts []string) {
 	defer cancel()
 	entries, err := ic.client.Scan(ctx, start, end, pred)
 	if err != nil {
-		fmt.Printf("❌ 错误: %v\n", err)
+		fmt.Printf("错误: %v\n", err)
 		return
 	}
 
