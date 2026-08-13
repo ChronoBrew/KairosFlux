@@ -66,6 +66,11 @@ type GlobalConfig struct {
 	DeliveryIntervalMs  int    // 投递轮询间隔（毫秒）
 	DeliveryExactlyOnce bool   // 用幂等 sink（按 key HWM 去重）达 effectively-once；关则 at-least-once
 
+	// RetentionEnabled 开启保留期回收：投递游标推进后，丢弃已整体投递完的 SSTable 文件。
+	// 默认关闭——开启即意味着已投递的数据不再可从本地读回，这是「缓冲」而非「存储」的语义，
+	// 必须由使用方明示。关闭时缓冲只增不减，长跑必然涨满磁盘。
+	RetentionEnabled bool
+
 	// 分片集群（cluster）配置：骨架期供路由/放置控制面使用，默认单分片。
 	ShardCount int // 分片数（ShardOf 取模基数）
 	VNodes     int // 一致性哈希每节点的虚拟节点数
@@ -126,7 +131,8 @@ func defaultGlobalConfig() *GlobalConfig {
 		DeliveryFilePath:         filepath.Join(logDir, "delivery.jsonl"),
 		DeliveryBatchSize:        100,
 		DeliveryIntervalMs:       1000,
-		DeliveryExactlyOnce:      true, // 启用投递时默认走幂等 sink
+		DeliveryExactlyOnce:      true,  // 启用投递时默认走幂等 sink
+		RetentionEnabled:         false, // 默认不回收：语义变化必须显式开启
 
 		ShardCount:            1,   // 默认单分片
 		VNodes:                128, // 一致性哈希默认虚拟节点数

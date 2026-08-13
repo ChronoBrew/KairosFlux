@@ -12,7 +12,7 @@ import (
 // fakeScanner 返回预置的有序条目，忽略范围（测试只关心保留 key 过滤与游标推进）。
 type fakeScanner struct{ entries []proto.ScanEntry }
 
-func (f *fakeScanner) Scan(start, end []byte, _ predicate.Predicate) []proto.ScanEntry {
+func (f *fakeScanner) Scan(start, end []byte, _ predicate.Predicate, _ int) []proto.ScanEntry {
 	out := make([]proto.ScanEntry, 0, len(f.entries))
 	for _, e := range f.entries {
 		if start != nil && bytes.Compare(e.Key, start) < 0 {

@@ -46,7 +46,7 @@ func TestKVServer_Scan(t *testing.T) {
 	}
 
 	pred := predicate.Predicate{Field: "az", Op: predicate.OpGT, Operand: "9.9"}
-	got := kv.Scan([]byte("imu:dev0:100"), []byte("imu:dev0:299"), pred)
+	got := kv.Scan([]byte("imu:dev0:100"), []byte("imu:dev0:299"), pred, 0)
 
 	want := map[string]string{
 		"imu:dev0:150": `{"az":9.95}`,
@@ -99,7 +99,7 @@ func TestScanCoversFlushedData(t *testing.T) {
 	// 等后台 flush 落定，使多数数据已在 SSTable 中。
 	time.Sleep(500 * time.Millisecond)
 
-	got := kv.Scan([]byte("k00000"), []byte("k99999"), predicate.Predicate{Op: predicate.OpNone})
+	got := kv.Scan([]byte("k00000"), []byte("k99999"), predicate.Predicate{Op: predicate.OpNone}, 0)
 	if len(got) != n {
 		t.Fatalf("扫描应覆盖全部 %d 条（含已落盘），实际 %d 条", n, len(got))
 	}

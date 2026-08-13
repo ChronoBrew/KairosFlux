@@ -49,7 +49,9 @@ func (s *memKV) Get(key []byte) ([]byte, error) {
 	return v, nil
 }
 
-func (s *memKV) Scan(start, end []byte, pred predicate.Predicate) []proto.ScanEntry { return nil }
+func (s *memKV) Scan(start, end []byte, pred predicate.Predicate, limit int) []proto.ScanEntry {
+	return nil
+}
 
 func (s *memKV) has(key string) bool {
 	s.mu.Lock()

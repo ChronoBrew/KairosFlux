@@ -48,6 +48,11 @@ type Engine struct {
 
 	// opts 是构造时传入的参数，引擎此后只认它，不再读全局配置。
 	opts Options
+
+	// fileMu 串行化一切「删除 SSTable 文件」的动作：compaction 与保留期回收。
+	// 二者若交错，compaction 正在读的源文件可能被回收删除——POSIX 下已打开的 fd 仍可读，
+	// 于是那批已回收的数据会被写进合并输出文件，即「已回收的数据复活」。
+	fileMu sync.Mutex
 }
 
 // SkipNode 跳表节点
@@ -159,6 +164,15 @@ func (m *Engine) ScanRange(start, end []byte, fn func(key, value []byte) bool) {
 	// 源序即新旧序：srcIdx 越大越新，归并去重时保留它。
 	sources := make([]entryIterator, 0, len(metas)+2)
 	for _, meta := range metas {
+		// 先按 [MinKey,MaxKey] 排除与扫描区间无交集的文件，避免为它白开一个迭代器。
+		// 这对按游标推进的扫描是决定性的：游标越往后，落在其之前的文件越多，若每次都逐个
+		// 打开，投递吞吐会随文件数线性劣化（实测 113 个文件时投递几乎爬不动）。
+		if meta.MaxKeyKnown && len(start) > 0 && bytes.Compare(meta.MaxKey, start) < 0 {
+			continue // 整份都在下界之前
+		}
+		if len(end) > 0 && len(meta.MinKey) > 0 && bytes.Compare(meta.MinKey, end) > 0 {
+			continue // 整份都在上界之后
+		}
 		it, err := newSSTableIteratorFrom(m.sst, meta.Filepath, start)
 		if err != nil {
 			slog.Warn("scan: skip unreadable sstable", "file", meta.Filepath, "error", err)
@@ -475,6 +489,9 @@ func (m *Engine) ListenCompactCh() {
 }
 
 func (m *Engine) CompactSSTable(startLevel int) {
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
 	maxLevel := 10
 
 	for level := startLevel; level < maxLevel; level++ {
@@ -499,4 +516,42 @@ func (m *Engine) CompactSSTable(startLevel int) {
 
 		slog.Info("level compaction completed", "level", level)
 	}
+}
+
+// ReclaimUpTo 丢弃 MaxKey 严格小于 bound 的 SSTable 整个文件，返回回收的文件数。
+//
+// 用于「投递前置缓冲」的保留期回收：投递按 key 升序推进游标，故 bound 之前的数据已全部
+// 被投递读过，整份文件不再需要留在本地。
+//
+// 之所以按整文件丢弃、而不是逐 key 写墓碑：墓碑会让写入量翻倍，且自身还要再经一轮
+// compaction 才消失；而文件级丢弃是 O(1)，无写放大。
+//
+// 保守之处（宁可少回收，不可误删）：
+//   - 仅在 MaxKey 可信时回收。没有可读 footer 的文件（老格式或尾部残缺）MaxKey 未知，一律跳过。
+//   - 用严格小于：恰好含 bound 的文件保留，因为 bound 本身尚未被投递消费。
+//   - bound 为空表示尚无已提交游标，不回收任何文件。
+//
+// 与 compaction 互斥（共用 fileMu），避免删掉 compaction 正在读的源文件。
+func (m *Engine) ReclaimUpTo(bound []byte) int {
+	if len(bound) == 0 {
+		return 0
+	}
+	m.fileMu.Lock()
+	defer m.fileMu.Unlock()
+
+	reclaimed := 0
+	for _, meta := range m.sst.Metas() {
+		if !meta.MaxKeyKnown {
+			continue // MaxKey 不可信，无法判断是否已整体投递
+		}
+		if bytes.Compare(meta.MaxKey, bound) >= 0 {
+			continue // 该文件仍含 bound 及其之后的数据
+		}
+		m.sst.DeleteSSTable(meta)
+		m.sst.RemoveMeta(meta)
+		reclaimed++
+		slog.Info("reclaimed delivered sstable",
+			"file", meta.Filepath, "maxKey", string(meta.MaxKey), "bytes", meta.Size)
+	}
+	return reclaimed
 }
