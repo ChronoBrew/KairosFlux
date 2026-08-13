@@ -166,7 +166,7 @@ func sendDropped(req bannet.Request) {
 func (r *Router) handlePut(data []byte, request bannet.Request) {
 	// 解析数据格式：key_len + key + value_len + value
 	if len(data) < 8 {
-		slog.Warn("[WARN] handlePut: data too short", "len", len(data))
+		slog.Warn("put frame too short", "len", len(data))
 		return
 	}
 
@@ -174,7 +174,7 @@ func (r *Router) handlePut(data []byte, request bannet.Request) {
 	valueLen := int(binary.LittleEndian.Uint32(data[4:8]))
 
 	if len(data) < 8+keyLen+valueLen {
-		slog.Warn("[WARN] handlePut: incomplete data", "expected", 8+keyLen+valueLen, "got", len(data))
+		slog.Warn("put frame incomplete", "expected", 8+keyLen+valueLen, "got", len(data))
 		return
 	}
 
@@ -184,7 +184,7 @@ func (r *Router) handlePut(data []byte, request bannet.Request) {
 	// 分片路由：不属本节点则转发到 owner。
 	if owner, fwd := r.forwardTarget(key); fwd {
 		if err := r.peers.Put(owner, key, value); err != nil {
-			slog.Error("[ERROR] handlePut: forward failed", "owner", owner, "error", err)
+			slog.Error("forward put to owner failed", "owner", owner, "error", err)
 			metrics.WriteErrors.Add(1)
 			sendErr(request)
 			return
@@ -201,7 +201,7 @@ func (r *Router) handlePut(data []byte, request bannet.Request) {
 	}
 
 	if err := r.store.Write(cmd); err != nil {
-		slog.Error("[ERROR] handlePut: write failed", "error", err)
+		slog.Error("put failed", "error", err)
 		metrics.WriteErrors.Add(1)
 		sendErr(request)
 		return
@@ -309,7 +309,7 @@ func (r *Router) handleDelete(data []byte, request bannet.Request) {
 func (r *Router) handleScan(data []byte, request bannet.Request) {
 	req, err := proto.DecodeScanRequest(data)
 	if err != nil {
-		slog.Warn("[WARN] handleScan: decode failed", "error", err)
+		slog.Warn("scan request decode failed", "error", err)
 		sendErr(request)
 		return
 	}

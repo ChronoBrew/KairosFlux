@@ -38,7 +38,7 @@ func (p *Placement) OwnerOf(key []byte) string {
 // 这是控制面对故障的「写侧」响应——改变归属拓扑本身，而非仅在读时跳过。
 func (p *Placement) Failover(deadNode string) {
 	p.ring.RemoveNode(deadNode)
-	slog.Info("[cluster] failover: node removed from ring", "node", deadNode)
+	slog.Info("node removed from ring", "node", deadNode)
 }
 
 // IsLocal 判定 key 的属主是否为 self（本节点），供网关决定本地处理还是转发。

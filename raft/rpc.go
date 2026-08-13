@@ -139,7 +139,7 @@ func (r *RaftRPC) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesRep
 	// 非阻塞发送——electionLoop 正阻塞在 heartbeatCh 上时命中并 resetElectionTimer；
 	// 若其正忙则丢弃，下次心跳再重置。缺失该信号会使 follower 无视心跳持续改选，导致 leader 抖动。
 	select {
-	case r.raft.heartbeatCh <- true:
+	case r.raft.heartbeatCh <- struct{}{}:
 	default:
 	}
 

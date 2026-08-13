@@ -16,8 +16,8 @@ type Server struct {
 	IP        string
 	Port      int
 	Name      string
-	IPVersion string
-	ExitCh    chan os.Signal
+	ipVersion string
+	exitCh    chan os.Signal
 	MsgHandle Dispatcher
 	ConnMgr   ConnRegistry
 
@@ -37,11 +37,11 @@ func (s *Server) AddRouter(msgID string, router Handler) {
 
 func NewServer() *Server {
 	return &Server{
-		IPVersion: "tcp4",
+		ipVersion: "tcp4",
 		IP:        config.G.Host,
 		Name:      config.G.Name,
 		Port:      config.G.Port,
-		ExitCh:    make(chan os.Signal, 1), // 缓冲 1：signal.Notify 不阻塞、不丢信号
+		exitCh:    make(chan os.Signal, 1), // 缓冲 1：signal.Notify 不阻塞、不丢信号
 		MsgHandle: NewMsgHandle(),
 		ConnMgr:   NewConnManager(),
 		done:      make(chan struct{}),
@@ -59,12 +59,12 @@ func (s *Server) Start() {
 
 	// 同步绑定监听器：在返回前确定成败并设好 s.listener，避免与 Stop 竞争、避免 Stop 早于
 	// 绑定导致 accept 循环空转泄漏。绑定失败则服务不启动。
-	tcpAddr, err := net.ResolveTCPAddr(s.IPVersion, fmt.Sprintf("%s:%d", s.IP, s.Port))
+	tcpAddr, err := net.ResolveTCPAddr(s.ipVersion, fmt.Sprintf("%s:%d", s.IP, s.Port))
 	if err != nil {
 		slog.Error("banNet resolve addr failed", "error", err)
 		return
 	}
-	listener, err := net.ListenTCP(s.IPVersion, tcpAddr)
+	listener, err := net.ListenTCP(s.ipVersion, tcpAddr)
 	if err != nil {
 		slog.Error("banNet listen failed", "error", err)
 		return
@@ -117,8 +117,8 @@ func (s *Server) Stop() {
 // Serve 启动服务并阻塞至收到 SIGINT/SIGTERM，随后优雅关停。
 func (s *Server) Serve() {
 	s.Start()
-	signal.Notify(s.ExitCh, syscall.SIGINT, syscall.SIGTERM)
-	<-s.ExitCh
+	signal.Notify(s.exitCh, syscall.SIGINT, syscall.SIGTERM)
+	<-s.exitCh
 	slog.Info("banNet received shutdown signal, stopping")
 	s.Stop()
 }

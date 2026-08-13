@@ -8,15 +8,15 @@ import (
 
 type MsgHandle struct {
 	routers        map[string]Handler
-	WorkerPoolSize uint32
-	TaskQueue      []chan Request
+	workerPoolSize uint32
+	taskQueues     []chan Request
 }
 
 func NewMsgHandle() *MsgHandle {
 	return &MsgHandle{
 		routers:        make(map[string]Handler),
-		WorkerPoolSize: config.G.WorkerPoolSize,
-		TaskQueue:      make([]chan Request, config.G.WorkerPoolSize),
+		workerPoolSize: config.G.WorkerPoolSize,
+		taskQueues:     make([]chan Request, config.G.WorkerPoolSize),
 	}
 }
 
@@ -44,34 +44,34 @@ func (m *MsgHandle) DoMsgHandle(request Request) {
 }
 
 func (m *MsgHandle) StartWorkerPool() {
-	for i := 0; i < int(m.WorkerPoolSize); i++ {
-		m.TaskQueue[i] = make(chan Request, config.G.MaxWorkerTaskLen)
-		go m.StartOneWorker(i, m.TaskQueue[i])
+	for i := 0; i < int(m.workerPoolSize); i++ {
+		m.taskQueues[i] = make(chan Request, config.G.MaxWorkerTaskLen)
+		go m.StartOneWorker(i, m.taskQueues[i])
 	}
 }
 
 func (m *MsgHandle) SendMsgToTaskQueue(request Request) {
-	workerID := request.Conn().ID() % m.WorkerPoolSize
+	workerID := request.Conn().ID() % m.workerPoolSize
 
 	// 优先投递到专属 Worker
 	select {
-	case m.TaskQueue[workerID] <- request:
+	case m.taskQueues[workerID] <- request:
 		return
 	default:
 	}
 
 	// Work stealing: 专属队列满时，轮询其他 Worker
-	for i := uint32(1); i < m.WorkerPoolSize; i++ {
-		tryID := (workerID + i) % m.WorkerPoolSize
+	for i := uint32(1); i < m.workerPoolSize; i++ {
+		tryID := (workerID + i) % m.workerPoolSize
 		select {
-		case m.TaskQueue[tryID] <- request:
+		case m.taskQueues[tryID] <- request:
 			return
 		default:
 		}
 	}
 
 	// 全部满，退化为阻塞等待
-	m.TaskQueue[workerID] <- request
+	m.taskQueues[workerID] <- request
 }
 
 func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan Request) {
@@ -85,9 +85,9 @@ func (m *MsgHandle) StartOneWorker(workerID int, taskQueue chan Request) {
 
 func (m *MsgHandle) Stop() {
 	slog.Debug("banNet worker pool stopping")
-	for i := 0; i < int(m.WorkerPoolSize); i++ {
-		if m.TaskQueue[i] != nil {
-			close(m.TaskQueue[i])
+	for i := 0; i < int(m.workerPoolSize); i++ {
+		if m.taskQueues[i] != nil {
+			close(m.taskQueues[i])
 		}
 	}
 }

@@ -53,8 +53,9 @@ type Raft struct {
 	matchIndex []int
 	log        []LogEntry
 
-	electionCh  chan bool
-	heartbeatCh chan bool
+	// electionCh 与 heartbeatCh 是纯信号：值不携带信息，故用 struct{}。
+	electionCh  chan struct{}
+	heartbeatCh chan struct{}
 	ApplyCh     chan LogEntry
 
 	LastIncludedIndex int64
@@ -101,8 +102,8 @@ func NewRaftGroup(groupID int, peers []string, me int, dataDir string) *Raft {
 		nextIndex:     make([]int, len(peers)),
 		matchIndex:    make([]int, len(peers)),
 		log:           make([]LogEntry, 0),
-		electionCh:    make(chan bool),
-		heartbeatCh:   make(chan bool),
+		electionCh:    make(chan struct{}),
+		heartbeatCh:   make(chan struct{}),
 		ApplyCh:       make(chan LogEntry, 100),
 		addrMap:       addrMap,
 		stopCh:        make(chan struct{}),
