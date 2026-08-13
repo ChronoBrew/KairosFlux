@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/NeverENG/BanDB/cluster"
 	"github.com/NeverENG/BanDB/raft"
-	"github.com/NeverENG/BanDB/service/cluster"
 )
 
 // Shard 是一个分片：一个 Raft 组 + 该分片的 FSM store + 一个排空 ApplyCh 的 apply 循环。

@@ -1,15 +1,11 @@
 package cluster
 
 import (
-	"errors"
 	"log/slog"
 )
 
-// errNotImplemented 标记尚未落地的控制面能力（数据迁移、跨节点转发等）。
 // 这些能力依赖传输层重写（当前 Raft 走 net/rpc 静态传输），属 stretch 范围，
 // 见架构文档。桩实现统一返回此错误，避免调用方误以为已生效。
-var errNotImplemented = errors.New("cluster: not implemented")
-
 // Placement 是放置控制面：组合一致性哈希环与节点注册表，回答「某 key 当前的
 // 属主是谁」，并提供故障转移与再平衡的入口。
 //
@@ -45,13 +41,7 @@ func (p *Placement) Failover(deadNode string) {
 	slog.Info("[cluster] failover: node removed from ring", "node", deadNode)
 }
 
-// Rebalance 是再平衡桩（stretch）。
-//
-// 真正的再平衡需要在成员变更后执行真实的数据迁移（把 key 的实际数据从旧属主
-// 搬到新属主），这依赖跨节点数据传输通道——当前 Raft 使用 net/rpc 静态传输，
-// 无法承载分片迁移，属传输层重写范围（见架构文档）。此处仅记录 TODO 并返回
-// errNotImplemented，保留接口与调用点，待传输层就绪后填充。
-func (p *Placement) Rebalance() error {
-	slog.Warn("[cluster] rebalance: TODO, requires data migration over a new transport (stretch)")
-	return errNotImplemented
+// IsLocal 判定 key 的属主是否为 self（本节点），供网关决定本地处理还是转发。
+func (p *Placement) IsLocal(key []byte, self string) bool {
+	return p.OwnerOf(key) == self
 }

@@ -14,7 +14,6 @@ import (
 // 代价函数：score = ewmaLatency × (inflight + 1)——既看历史延迟（EWMA 平滑），又看当前在途
 // （+1 使空闲后端也有区分度）。冷启动 ewma=0 → score=0 → 优先被选中以探测（类慢启动）。
 //
-// 与有界负载一致性哈希（BoundedRing）互补：后者管局部性 + 负载上界，本器管延迟感知选优；
 // 二者都是无状态请求/副本 LB 原语（如把读请求在一组副本间择优），非有状态数据放置。
 //
 // 并发安全。
@@ -23,7 +22,7 @@ type P2CBalancer struct {
 	backends []string
 	ewma     map[string]float64 // 各后端延迟的 EWMA（纳秒）
 	inflight map[string]int
-	decay    float64      // EWMA 平滑系数 (0,1]，越大越跟新样本
+	decay    float64 // EWMA 平滑系数 (0,1]，越大越跟新样本
 	rng      *rand.Rand
 }
 
