@@ -35,6 +35,13 @@ const (
 	tombstoneValLen uint32 = 0xFFFFFFFF
 )
 
+// blockMeta 是构建期的单块元信息：该块最后一个 key 与块起始偏移。
+// 写入 SSTable 尾部的块索引即由它序列化而来。
+type blockMeta struct {
+	lastKey     []byte
+	blockOffset int64
+}
+
 type BlockIndexEntry struct {
 	LastKey     []byte
 	BlockOffset int64
@@ -264,17 +271,15 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 	defer file.Close()
 
 	// 构建数据 buffer + 块索引
-	type blk struct {
-		lastKey     []byte
-		blockOffset int64
-	}
-	var blockIdx []blk
+	var blockIdx []blockMeta
 
+	// 数据段先攒在内存 buffer 里再一次写出。此处的 binary.Write 不检查错误是安全的：
+	// 目标是 bytes.Buffer，其 Write 按文档永不返回错误（容量不足时直接 panic）。
 	var buf bytes.Buffer
 	for i, entry := range entries {
 		bi := i / SSTableBlockSize
 		if i%SSTableBlockSize == 0 {
-			blockIdx = append(blockIdx, blk{blockOffset: int64(buf.Len())})
+			blockIdx = append(blockIdx, blockMeta{blockOffset: int64(buf.Len())})
 		}
 		blockIdx[bi].lastKey = entry.Key
 
@@ -293,28 +298,20 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 		return err
 	}
 
-	// 写块索引: [LastKeyLen(4B)][LastKey][BlockOffset(8B)] × N
-	indexStart, _ := file.Seek(0, io.SeekCurrent)
-	for _, b := range blockIdx {
-		binary.Write(file, binary.BigEndian, uint32(len(b.lastKey)))
-		file.Write(b.lastKey)
-		binary.Write(file, binary.BigEndian, b.blockOffset)
+	// 数据区已写完，此处的偏移即块索引起点，也是读路径推算末块长度的依据。
+	indexStart, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return fmt.Errorf("locate index offset failed: %w", err)
 	}
 
-	// 写布隆过滤器段（块索引之后、Footer 之前）
 	keys := make([][]byte, len(entries))
 	for i := range entries {
 		keys[i] = entries[i].Key
 	}
-	pb, err := writeBloomSection(file, keys)
+	pb, err := writeTail(file, blockIdx, keys, indexStart)
 	if err != nil {
-		return err
+		return fmt.Errorf("write SSTable tail failed: %w", err)
 	}
-
-	// 写 Footer: BlockCount(4B) + IndexOffset(8B) + Magic(4B)
-	binary.Write(file, binary.BigEndian, uint32(len(blockIdx)))
-	binary.Write(file, binary.BigEndian, indexStart)
-	binary.Write(file, binary.BigEndian, indexFooterMagic)
 
 	// 缓存块索引
 	cache := make([]BlockIndexEntry, len(blockIdx))
@@ -435,17 +432,58 @@ func (ss *SSTable) ReadFromSSTable(filepath string, key []byte) ([]byte, bool) {
 // 过滤器供调用方在 file.Sync() 之后再写入缓存——避免崩溃时出现「缓存说有
 // 但文件未落盘」的不一致。
 // 文件布局: ...[BlockIndex][BloomBlob][BloomLen(8B)][BloomMagic(4B)][Footer]
-func writeBloomSection(file *os.File, keys [][]byte) (*PartitionedBloom, error) {
+func writeBloomSection(w io.Writer, keys [][]byte) (*PartitionedBloom, error) {
 	pb := BuildPartitionedBloom(keys, DefaultNamespaceSep, defaultBloomFPRate)
 	blob := pb.Encode()
-	if _, err := file.Write(blob); err != nil {
+	if _, err := w.Write(blob); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(file, binary.BigEndian, uint64(len(blob))); err != nil {
+	if err := binary.Write(w, binary.BigEndian, uint64(len(blob))); err != nil {
 		return nil, err
 	}
-	if err := binary.Write(file, binary.BigEndian, bloomTrailerMagic); err != nil {
+	if err := binary.Write(w, binary.BigEndian, bloomTrailerMagic); err != nil {
 		return nil, err
+	}
+	return pb, nil
+}
+
+// writeTail 写出 SSTable 的尾部三段：块索引、布隆过滤器、Footer。
+//
+// 由 WriteToSSTable 与 MergeSSTable 共用，二者的字节布局因此不可能漂移——读路径只有
+// 一份解析实现，写路径也应只有一份。
+//
+// 每一次写入都检查错误。此前这里的 binary.Write/Write 返回值被丢弃，后果并非「少写了
+// 几个字节」而是静默的数据丢失：尾部残缺的文件会让 footer magic 校验失败，重启时
+// EnsureMeta 在新格式文件上算出错误的 MaxKey，[MinKey,MaxKey] 过滤随即跳过整个文件；
+// 而调用方以为落盘成功——Flush 会丢弃内存副本，compaction 会删除源文件。
+func writeTail(w io.Writer, blocks []blockMeta, keys [][]byte, indexStart int64) (*PartitionedBloom, error) {
+	// 块索引: [LastKeyLen(4B)][LastKey][BlockOffset(8B)] × N
+	for _, b := range blocks {
+		if err := binary.Write(w, binary.BigEndian, uint32(len(b.lastKey))); err != nil {
+			return nil, fmt.Errorf("write block index key length: %w", err)
+		}
+		if _, err := w.Write(b.lastKey); err != nil {
+			return nil, fmt.Errorf("write block index key: %w", err)
+		}
+		if err := binary.Write(w, binary.BigEndian, b.blockOffset); err != nil {
+			return nil, fmt.Errorf("write block index offset: %w", err)
+		}
+	}
+
+	pb, err := writeBloomSection(w, keys)
+	if err != nil {
+		return nil, fmt.Errorf("write bloom section: %w", err)
+	}
+
+	// Footer: BlockCount(4B) + IndexOffset(8B) + Magic(4B)
+	if err := binary.Write(w, binary.BigEndian, uint32(len(blocks))); err != nil {
+		return nil, fmt.Errorf("write footer block count: %w", err)
+	}
+	if err := binary.Write(w, binary.BigEndian, indexStart); err != nil {
+		return nil, fmt.Errorf("write footer index offset: %w", err)
+	}
+	if err := binary.Write(w, binary.BigEndian, indexFooterMagic); err != nil {
+		return nil, fmt.Errorf("write footer magic: %w", err)
 	}
 	return pb, nil
 }
@@ -716,14 +754,12 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableM
 
 	// K 路归并流式写出：value 直接落盘，仅累积块索引(每块一条)与 key(供布隆)，
 	// 不再把全部源条目读入内存。
-	type blk struct {
-		lastKey     []byte
-		blockOffset int64
-	}
-	var blockIdx []blk
+	var blockIdx []blockMeta
 	var keys [][]byte
 	var minKey, maxKey []byte
 	var dataOffset int64
+	// 数据段经 bufio 写出。循环内的 Write 不逐个检查错误是安全的：bufio.Writer 记住
+	// 首个错误并在其后所有 Write 与 Flush 上返回它，而下方 bw.Flush() 的错误是被检查的。
 	bw := bufio.NewWriter(file)
 
 	count := 0
@@ -732,7 +768,7 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableM
 		v := mi.Value()
 		bi := count / SSTableBlockSize
 		if count%SSTableBlockSize == 0 {
-			blockIdx = append(blockIdx, blk{blockOffset: dataOffset})
+			blockIdx = append(blockIdx, blockMeta{blockOffset: dataOffset})
 		}
 		blockIdx[bi].lastKey = k
 
@@ -774,23 +810,16 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableM
 		return nil
 	}
 
-	// 以下写尾与 WriteToSSTable 完全一致，保证字节布局相同、可被现有读路径读取
-	indexStart, _ := file.Seek(0, io.SeekCurrent)
-	for _, b := range blockIdx {
-		binary.Write(file, binary.BigEndian, uint32(len(b.lastKey)))
-		file.Write(b.lastKey)
-		binary.Write(file, binary.BigEndian, b.blockOffset)
-	}
-
-	pb, err := writeBloomSection(file, keys)
+	indexStart, err := file.Seek(0, io.SeekCurrent)
 	if err != nil {
-		slog.Error("failed to write bloom for merged SSTable", "error", err)
+		slog.Error("failed to locate index offset for merged SSTable", "error", err)
 		return nil
 	}
-
-	binary.Write(file, binary.BigEndian, uint32(len(blockIdx)))
-	binary.Write(file, binary.BigEndian, indexStart)
-	binary.Write(file, binary.BigEndian, indexFooterMagic)
+	pb, err := writeTail(file, blockIdx, keys, indexStart)
+	if err != nil {
+		slog.Error("failed to write merged SSTable tail", "error", err)
+		return nil
+	}
 
 	cache := make([]BlockIndexEntry, len(blockIdx))
 	for i, b := range blockIdx {
