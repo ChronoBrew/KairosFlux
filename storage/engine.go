@@ -6,14 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/internal/credit"
 	"github.com/NeverENG/BanDB/internal/metrics"
-)
-
-var (
-	maxLevel    = config.G.MaxMemTableLevel
-	probability = config.G.MaxMemTableP
 )
 
 // Engine 是 LSM 存储引擎：它同时持有内存中的表与磁盘上的 SSTable 集合，并驱动二者
@@ -51,22 +45,29 @@ type Engine struct {
 	// 并发修改全局配置形成数据竞争。
 	maxSize       int
 	maxCompaction int
+
+	// opts 是构造时传入的参数，引擎此后只认它，不再读全局配置。
+	opts Options
 }
 
 // SkipNode 跳表节点
-func NewEngine() *Engine {
+// NewEngine 按 opts 构造存储引擎。参数在此固定，此后不再读全局配置。
+// 需要沿用进程配置时传 DefaultOptions()。
+func NewEngine(opts Options) *Engine {
+	opts = opts.withDefaults()
 	mt := &Engine{
-		active:        newSkipList(),
+		active:        newSkipList(opts.SkipListMaxLevel, opts.SkipListP),
 		flushCh:       make(chan struct{}, 1),
 		compactCh:     make(chan struct{}, 1),
 		stopCh:        make(chan struct{}),
-		sst:           NewSSTable(),
-		credits:       credit.New(config.G.MemTableMaxInflightBytes),
-		maxSize:       config.G.MaxMemTableSize,
-		maxCompaction: config.G.MaxCompactionSize,
+		sst:           NewSSTable(opts),
+		credits:       credit.New(opts.MaxInflightBytes),
+		maxSize:       opts.MaxMemTableSize,
+		maxCompaction: opts.MaxCompactionSize,
+		opts:          opts,
 	}
 	// 注册未 flush 字节数仪表，供周期性指标快照实时读取。
-	metrics.SetMemTableGauges(mt.InflightBytes, config.G.MemTableMaxInflightBytes)
+	metrics.SetMemTableGauges(mt.InflightBytes, opts.MaxInflightBytes)
 
 	go mt.FlushWorker()
 	go mt.ListenCompactCh()
@@ -314,7 +315,7 @@ func (m *Engine) Flush() {
 			return
 		}
 		m.dirty = m.active
-		m.active = newSkipList()
+		m.active = newSkipList(m.opts.SkipListMaxLevel, m.opts.SkipListP)
 	}
 	dirty := m.dirty
 	m.mu.Unlock()
@@ -393,7 +394,7 @@ func (m *Engine) FlushToSSTable(entries []LogEntry) error {
 	// 创建临时跳表，按序插入（同 key 自动去重/更新）。
 	// Value==nil 为墓碑，按墓碑插入而非物理删除：快照中的删除需写入墓碑以 shadow
 	// 旧 SSTable 中的同名值，否则该 key 会在读路径被「复活」。
-	tmp := newSkipList()
+	tmp := newSkipList(m.opts.SkipListMaxLevel, m.opts.SkipListP)
 	for _, entry := range entries {
 		tmp.insert(entry.Key, entry.Value)
 	}

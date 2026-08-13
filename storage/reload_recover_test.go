@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestReloadRecoversFlushedKeys 守护 SSTable 重载恢复：写入远超单表阈值的数据逼其 flush 到
@@ -15,21 +13,11 @@ import (
 // 退化成空串，使 [MinKey,MaxKey] 过滤把所有命中 key 跳过 → 重启后已 flush 数据全部丢失。
 // 现在 MaxKey 只从块索引取，取不到则不施加上界。
 func TestReloadRecoversFlushedKeys(t *testing.T) {
-	oldWAL := config.G.WALPath
-	oldSST := config.G.SSTablePath
-	oldMax := config.G.MaxMemTableSize
 	dir := t.TempDir()
-	config.G.WALPath = dir + "/wal.log"
-	config.G.SSTablePath = dir
-	config.G.MaxMemTableSize = 4 // 极小阈值，逼迫多轮 active→dirty→SSTable flush
-	defer func() {
-		config.G.WALPath = oldWAL
-		config.G.SSTablePath = oldSST
-		config.G.MaxMemTableSize = oldMax
-	}()
+	opts := Options{Dir: dir, MaxMemTableSize: 4} // 极小阈值，逼迫多轮 active→dirty→SSTable flush
 
 	const n = 50
-	mt := NewEngine()
+	mt := NewEngine(opts)
 	for i := 0; i < n; i++ {
 		key := []byte(fmt.Sprintf("k%04d", i))
 		if err := mt.Put(key, []byte(fmt.Sprintf("v%04d", i))); err != nil {
@@ -40,7 +28,7 @@ func TestReloadRecoversFlushedKeys(t *testing.T) {
 	_ = mt.Close()                     // 停后台协程，避免与重载实例抢同一目录
 
 	// 模拟重启：同一目录新建 MemTable，从 SSTable 重新加载。
-	mt2 := NewEngine()
+	mt2 := NewEngine(opts)
 	defer mt2.Close()
 	time.Sleep(200 * time.Millisecond) // 等 SSTable 元数据/索引异步加载
 
@@ -69,17 +57,11 @@ func TestReloadRecoversFlushedKeys(t *testing.T) {
 //
 // 本用例故意不 sleep：一旦加载退回异步，它就会失败。
 func TestNewEngineSeesExistingSSTablesImmediately(t *testing.T) {
-	dir := t.TempDir()
-	oldWAL, oldSST, oldMax := config.G.WALPath, config.G.SSTablePath, config.G.MaxMemTableSize
-	config.G.WALPath = dir + "/wal.log"
-	config.G.SSTablePath = dir
-	config.G.MaxMemTableSize = 1 << 20 // 足够大：本用例自行写出 SSTable，不依赖自动 flush
-	t.Cleanup(func() {
-		config.G.WALPath, config.G.SSTablePath, config.G.MaxMemTableSize = oldWAL, oldSST, oldMax
-	})
+	// 阈值取大：本用例自行写出 SSTable，不依赖自动 flush。
+	opts := Options{Dir: t.TempDir(), MaxMemTableSize: 1 << 20}
 
 	// 先在目录里放好一个 SSTable。
-	seed := NewSSTable()
+	seed := NewSSTable(opts)
 	entries := make([]LogEntry, 0, 64)
 	for i := 0; i < 64; i++ {
 		entries = append(entries, LogEntry{
@@ -91,7 +73,7 @@ func TestNewEngineSeesExistingSSTablesImmediately(t *testing.T) {
 		t.Fatalf("WriteToSSTable: %v", err)
 	}
 
-	e := NewEngine()
+	e := NewEngine(opts)
 	t.Cleanup(func() { e.Close() })
 
 	// 立即读，不给后台加载留任何时间窗口。

@@ -1,39 +1,13 @@
 package storage
 
 import (
-	"path/filepath"
 	"testing"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 func setupTestEngine(t *testing.T) (*Engine, func()) {
-	oldWALPath := config.G.WALPath
-	oldMaxSize := config.G.MaxMemTableSize
-	oldSSTPath := config.G.SSTablePath
-
-	// 每个用例独立的临时目录，避免读到共享 ../../log 下其它运行的残留 .sst/WAL
-	dir := t.TempDir()
-	config.G.WALPath = filepath.Join(dir, "wal.log")
-	config.G.SSTablePath = dir
-	config.G.MaxMemTableSize = 100
-
-	memTable := NewEngine()
-
-	// 不再另起 FlushWorker：NewEngine 已启动一个。两个 worker 会并发进入 Flush，
-	// 各自取到不同的 dirty 表后互相把 m.dirty 置 nil，导致 flush 丢数据、读回缺失
-	// （表现为 TestEngine_* 偶发失败）。
-
-	cleanup := func() {
-		// 关闭 WAL 文件（临时目录由 t.TempDir 自动清理）
-		memTable.Close()
-		// 恢复配置
-		config.G.WALPath = oldWALPath
-		config.G.SSTablePath = oldSSTPath
-		config.G.MaxMemTableSize = oldMaxSize
-	}
-
-	return memTable, cleanup
+	// 每个用例独立的临时目录与独立的参数，用例之间不再经由全局配置互相影响。
+	mt := NewEngine(Options{Dir: t.TempDir(), MaxMemTableSize: 100})
+	return mt, func() { mt.Close() }
 }
 
 func TestEngine_PutAndGet(t *testing.T) {
@@ -161,15 +135,7 @@ func TestEngine_UpdateExistingKey(t *testing.T) {
 }
 
 func TestEngine_PutTriggersFlush(t *testing.T) {
-	oldMaxSize := config.G.MaxMemTableSize
-	oldWALPath := config.G.WALPath
-	oldSSTPath := config.G.SSTablePath
-	config.G.MaxMemTableSize = 5
-	dir := t.TempDir()
-	config.G.WALPath = filepath.Join(dir, "wal.log")
-	config.G.SSTablePath = dir
-
-	mt := NewEngine()
+	mt := NewEngine(Options{Dir: t.TempDir(), MaxMemTableSize: 5})
 
 	for i := 0; i < 10; i++ {
 		key := []byte(string(rune('a' + i)))
@@ -185,7 +151,4 @@ func TestEngine_PutTriggersFlush(t *testing.T) {
 	}
 
 	mt.Close()
-	config.G.MaxMemTableSize = oldMaxSize
-	config.G.WALPath = oldWALPath
-	config.G.SSTablePath = oldSSTPath
 }

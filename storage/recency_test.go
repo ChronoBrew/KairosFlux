@@ -3,8 +3,6 @@ package storage
 import (
 	"testing"
 	"time"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestRecency_OverwriteAcrossCompactionSurvivesRestart 是「newest-wins 跨重启不倒挂」的
@@ -15,12 +13,9 @@ import (
 // 排到新的 L0 文件之后，逆序就会先命中旧 merged，返回陈旧值 A。
 func TestRecency_OverwriteAcrossCompactionSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
-	oldPath, oldComp := config.G.SSTablePath, config.G.MaxCompactionSize
-	config.G.SSTablePath = dir
-	config.G.MaxCompactionSize = 2
-	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
+	opts := Options{Dir: dir, MaxCompactionSize: 2}
 
-	mt := newBareMemTable(NewSSTable())
+	mt := newBareMemTable(NewSSTable(opts), opts)
 
 	// x=A 与另一个 key 一起落 L0，再补一个 L0，触发 compaction 把它们并成 L1 merged 文件。
 	if err := mt.FlushToSSTable([]LogEntry{
@@ -44,10 +39,10 @@ func TestRecency_OverwriteAcrossCompactionSurvivesRestart(t *testing.T) {
 	}
 
 	// 模拟重启：全新 SSTable 从磁盘恢复。
-	sst2 := NewSSTable()
+	sst2 := NewSSTable(opts)
 	sst2.LoadSSTableMetaList()
 	time.Sleep(150 * time.Millisecond)
-	mt2 := newBareMemTable(sst2)
+	mt2 := newBareMemTable(sst2, opts)
 
 	v, ok := mt2.getFromSSTables([]byte("x"))
 	if !ok {

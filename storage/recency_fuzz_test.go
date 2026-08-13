@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/NeverENG/BanDB/config"
 )
 
 // TestRecency_RandomizedOverwritesSurviveRestart 是 newest-wins 的随机化守卫：
@@ -13,12 +11,9 @@ import (
 // 然后模拟重启，逐一校验读到的都是最新值。这能捕捉 metas 重建顺序错误导致的陈旧值倒挂。
 func TestRecency_RandomizedOverwritesSurviveRestart(t *testing.T) {
 	dir := t.TempDir()
-	oldPath, oldComp := config.G.SSTablePath, config.G.MaxCompactionSize
-	config.G.SSTablePath = dir
-	config.G.MaxCompactionSize = 3
-	defer func() { config.G.SSTablePath, config.G.MaxCompactionSize = oldPath, oldComp }()
+	opts := Options{Dir: dir, MaxCompactionSize: 3}
 
-	mt := newBareMemTable(NewSSTable())
+	mt := newBareMemTable(NewSSTable(opts), opts)
 
 	const keyspace = 40
 	ref := make(map[string]string) // 参考真值：key → 最新 value
@@ -49,10 +44,10 @@ func TestRecency_RandomizedOverwritesSurviveRestart(t *testing.T) {
 	}
 
 	// 模拟重启。
-	sst2 := NewSSTable()
+	sst2 := NewSSTable(opts)
 	sst2.LoadSSTableMetaList()
 	time.Sleep(200 * time.Millisecond)
-	mt2 := newBareMemTable(sst2)
+	mt2 := newBareMemTable(sst2, opts)
 
 	stale := 0
 	for k, want := range ref {

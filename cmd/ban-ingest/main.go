@@ -99,7 +99,7 @@ func setupEngine(memTableSize int) (*storage.Engine, func()) {
 	config.G.WALPath = filepath.Join(tmp, "wal.log")
 	config.G.MaxMemTableSize = memTableSize
 
-	memTable := storage.NewEngine()
+	memTable := storage.NewEngine(storage.DefaultOptions())
 	cleanup := func() {
 		_ = memTable.Close()
 		os.RemoveAll(tmp)
