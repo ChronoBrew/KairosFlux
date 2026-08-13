@@ -1,17 +1,17 @@
 package storage
 
-import (
-	"encoding/binary"
-	"io"
-	"os"
-	"sync"
-)
+import ()
 
 type LogEntry struct {
 	Key   []byte
 	Value []byte
 }
 
+// SSTableMeta 是一个 SSTable 文件的内存元信息。
+//
+// MaxKeyKnown 表示 MaxKey 是否可信：仅当它取自文件尾部的块索引（新格式）或写入时直接
+// 填入才为 true。不可信时读路径不施加上界过滤——猜一个 MaxKey 比不过滤危险得多：猜低了
+// 会把命中 key 整段跳过，表现为数据「消失」，而不过滤只是多扫一个文件。
 type SSTableMeta struct {
 	Level    int
 	Filepath string
@@ -19,46 +19,5 @@ type SSTableMeta struct {
 	MaxKey   []byte
 	Size     int64
 
-	mu           sync.Once
-	MaxKeyLoaded bool
-}
-
-func (meta *SSTableMeta) EnsureMeta() {
-	meta.mu.Do(func() {
-		if meta.MaxKeyLoaded {
-			return
-		}
-
-		file, err := os.Open(meta.Filepath)
-		if err != nil {
-			return
-		}
-		defer file.Close()
-
-		var maxKey []byte
-
-		for {
-			var keyLen uint32
-			if err := binary.Read(file, binary.BigEndian, &keyLen); err != nil {
-				break
-			}
-			keyBytes := make([]byte, keyLen)
-			if _, err := io.ReadFull(file, keyBytes); err != nil {
-				break
-			}
-
-			var valueLen uint32
-			if err := binary.Read(file, binary.BigEndian, &valueLen); err != nil {
-				break
-			}
-			if _, err := file.Seek(int64(valueLen), io.SeekCurrent); err != nil {
-				break
-			}
-
-			maxKey = keyBytes
-		}
-
-		meta.MaxKey = maxKey
-		meta.MaxKeyLoaded = true
-	})
+	MaxKeyKnown bool
 }

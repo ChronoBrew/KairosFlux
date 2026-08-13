@@ -202,12 +202,12 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		}
 
 		meta := &SSTableMeta{
-			Level:        parseLevelFromName(entry.Name()), // 从文件名恢复 level，避免重启塌缩到 L0
-			Filepath:     fullPath,
-			MinKey:       keyBytes,
-			MaxKey:       nil,
-			Size:         info.Size(),
-			MaxKeyLoaded: false,
+			Level:       parseLevelFromName(entry.Name()), // 从文件名恢复 level，避免重启塌缩到 L0
+			Filepath:    fullPath,
+			MinKey:      keyBytes,
+			MaxKey:      nil,
+			Size:        info.Size(),
+			MaxKeyKnown: false,
 		}
 
 		// 从块索引末项直接取 MaxKey（新格式）。不能用 EnsureMeta 的顺序扫描：它把数据段
@@ -217,7 +217,7 @@ func (ss *SSTable) LoadSSTableMetaList() {
 		// 保留 MaxKeyLoaded=false 由 EnsureMeta 顺序扫描兜底（对纯数据文件正确）。
 		if idx := ss.loadBlockIndexFromFile(fullPath); idx != nil && len(idx.entries) > 0 {
 			meta.MaxKey = idx.entries[len(idx.entries)-1].LastKey
-			meta.MaxKeyLoaded = true
+			meta.MaxKeyKnown = true
 		}
 
 		metas = append(metas, meta)
@@ -242,7 +242,6 @@ func (ss *SSTable) LoadSSTableMetaList() {
 	ss.mu.Unlock()
 
 	for _, meta := range metas {
-		go meta.EnsureMeta()
 		go ss.getBlockIndex(meta.Filepath) // 异步预热块索引
 		go ss.getBloom(meta.Filepath)      // 异步预热布隆过滤器
 	}
@@ -332,12 +331,12 @@ func (ss *SSTable) WriteToSSTable(entries []LogEntry) error {
 		return fmt.Errorf("stat SSTable file failed: %v", err)
 	}
 	meta := &SSTableMeta{
-		Level:        0,
-		Filepath:     fullPath,
-		MinKey:       entries[0].Key,
-		MaxKey:       entries[len(entries)-1].Key,
-		Size:         info.Size(),
-		MaxKeyLoaded: true,
+		Level:       0,
+		Filepath:    fullPath,
+		MinKey:      entries[0].Key,
+		MaxKey:      entries[len(entries)-1].Key,
+		Size:        info.Size(),
+		MaxKeyKnown: true,
 	}
 	ss.AddMeta(meta)
 	flushBytesWritten.Add(info.Size())
@@ -360,16 +359,29 @@ func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*LogEntry, error) {
 	}
 	defer file.Close()
 
-	// 尝试读 Footer，确定数据结束位置（新格式有块索引在末尾）
+	// 有 footer 时数据区的终点是已知的；没有 footer（老格式，或尾部残缺）则读到 EOF。
+	//
+	// 无论探测结果如何都必须把偏移移回开头：readDataEndOffset 为读 footer 已经 seek 到了
+	// 文件末尾附近。此前这一步写在 dataEnd > 0 的条件里，于是无 footer 的文件从末尾开始
+	// 解析，恒返回 0 条记录——老格式的全量读回退路径实际从未生效。
 	dataEnd := ss.readDataEndOffset(file)
-	if dataEnd > 0 {
-		file.Seek(0, io.SeekStart)
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
 	}
 
+	// 解析不下去时就地停止，返回已解出的条目，而不是让整个读取失败。
+	//
+	// 这与 WAL.Replay 对撕裂尾写的处理一致，理由也相同：数据区总是先于尾部写出，故无法
+	// 解析的字节只可能出现在有效数据之后。此前这里 return nil, err，而唯一的调用方
+	// readFromSSTableFull 丢弃该错误后遍历 nil 切片——尾部一旦残缺，整个文件的 key 全部
+	// 读成「不存在」，且不报错。
 	entries := make([]*LogEntry, 0)
 	for {
 		if dataEnd > 0 {
-			pos, _ := file.Seek(0, io.SeekCurrent)
+			pos, err := file.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return nil, err
+			}
 			if pos >= dataEnd {
 				break
 			}
@@ -377,35 +389,26 @@ func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*LogEntry, error) {
 
 		var keyLen uint32
 		if err := binary.Read(file, binary.BigEndian, &keyLen); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, fmt.Errorf("failed to read key length: %v", err)
+			break
 		}
-
 		keyBytes := make([]byte, keyLen)
 		if _, err := io.ReadFull(file, keyBytes); err != nil {
-			return nil, fmt.Errorf("failed to read key: %v", err)
+			break
 		}
 
 		var valueLen uint32
 		if err := binary.Read(file, binary.BigEndian, &valueLen); err != nil {
-			return nil, fmt.Errorf("failed to read value length: %v", err)
+			break
 		}
-
 		var valueBytes []byte // 墓碑(哨兵长度)还原为 nil，无 value 字节
 		if valueLen != tombstoneValLen {
 			valueBytes = make([]byte, valueLen)
 			if _, err := io.ReadFull(file, valueBytes); err != nil {
-				return nil, fmt.Errorf("failed to read value: %v", err)
+				break
 			}
 		}
 
-		entry := &LogEntry{
-			Key:   keyBytes,
-			Value: valueBytes,
-		}
-		entries = append(entries, entry)
+		entries = append(entries, &LogEntry{Key: keyBytes, Value: valueBytes})
 	}
 
 	return entries, nil
@@ -842,12 +845,12 @@ func (ss *SSTable) MergeSSTable(files []*SSTableMeta, targetLevel int) *SSTableM
 	}
 
 	newMeta := &SSTableMeta{
-		Level:        targetLevel,
-		Filepath:     fullPath,
-		MinKey:       minKey,
-		MaxKey:       maxKey,
-		Size:         info.Size(),
-		MaxKeyLoaded: true,
+		Level:       targetLevel,
+		Filepath:    fullPath,
+		MinKey:      minKey,
+		MaxKey:      maxKey,
+		Size:        info.Size(),
+		MaxKeyKnown: true,
 	}
 
 	ss.AddMeta(newMeta)
