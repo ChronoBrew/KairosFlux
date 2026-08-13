@@ -103,3 +103,11 @@ flowchart TD
 ## 已知（非本次引入）问题
 
 - `Server/server.go` 无 `//go:build !pprof` 标签，与 `Server/server_pprof.go`（`//go:build pprof`）在 `-tags pprof` 下 `main` 重复声明。这是 origin/main 上的**既有问题**，本次骨架未修（遵循外科手术式修改，单独提出）。修复方式：给 `server.go` 加 `//go:build !pprof`。
+
+---
+
+> **后续状态（本文之后）**：本文所述骨架中，`Placement.Forward` 与 `Placement.Rebalance`
+> 两个桩已移除——其理由「跨节点数据传输尚不可用」已不成立，转发能力后来由 `Router` +
+> `PeerPool` 经 BanNet 落地（见 iteration-2026-08-05-shard-routing-banNet）。
+> `Registry` 与 `Placement.Failover` 保留，但集群仍无心跳，故存活视图当前不产生行为。
+> 包位置亦由 `service/cluster` 上提为顶层 `cluster`。
