@@ -15,8 +15,8 @@ type ConnRegistry interface {
 
 type Codec interface {
 	HeadLen() uint32
-	Pack(msg Frame) ([]byte, error)
-	UnPack([]byte) (Frame, error)
+	Pack(msg *Message) ([]byte, error)
+	UnPack([]byte) (*Message, error)
 }
 
 type Dispatcher interface {
@@ -62,13 +62,4 @@ type Conn interface {
 	SetProperty(key string, value any)
 	Property(key string) any
 	RemoveProperty(key string)
-}
-
-type Frame interface {
-	MsgID() string
-	Payload() []byte
-	MsgLen() uint32
-	SetMsgLen(uint32)
-	SetData([]byte)
-	SetMsgID(string)
 }

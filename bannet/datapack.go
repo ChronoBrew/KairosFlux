@@ -25,7 +25,7 @@ func (dp *DataPack) HeadLen() uint32 {
 
 // Pack 编码一帧。按最终长度一次性分配并直接写入定长头部，不经 bytes.Buffer 的增量扩容，
 // 也不经 binary.Write 的反射路径——Pack 位于每个响应的必经路径上。
-func (dp *DataPack) Pack(msg Frame) ([]byte, error) {
+func (dp *DataPack) Pack(msg *Message) ([]byte, error) {
 	id := msg.MsgID()
 	if len(id) > 0xFFFF {
 		return nil, fmt.Errorf("msgID too long: %d", len(id))
@@ -43,7 +43,7 @@ func (dp *DataPack) Pack(msg Frame) ([]byte, error) {
 
 // UnPack 只解析定长头部 (6 字节), 返回带 DataLen 与 IDLen 的占位 Message;
 // 调用方拿到 IDLen 后, 还需要从连接读取 IDLen+DataLen 字节填充 Id 与 Data。
-func (dp *DataPack) UnPack(data []byte) (Frame, error) {
+func (dp *DataPack) UnPack(data []byte) (*Message, error) {
 	if len(data) < int(dp.HeadLen()) {
 		return nil, errors.New("head too short")
 	}

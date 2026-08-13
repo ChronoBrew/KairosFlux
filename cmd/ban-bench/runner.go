@@ -267,9 +267,8 @@ func recv(conn *net.TCPConn) ([]byte, error) {
 		return nil, err
 	}
 
-	mImpl := tempMsg.(*bannet.Message)
-	if mImpl.IDLen > 0 {
-		idBuf := make([]byte, mImpl.IDLen)
+	if tempMsg.IDLen > 0 {
+		idBuf := make([]byte, tempMsg.IDLen)
 		if _, err := io.ReadFull(conn, idBuf); err != nil {
 			return nil, err
 		}

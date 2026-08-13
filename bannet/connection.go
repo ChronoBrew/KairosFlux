@@ -77,9 +77,8 @@ func (c *Connection) StartReader() {
 		}
 
 		// 头部之后, 先按 IDLen 读取 msgID 字符串
-		mImpl := msg.(*Message)
-		if mImpl.IDLen > 0 {
-			idBuf := make([]byte, mImpl.IDLen)
+		if msg.IDLen > 0 {
+			idBuf := make([]byte, msg.IDLen)
 			if _, err := io.ReadFull(reader, idBuf); err != nil {
 				slog.Error("conn read msgID failed", "connID", c.ConnID, "error", err)
 				return
