@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // 本文件是「exactly-once 正确性压测台」：在崩溃点注入故障，量化重复/丢失条数，

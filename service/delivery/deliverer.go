@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/NeverENG/BanDB/pkg/metrics"
+	"github.com/NeverENG/BanDB/internal/metrics"
 	"github.com/NeverENG/BanDB/service/delivery/offset"
 )
 

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/NeverENG/BanDB/pkg/metrics"
+	"github.com/NeverENG/BanDB/internal/metrics"
 )
 
 // state 是熔断器的三态。

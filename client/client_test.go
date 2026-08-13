@@ -13,7 +13,7 @@ import (
 	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/client"
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/service"
 )
 

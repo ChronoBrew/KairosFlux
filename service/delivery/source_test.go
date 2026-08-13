@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/NeverENG/BanDB/pkg/predicate"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/predicate"
+	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/service/delivery/offset"
 )
 

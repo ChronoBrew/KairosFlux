@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/pkg/predicate"
+	"github.com/NeverENG/BanDB/predicate"
 )
 
 // TestKVServer_Scan 端到端验证边缘查询：写入若干 IMU 帧后，按时间范围 + 谓词扫描，

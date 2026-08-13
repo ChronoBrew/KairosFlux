@@ -10,7 +10,7 @@ import (
 	"time"
 
 	bandb "github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/pkg/predicate"
+	"github.com/NeverENG/BanDB/predicate"
 )
 
 // cmdTimeout 是交互模式下单条命令的超时。

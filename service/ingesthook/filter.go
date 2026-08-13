@@ -14,8 +14,8 @@ import (
 	"sync"
 
 	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/pkg/metrics"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // redactedValue 是脱敏字段被替换成的 JSON 值。

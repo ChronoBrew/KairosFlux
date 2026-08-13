@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 type Config struct {

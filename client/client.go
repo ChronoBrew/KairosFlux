@@ -35,8 +35,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NeverENG/BanDB/pkg/predicate"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/predicate"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // 默认参数。均可经 Options 覆盖。

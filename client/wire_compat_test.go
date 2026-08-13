@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // TestFrameEncodingMatchesServer 交叉校验 SDK 的帧编码与服务端实现逐字节一致。

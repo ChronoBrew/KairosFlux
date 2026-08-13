@@ -8,7 +8,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/NeverENG/BanDB/pkg/proto"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 // 线格式（与 pkg/proto 的包注释一致，服务端对应实现为 bannet.DataPack）：
