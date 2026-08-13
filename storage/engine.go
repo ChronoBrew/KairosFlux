@@ -360,12 +360,13 @@ func (m *Engine) getFromSSTables(key []byte) ([]byte, bool) {
 	metas := m.sst.Metas()
 	for i := len(metas) - 1; i >= 0; i-- {
 		meta := metas[i]
-		// 首次访问时自动加载 MaxKey
-		meta.EnsureMeta()
-
-		// 用 MinKey 和 MaxKey 过滤
-		if bytes.Compare(key, meta.MinKey) < 0 ||
-			bytes.Compare(key, meta.MaxKey) > 0 {
+		// 用 [MinKey, MaxKey] 快速排除不可能命中的文件。MinKey 取自文件头部，恒可信；
+		// MaxKey 仅在取自块索引时可信，否则跳过上界判断（宁可多扫一个文件，也不能因为
+		// 猜错上界而漏掉命中的 key）。
+		if bytes.Compare(key, meta.MinKey) < 0 {
+			continue
+		}
+		if meta.MaxKeyKnown && bytes.Compare(key, meta.MaxKey) > 0 {
 			continue
 		}
 
