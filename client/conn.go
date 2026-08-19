@@ -89,8 +89,9 @@ func parseStatus(payload []byte) (string, []byte, error) {
 	return string(payload[1 : 1+n]), payload[1+n:], nil
 }
 
-// statusError 把服务端状态映射为 SDK 哨兵错误。返回 nil 表示成功。
-func statusError(status string) error {
+// statusError 把服务端状态映射为 SDK 哨兵错误。返回 nil 表示成功。rest 是状态
+// 字段之后的剩余字节；目前只有 dropped 状态用它取丢弃原因（见 parseDropReason）。
+func statusError(status string, rest []byte) error {
 	switch status {
 	case proto.StatusOK:
 		return nil
@@ -99,6 +100,9 @@ func statusError(status string) error {
 	case proto.StatusOverloaded:
 		return ErrOverloaded
 	case proto.StatusDropped:
+		if reason := parseDropReason(rest); reason != "" {
+			return fmt.Errorf("%w: %s", ErrDropped, reason)
+		}
 		return ErrDropped
 	case proto.StatusError:
 		return ErrServer
@@ -106,6 +110,22 @@ func statusError(status string) error {
 		// 未知状态按服务端错误处理，而非静默当作成功——新版服务端可能引入新状态。
 		return fmt.Errorf("%w: 未知状态 %q", ErrServer, status)
 	}
+}
+
+// parseDropReason 从 dropped 响应的剩余字节里解出丢弃原因：
+// [reasonLen u16 LE][reason bytes]（见 service/router.go 的 droppedPayload、
+// docs/BANLV-协议规范.md 的响应负载一节）。老服务端未实现该字段、或字节格式
+// 不符时返回空字符串而不报错——这是可选的协议扩展，不应让老服务端的响应
+// 被判为协议错误。
+func parseDropReason(rest []byte) string {
+	if len(rest) < 2 {
+		return ""
+	}
+	n := int(binary.LittleEndian.Uint16(rest[0:2]))
+	if len(rest) < 2+n {
+		return ""
+	}
+	return string(rest[2 : 2+n])
 }
 
 // retryable 判定该错误是否值得重试。

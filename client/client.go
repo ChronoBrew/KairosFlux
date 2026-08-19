@@ -284,7 +284,7 @@ func (c *Client) attempt(ctx context.Context, msgID string, data []byte) ([]byte
 		cn.broken = true // 无法解析响应：该连接的后续字节不可信
 		return nil, err
 	}
-	if err := statusError(status); err != nil {
+	if err := statusError(status, rest); err != nil {
 		return nil, err
 	}
 	return rest, nil

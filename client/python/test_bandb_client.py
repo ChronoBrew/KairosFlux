@@ -14,12 +14,16 @@ import json
 import os
 import unittest
 
+import struct
+
 from bandb_client import (
     MSG_RESP_OK,
+    DroppedError,
     decode_get_value,
     encode_frame,
     encode_key_only_payload,
     encode_put_payload,
+    parse_drop_reason,
     parse_status,
 )
 
@@ -90,6 +94,16 @@ class VectorTests(unittest.TestCase):
         status, _ = parse_status(bytes.fromhex(v["data_hex"]))
         self.assertEqual(status, "dropped")
 
+    def test_resp_err_dropped_with_reason(self):
+        """BANLV v1.1 扩展向量：dropped 之后追加 reasonLen+reason（见
+        docs/BANLV-协议规范.md 3.4 节）。验证 parse_status 与 parse_drop_reason
+        联用能从这份 Go 权威生成的向量里还原出完整 reason 字符串。
+        """
+        v = self._vec("resp_err_dropped_with_reason")
+        status, rest = parse_status(bytes.fromhex(v["data_hex"]))
+        self.assertEqual(status, "dropped")
+        self.assertEqual(parse_drop_reason(rest), "quote: non-positive price: open=-1")
+
     def test_resp_err_overloaded(self):
         v = self._vec("resp_err_overloaded")
         status, _ = parse_status(bytes.fromhex(v["data_hex"]))
@@ -117,11 +131,37 @@ class VectorTests(unittest.TestCase):
         (crosslang 目录) 对真实服务端验证，这里不起网络。
         """
         v = self._vec("put_request_malformed_lengths")
-        import struct
-
         data = struct.pack("<II", 100, 0) + b"ab"
         self.assertEqual(data.hex(), v["data_hex"])
         self.assertEqual(encode_frame(v["msg_id"], data).hex(), v["frame_hex"])
+
+    def test_parse_drop_reason_roundtrip(self):
+        """dropped 响应在 status 之后追加 [reasonLen u16 LE][reason]（见
+        service/router.go 的 droppedPayload、docs/BANLV-协议规范.md）。这里不依赖
+        vectors.json（该向量文件目前只覆盖不带 reason 的旧 dropped 响应），直接
+        验证 parse_drop_reason 对新格式的解析。
+        """
+        reason = "quote: non-positive price: open=-1"
+        rest = struct.pack("<H", len(reason)) + reason.encode("utf-8")
+        self.assertEqual(parse_drop_reason(rest), reason)
+
+    def test_parse_drop_reason_missing_field_returns_empty(self):
+        """老服务端未实现 reason 字段时，rest 为空——应返回空字符串而非报错，
+        这是可选协议扩展的向后兼容要求。
+        """
+        self.assertEqual(parse_drop_reason(b""), "")
+
+    def test_dropped_error_exposes_reason_without_changing_message(self):
+        """DroppedError.reason 携带具体原因，但 str(e)/e.args[0] 仍恒为 status——
+        crosslang_probe.py 等按 status 精确比对的调用方不受影响。
+        """
+        err = DroppedError("dropped", "quote: missing required field \"code\"")
+        self.assertEqual(str(err), "dropped")
+        self.assertEqual(err.args[0], "dropped")
+        self.assertEqual(err.reason, 'quote: missing required field "code"')
+
+        err_no_reason = DroppedError("dropped")
+        self.assertEqual(err_no_reason.reason, "")
 
 
 if __name__ == "__main__":

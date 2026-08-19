@@ -35,8 +35,9 @@ type Router struct {
 	// 网关自适应准入（可选）：limiter!=nil 时按并发上限准入，过载 shed。
 	limiter *admission.Limiter
 
-	// 前置处理函数；返回 HookDrop 表示丢弃本帧
-	preHandleFunc func(request bannet.Request) bannet.HookAction
+	// 前置处理函数；返回 HookDrop 表示丢弃本帧，reason 是丢弃原因（可为空），
+	// PreHandle 会把它带上 sendDropped 回传给客户端。
+	preHandleFunc func(request bannet.Request) (bannet.HookAction, string)
 	// 后置处理函数
 	postHandleFunc func(request bannet.Request)
 }
@@ -79,7 +80,7 @@ func (r *Router) SetLimiter(l *admission.Limiter) {
 }
 
 // SetPreHandle 设置前置处理函数
-func (r *Router) SetPreHandle(f func(request bannet.Request) bannet.HookAction) {
+func (r *Router) SetPreHandle(f func(request bannet.Request) (bannet.HookAction, string)) {
 	r.preHandleFunc = f
 }
 
@@ -88,15 +89,16 @@ func (r *Router) SetPostHandle(f func(request bannet.Request)) {
 	r.postHandleFunc = f
 }
 
-// PreHandle 前置处理。返回 HookDrop 时由本函数回写唯一的「丢弃」响应，
-// 使纯请求-响应协议不发生响应错位（见 OnConnStart 注释）。
+// PreHandle 前置处理。返回 HookDrop 时由本函数回写唯一的「丢弃」响应（携带
+// preHandleFunc 给出的 reason，见 sendDropped），使纯请求-响应协议不发生响应
+// 错位（见 OnConnStart 注释）。
 func (r *Router) PreHandle(request bannet.Request) bannet.HookAction {
 	if r.preHandleFunc == nil {
 		return bannet.HookPass
 	}
-	action := r.preHandleFunc(request)
+	action, reason := r.preHandleFunc(request)
 	if action == bannet.HookDrop {
-		sendDropped(request)
+		sendDropped(request, reason)
 	}
 	return action
 }
@@ -157,9 +159,32 @@ func sendOK(req bannet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespOK, statusPayload(proto.StatusOK))
 }
 
-// sendDropped 写回「被钩子按策略丢弃」响应；保证每请求恰好一个响应。
-func sendDropped(req bannet.Request) {
-	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusDropped))
+// droppedPayload 编码 [statusLen u8][status="dropped"][reasonLen u16 LE][reason bytes]。
+//
+// 向后兼容：这是在 statusPayload 的 [statusLen][status] 之后追加的新字段，老客户端
+// 的 parseStatus 只读到 statusLen 声明的字节数为止，reasonLen/reason 落在它认为的
+// "该操作特有的其余字节"（rest）里——旧版 Go SDK 的 Put/Delete 从不读取 rest，
+// 新增这段不会让老客户端解析失败或崩溃，只是拿不到 reason（见
+// docs/BANLV-协议规范.md 的响应负载一节）。reason 为空时 reasonLen=0，行为退化为
+// 与 statusPayload 完全相同的字节。
+func droppedPayload(reason string) []byte {
+	const maxReasonLen = 4096 // 远大于任何校验错误信息的实际长度，纯粹是防御性上限
+	if len(reason) > maxReasonLen {
+		reason = reason[:maxReasonLen]
+	}
+	status := proto.StatusDropped
+	buf := make([]byte, 1+len(status)+2+len(reason))
+	buf[0] = byte(len(status))
+	copy(buf[1:], status)
+	off := 1 + len(status)
+	binary.LittleEndian.PutUint16(buf[off:off+2], uint16(len(reason)))
+	copy(buf[off+2:], reason)
+	return buf
+}
+
+// sendDropped 写回「被钩子按策略丢弃」响应，附带丢弃原因；保证每请求恰好一个响应。
+func sendDropped(req bannet.Request, reason string) {
+	req.Conn().SendBuffMsg(proto.MsgRespErr, droppedPayload(reason))
 }
 
 // handlePut 处理 PUT 操作

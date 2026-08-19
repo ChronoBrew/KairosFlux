@@ -3,8 +3,9 @@
 //
 // 定位（务必读完再接线到生产）：gRPC 在本项目里是基准测试/协议对照用途，不是
 // 生产摄入入口——生产摄入走 bannet 自研 TLV 协议（BANLV，见
-// docs/BANLV-协议规范.md）。据作者压测评估，BANLV 比 gRPC 约快 26%，这是自研
-// 协议存在的理由、不是历史包袱；cmd/ban-grpc-server 与
+// docs/BANLV-协议规范.md）。实测显示 BANLV 在不受 fsync 约束的读路径上吞吐约为
+// gRPC 的 2.7 倍（写路径两者持平，受同一 fsync 瓶颈约束，与入口协议无关），这是
+// 自研协议存在的理由、不是历史包袱，详见 README.md 的性能一节；cmd/ban-grpc-server 与
 // cmd/ban-bench-grpc 的存在是为了给 BANLV 提供一个可对照的性能/协议基线，
 // 不代表它是与 bannet 并列的生产候选。
 //

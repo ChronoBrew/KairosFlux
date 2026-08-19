@@ -103,7 +103,33 @@
 
 权威实现：`proto/scan.go` 的 `EncodeScanResponse`/`DecodeScanResponse`。
 
-### 3.4 状态码表
+### 3.4 dropped 响应的丢弃原因（协议扩展，向后兼容）
+
+```
+[statusLen u8][status="dropped"][reasonLen u16 LE][reason: UTF-8 字符串]
+```
+
+即通用状态段之后再跟 `reasonLen`+`reason`。`reason` 是 `ingesthook.Filter` 判定
+丢弃时给出的具体原因（如 `"quote: non-positive price: open=-1"`、
+`"non_monotonic_timestamp"`、`"oversized_value"`），供客户端展示/日志使用。
+
+这是在原有 `[statusLen][status]` 之后追加的字段，不是替换：**向后兼容**——老
+客户端的 `parseStatus` 只读 `statusLen` 声明的字节数，`reasonLen`/`reason` 落在
+它认为的"该操作特有的其余字节"（`rest`）里；旧版 Go SDK 的 `Put`/`Delete` 从不
+读取 `rest`，新增这段不会让老客户端解析失败，只是拿不到 `reason`。`reason` 为
+空时 `reasonLen=0`，字节序列退化为与「无 reason」版本完全相同。
+
+背景：此前 `dropped` 响应不携带任何原因，客户端只知道"被拒绝了"，不知道具体
+为什么——曾迫使调用方在本地重新实现一遍校验规则去猜测（QuantScout 全量实测
+反馈的真实问题）。权威实现：`service/router.go` 的 `droppedPayload`；解析见
+`client/conn.go` 的 `parseDropReason`（Go）与 `client/python/bandb_client.py`
+的 `parse_drop_reason`（Python）。
+
+gRPC 传输（`internal/kvgrpc`）**不携带这个字段**——`PutResponse` 只有
+`Success bool`，没有为 reason 预留空间；这与 gRPC 是基准测试/协议对照用途
+（不是生产入口）的定位一致，本轮不为它扩展 protobuf 消息。
+
+### 3.5 状态码表
 
 | status       | 含义 | 客户端应对（Go SDK 语义，见 `client/errors.go`） |
 |---|---|---|

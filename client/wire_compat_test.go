@@ -68,7 +68,7 @@ func TestStatusErrorMapping(t *testing.T) {
 		{proto.StatusError, ErrServer, true},
 	}
 	for _, tc := range tests {
-		got := statusError(tc.status)
+		got := statusError(tc.status, nil)
 		if tc.wantErr == nil {
 			if got != nil {
 				t.Fatalf("status %q 应为成功, 实际 %v", tc.status, got)

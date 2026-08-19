@@ -70,7 +70,21 @@ class OverloadedError(BanDBError):
 
 class DroppedError(BanDBError):
     """请求被落盘前钩子（ingesthook.Filter）按策略丢弃：畸形负载/超限/schema
-    校验不通过/时间戳非单调。确定性拒绝，重试无意义。对应 ErrDropped。"""
+    校验不通过/时间戳非单调。确定性拒绝，重试无意义。对应 ErrDropped。
+
+    reason 是服务端回传的具体丢弃原因（如 "quote: non-positive price: open=-1"），
+    老服务端未实现该字段时为空字符串——此前这里只有 "dropped" 三个字没有任何
+    上下文，调用方只能靠在本地重新实现一遍校验规则去猜为什么，这正是本字段
+    要解决的问题（QuantScout 全量实测反馈，见
+    docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的 D2 记录）。
+    """
+
+    def __init__(self, status: str, reason: str = ""):
+        # 只传 status 给基类：e.args[0]/str(e) 保持恒为 "dropped"，不因新增 reason
+        # 而变化——crosslang_probe.py 等按 status 精确比对的调用方不应受影响。
+        # reason 通过独立属性暴露，需要细节的调用方显式读 e.reason。
+        super().__init__(status)
+        self.reason = reason
 
 
 class ServerError(BanDBError):
@@ -81,8 +95,10 @@ class ProtocolError(BanDBError):
     """收到无法解析的响应，通常意味着协议不一致或连接串话。对应 ErrProtocol。"""
 
 
-def _status_to_exception(status: str) -> "BanDBError | None":
-    """把响应状态映射为异常；status=ok 返回 None。对应 client/conn.go 的 statusError()。"""
+def _status_to_exception(status: str, rest: bytes = b"") -> "BanDBError | None":
+    """把响应状态映射为异常；status=ok 返回 None。对应 client/conn.go 的 statusError()。
+    rest 是状态字段之后的剩余字节，仅 dropped 状态用它取丢弃原因。
+    """
     if status == STATUS_OK:
         return None
     if status == STATUS_NOTFOUND:
@@ -90,10 +106,24 @@ def _status_to_exception(status: str) -> "BanDBError | None":
     if status == STATUS_OVERLOADED:
         return OverloadedError(status)
     if status == STATUS_DROPPED:
-        return DroppedError(status)
+        return DroppedError(status, parse_drop_reason(rest))
     if status == STATUS_ERROR:
         return ServerError(status)
     return ServerError(f"unknown status {status!r}")
+
+
+def parse_drop_reason(rest: bytes) -> str:
+    """从 dropped 响应的剩余字节里解出丢弃原因：[reasonLen u16 LE][reason bytes]
+    （见 service/router.go 的 droppedPayload、docs/BANLV-协议规范.md 的响应负载
+    一节）。老服务端未实现该字段、或字节格式不符时返回空字符串，不报错——是否
+    携带 reason 是可选的协议扩展。对应 Go: client/conn.go 的 parseDropReason()。
+    """
+    if len(rest) < 2:
+        return ""
+    (n,) = struct.unpack_from("<H", rest, 0)
+    if len(rest) < 2 + n:
+        return ""
+    return rest[2 : 2 + n].decode("utf-8", errors="replace")
 
 
 # ---------------------------------------------------------------------------
@@ -244,8 +274,8 @@ class BanDBClient:
         (raft)。对应 Go: client/client.go 的 Put()。
         """
         _, resp_data = self._roundtrip(MSG_PUT, encode_put_payload(key, value))
-        status, _ = parse_status(resp_data)
-        err = _status_to_exception(status)
+        status, rest = parse_status(resp_data)
+        err = _status_to_exception(status, rest)
         if err is not None:
             raise err
 
@@ -263,7 +293,7 @@ class BanDBClient:
         """
         _, resp_data = self._roundtrip(MSG_GET, encode_key_only_payload(key))
         status, rest = parse_status(resp_data)
-        err = _status_to_exception(status)
+        err = _status_to_exception(status, rest)
         if err is not None:
             raise err
         return decode_get_value(rest)
@@ -271,7 +301,7 @@ class BanDBClient:
     def delete(self, key: bytes) -> None:
         """删除键。幂等盲写：删除不存在的 key 同样成功。对应 Go: client/client.go 的 Delete()。"""
         _, resp_data = self._roundtrip(MSG_DELETE, encode_key_only_payload(key))
-        status, _ = parse_status(resp_data)
-        err = _status_to_exception(status)
+        status, rest = parse_status(resp_data)
+        err = _status_to_exception(status, rest)
         if err is not None:
             raise err

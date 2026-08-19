@@ -75,5 +75,12 @@
     "msg_id": "PUT",
     "data_hex": "64000000000000006162",
     "frame_hex": "0a000000030050555464000000000000006162"
+  },
+  {
+    "name": "resp_err_dropped_with_reason",
+    "description": "错误响应（BANLV v1.1 扩展）：status=\"dropped\" 之后追加 [reasonLen u16 LE][reason]，reason=\"quote: non-positive price: open=-1\"。老客户端只读 statusLen+status，不受影响（向后兼容）。",
+    "msg_id": "ERR",
+    "data_hex": "0764726f70706564220071756f74653a206e6f6e2d706f7369746976652070726963653a206f70656e3d2d31",
+    "frame_hex": "2c00000003004552520764726f70706564220071756f74653a206e6f6e2d706f7369746976652070726963653a206f70656e3d2d31"
   }
 ]

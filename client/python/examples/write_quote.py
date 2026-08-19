@@ -60,7 +60,10 @@ def main() -> int:
         try:
             c.put(key, value)
         except DroppedError as e:
-            print(f"写入被拒绝（清洗/schema 校验未通过）: {e}", file=sys.stderr)
+            # e.reason 是服务端回传的具体拒绝原因（如非正价格/OHLC 不一致/涨跌幅
+            # 超限）；老服务端未实现该字段时 e.reason 为空，仍能看到 "dropped"。
+            detail = f"：{e.reason}" if e.reason else ""
+            print(f"写入被拒绝（清洗/schema 校验未通过）{detail}", file=sys.stderr)
             return 1
 
         # 读回校验：证明写入的字节经服务端持久化后可原样取回。
