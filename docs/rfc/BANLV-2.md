@@ -1,8 +1,12 @@
 # RFC: BANLV v2
 
-> **状态：草案，仅设计、零代码改动。** 待作者审阅 + 研究 dubbo-go Triple 协议后
-> 才定稿动工。本文档不修改 `bannet/`、`client/`、`docs/BANLV-协议规范.md` 里
-> 描述的任何 v1 行为——v1 是且仍是当前的生产协议。
+> **状态：草案，仅设计、零代码改动。** 待作者审阅后才定稿动工。本文档不修改
+> `bannet/`、`client/`、`docs/BANLV-协议规范.md` 里描述的任何 v1 行为——v1 是且
+> 仍是当前的生产协议。
+>
+> dubbo-go Triple 协议调研已完成（`docs/research/triple-协议调研.md`），结论
+> 已折算进 §7 开放问题与 §9/§10 两节新增设计；本轮新增 §9 Schema Descriptor
+> 与 §10 机读错误码分类学，均为纯设计，不涉及任何代码改动。
 
 ## 1. 动机
 
@@ -153,19 +157,34 @@ switch 语句只有 `MsgPut`/`MsgGet`/`MsgDelete`/`MsgScan` 四个 case，没有
 布局上不冲突，因为它们是两套完全独立的头部结构，服务端在读到这 2 字节时
 就已经能分岔，不需要读完整个头部才能判断）。
 
-## 7. 开放问题
+## 7. 开放问题（已按 Triple 调研结论更新裁决状态）
 
-- **流水线（`corr_id`）是否真的做**：字段已经留了，但流水线要求客户端连接
-  池模型、服务端每连接的响应分发都跟着改（不再是"发一帧等一帧"的简单模型）。
-  这是本轮最大的不确定项，等 dubbo-go Triple 协议调研结果作为输入再定。
-- **`flags` 的压缩/流式位**：同上，Triple 协议怎么做流式/多路复用是直接的
-  参考输入，本轮不预先设计细节，只留位。
-- **`payload` 的结构化格式**：§4 提到的响应体结构化，`payload` 内部具体怎么
-  编码（是否引入类似 SCAN 响应那种自定义 TLV，还是干脆挪用 JSON）未定。
-- **`BYE` 的语义**：本轮只保留 opcode 号位，不定义行为。
-- **`type` 号的分配与治理**：是否需要一个中心化的 type 号注册表文档（类似
-  gRPC 的 protobuf 字段号治理），避免不同开发者各自新增 schema 时 type 号
-  冲突，未定。
+- **流水线（`corr_id`）是否真的做**：**仍然开放，未裁决**。Triple 调研
+  （`docs/research/triple-协议调研.md` §3）确认了一件事：如果真的要做流式/
+  流水线，"长度前缀消息 + 显式流结束信号"是无法绕开的最小结构——这只是
+  确认了"要做的话该怎么做"的下限，没有回答"该不该做"。是否做仍取决于
+  BANLV 的实际需求（量化数据流目前是批量写入，不是双向流式交互），本轮
+  不裁决，留给需求明确后再定。
+- **`flags` 的压缩/流式位**：**部分裁决**。Triple 用 HTTP/2 的 `END_STREAM`
+  标志表达"流结束"，是流式语义里唯一不可或缺的比特（见调研 §3、§8 裁决表）。
+  若 BANLV v2 未来真的做流式，`flags` 应至少留一位给等价的"流结束"语义
+  （草案占位：bit1）。压缩位（草案占位：bit0）**调研没有找到 Triple 相关
+  的具体设计可供参考**（压缩不是 Triple 强调的设计点），仍然完全开放，
+  留待有真实需求（如大负载场景）时单独评估压缩算法选型。
+- **`payload` 的结构化格式**：**已裁决方向，细节未定**。Triple 对"错误"与
+  "正常返回值"分别用完全不同的模型表达（HTTP/2 trailer vs 消息体），不
+  勉强统一（见调研 §4、§8）。BANLV v2 采纳同样的取向：`payload`（正常返回
+  值，如 GET 的 value、SCAN 的命中集）与 §10 新增的错误码分类学各自独立
+  设计，不强求用一套 TLV 格式同时表达两者。`payload` 内部具体编码格式
+  （自定义 TLV vs JSON）仍未定。
+- **`BYE` 的语义**：本轮只保留 opcode 号位，不定义行为。Triple 调研未涉及
+  连接优雅关闭的等价机制，无相关输入，维持开放。
+- **`type` 号的分配与治理**：**仍然开放**。Triple 用 `Service-Name`+方法名
+  的字符串路径做服务标识（类似 gRPC 的 `:path`），不是数字化的类型号，
+  没有直接可借鉴的"数字类型号治理"先例；调研没有提供新的输入。§9 新增的
+  Schema Descriptor 里 `TypeID` 字段的治理问题与此相同，一并留待需要时
+  设计一个类似 protobuf 字段号规则的分配规范（如"1-999 保留给核心数据类型、
+  1000+ 开放给业务自定义"这类分段策略）。
 
 ## 8. v1 → v2 测试向量迁移方案
 
@@ -187,5 +206,156 @@ switch 语句只有 `MsgPut`/`MsgGet`/`MsgDelete`/`MsgScan` 四个 case，没有
    `client/python/test_bandb_client_v2.py` 或类似命名），与 v1 测试文件并存，
    不合并——两套协议版本的测试意图不同，合并会让测试文件同时承担"锁定 v1
    不变"与"验证 v2 新增"两个不同职责，不利于将来任何一侧单独演进。
+
+## 9. Schema Descriptor：类型拥有全部语义
+
+### 9.1 现状：同一个类型的语义散落在四五个不相关的地方
+
+`quote`（行情快照）这一个数据类型，今天的语义分散在：
+
+- **key 布局约定**：`quote:<日期>:<代码>` 只写在 `service/ingesthook/
+  schema/quote.go` 的包注释里，是一句自然语言描述，没有任何代码强制它。
+- **单调性策略**：`dropBackward` 对已注册 schema 的类型无条件跳过（v1.1 修
+  D3 的方式），这个"quote 类型不需要单调性检查"的事实，体现为 filter.go
+  里一段 `if hasSchema` 的旁路逻辑，不是 quote 类型自己声明的属性。
+- **校验规则**：`QuoteSnapshot.Validate` 方法体，这是唯一一处"结构化"的
+  部分（至少是个接口实现）。
+- **量纲契约**：`volume` 是"手"这件事，写在 `quoteRecord.Volume` 字段的
+  Go 注释里，`docs/clickhouse-schema.md` 的建表 DDL 注释里再抄一遍——两处
+  手写、两处都可能各自漂移。
+- **错误信息**：`fmt.Errorf("quote: non-positive price: %s=%v", ...)`
+  这类临时拼出来的字符串，散落在 `Validate` 方法内部，与 §10 要设计的
+  机读错误码毫无关联。
+- **投递分区假设**：`quote:<日期>:<代码>` 日期在前这个选择，能让投递按天
+  成批、ClickHouse 按月分区——但这个"key 布局与投递策略的关联"这件事，
+  目前只存在于人的理解里（体检报告与本 RFC 的动机段落），没有任何代码或
+  配置显式声明"这个类型应该怎么投递"。
+
+**六个不同子系统，六份关于同一个类型的、互相不知道对方存在的声明。** 这正是
+§1 动机里"数据类型不是协议一等公民"的具体后果——不只是协议帧里没有 `type`
+字段，是**代码里也没有一个单一的地方能回答"quote 类型到底是什么"**。
+
+### 9.2 设计：一个类型 = 一份 Schema Descriptor
+
+```go
+// 草案接口形状，不是最终 Go 签名——用于表达"一个类型的全部语义在一个地方声明"
+// 这个设计意图，定稿时再确定具体字段类型与包结构。
+type SchemaDescriptor struct {
+    TypeID   uint16 // 对应 §3.2 协议帧里的 type 字段；治理问题见 §7
+    Name     string // "quote"
+
+    KeyLayout     KeyLayout     // 声明式的 key 形状，替代"包注释里写一句人话"
+    TimeSemantics TimeSemantics // 这个类型要不要单调性检查、检查哪个字段
+    Validation    Validator     // 即今天的 schema.Validator 接口，行为不变
+    Units         map[string]string // 字段名 -> 量纲，如 {"volume": "lots"}
+    ErrorCodes    []ErrorCode   // 见 §10，这个类型的校验器可能产生的机读错误码集合
+    DeliveryHint  DeliveryHint  // 分区/去重键提示，供投递层与下游建表参考
+}
+
+// KeyLayout 用分隔符+字段名列表声明 key 形状，而不是一句自然语言注释。
+// 例：quote 类型 = KeyLayout{Delimiter: ":", Fields: []string{"prefix", "date", "code"}}
+type KeyLayout struct {
+    Delimiter string
+    Fields    []string // 有序字段名，"date"/"code" 这类名字本身即语义
+}
+
+// TimeSemantics 声明这个类型是否需要单调性保证，以及哪个 KeyLayout 字段
+// 扮演"时间戳"角色——替代 filter.go 里"有没有注册 schema"这个旁路判断。
+type TimeSemantics struct {
+    Kind      TimeKind // None / StrictlyIncreasing / NonDecreasing
+    KeyField  string   // 若 Kind != None，指明 KeyLayout.Fields 里哪个字段是时间戳
+}
+
+// DeliveryHint 给投递层的分区/去重建议，不是强制指令——投递层可以选择忽略。
+type DeliveryHint struct {
+    PartitionByKeyField string   // 例："date"，对应 ClickHouse DDL 的 PARTITION BY
+    DedupKeyFields      []string // 例：["code", "date"]，对应 ReplacingMergeTree ORDER BY
+}
+```
+
+`quote` 类型注册后大致是：
+
+```go
+schema.RegisterDescriptor(SchemaDescriptor{
+    TypeID: 1,
+    Name:   "quote",
+    KeyLayout: KeyLayout{Delimiter: ":", Fields: []string{"prefix", "date", "code"}},
+    TimeSemantics: TimeSemantics{Kind: None}, // 日频快照允许乱序/重复，不需要单调性
+    Validation: QuoteSnapshot{},
+    Units: map[string]string{"volume": "lots"},
+    ErrorCodes: []ErrorCode{ErrQuoteMissingField, ErrQuoteNonPositivePrice, ...}, // 见 §10
+    DeliveryHint: DeliveryHint{PartitionByKeyField: "date", DedupKeyFields: []string{"code", "date"}},
+})
+```
+
+### 9.3 各子系统如何从 Descriptor 派生行为（而不是各自维护一份）
+
+| 子系统 | 现状 | Descriptor 化之后 |
+|---|---|---|
+| 协议 `type` 字段分派（§3.2） | 按 key 前缀最长匹配猜 | 直接读 `TypeID`，Descriptor 是唯一真相来源 |
+| 落盘前清洗（单调性检查） | `hasSchema` 旁路判断是否跳过 | 读 `TimeSemantics.Kind`，`None` 则跳过，`StrictlyIncreasing`/`NonDecreasing` 则按 `TimeSemantics.KeyField` 指定的字段检查——不再是"有没有注册就跳过"的粗粒度旁路，是每个类型自己声明要不要、查哪个字段 |
+| schema 校验 | `Validator.Validate` | 不变，`Validation` 字段就是它 |
+| 量纲文档 | 两处手写注释 | `Units` 是唯一声明来源，文档（`docs/clickhouse-schema.md` 之类）应该是从这里生成/引用，不是独立手写第二份 |
+| 投递分区 | 人脑理解 + README 的一句话 | 投递层读 `DeliveryHint` 决定批次边界，下游建表脚本可以从 `DeliveryHint` 生成 `PARTITION BY`/`ORDER BY` 建议，不用每个新类型都重新讨论一遍"这个类型该怎么分区" |
+
+### 9.4 与现有代码的关系（不破坏，是重构方向）
+
+`service/ingesthook/schema.Register(prefix, validator)` 这个现有 API 不需要
+立刻废弃——`SchemaDescriptor` 可以看作它的超集：`Register` 等价于构造一个
+`TimeSemantics.Kind=None`（沿用 v1.1 的"有 schema 就跳过"逻辑）、
+`Units`/`ErrorCodes`/`DeliveryHint` 留空的 Descriptor。迁移路径是渐进式的
+（新类型直接用 Descriptor 声明全部字段，旧的 `quote` 类型逐步把散落的
+量纲注释、错误信息迁移进 Descriptor），不需要一次性重写。
+
+## 10. 机读错误码分类学
+
+### 10.1 现状：字符串是唯一的错误表示
+
+v1.1 的 `reason` 字段（`docs/BANLV-协议规范.md` §3.4）解决了"客户端知道
+具体错误"这个问题，但 `reason` 是自由格式的人读字符串
+（`"quote: non-positive price: open=-1"`），客户端要做任何程序化处理
+（区分"是价格问题"还是"是字段缺失问题"）都得解析字符串前缀——这既脆弱
+（字符串措辞一改，客户端的解析逻辑就断），也不是"机读"。
+
+### 10.2 设计：码 + 人读字符串双轨，不是二选一
+
+```
+[code u16][reasonLen u16][reason: UTF-8 字符串]
+```
+
+`code` 是机读的、跨版本稳定的数字；`reason` 是给人看的、可以随时改措辞的
+描述——两者都发，客户端可以只读 `code` 做程序化分支，也可以把 `reason`
+原样展示给运维排查，互不冲突。这直接对应 §8 裁决表里 Triple"两套错误模型
+服务不同场景、不强求统一"的原则：这里不是要统一成一套，是要**让机器与人
+分别有自己够用的表示**。
+
+### 10.3 分类结构：与 A 段修复新增的 metrics 计数器对齐
+
+不凭空设计一套分类，直接对齐这轮 bannet 健壮性审计（见
+`docs/iteration-2026-08-20-bannet-robustness-audit.md`）里新增/已有的
+`internal/metrics` 计数器——这些计数器已经是这个系统事实上的"错误类目"，
+错误码分类学应该是它们的机读化，不是另起一套无关的分类：
+
+| 码段 | 类目 | 对应现有 metrics 计数器 | 说明 |
+|---|---|---|---|
+| `0x1xxx` | 帧/传输层 | `FramesDroppedMalformed`、`FramesDroppedOversized` | 帧本身有问题（长度不符、超限），与业务类型无关 |
+| `0x2xxx` | 时序 | `FramesDroppedNonMonotonic` | 时间戳/单调性问题；具体是否适用取决于 §9 的 `TimeSemantics` |
+| `0x3xxx` | schema 校验 | `FramesDroppedSchema` | 每个类型自己的校验失败，子码按 §9 `SchemaDescriptor.ErrorCodes` 分配（如 `0x3001`=quote 缺字段、`0x3002`=quote 非正价格、`0x3003`=quote OHLC 不一致、`0x3004`=quote 涨跌幅超限） |
+| `0x9xxx` | 内部 | `PanicsRecovered` | **不通过协议下发给客户端**——这是服务端内部异常，客户端不该看到"服务端刚从一个 panic 里恢复"这种内部细节，只在服务端日志/metrics 里体现；列在这里是为了分类完整性，不是要开一个新的响应路径 |
+
+`0x3xxx` 段的具体子码分配权下放给各 `SchemaDescriptor.ErrorCodes`——这是
+`type` 治理问题（§7 仍开放）的一个自然延伸：`type=1`（quote）拥有
+`0x3001`-`0x30FF` 这个子区间，`type=2` 拥有下一个区间，以此类推，避免不同
+类型的错误码手工分配时互相冲突。具体的区间划分规则本轮不定稿，留给 `type`
+号治理方案一并设计。
+
+### 10.4 与 SCAN 状态码的关系（不是替代，是分层）
+
+`proto.StatusOK`/`StatusNotFound` 等 v1 状态字符串（`docs/BANLV-协议规范.md`
+§3.4 状态码表）描述的是"这次操作的宏观结果"（成功/查无/过载/服务端错误），
+是协议级别的粗粒度状态；`code`（本节）描述的是"如果结果是拒绝，具体因为
+什么业务/校验原因"，是更细粒度的补充，两者不冲突、不重叠——`code` 只在
+`status=dropped` 这一种宏观状态下才有意义，其余状态（`ok`/`notfound`/
+`overloaded`/`error`）不需要、也不应该附带 `code`。
 
 本节和全文档一样，是给定稿阶段的起点，不是可以直接照做的实现清单。
