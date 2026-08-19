@@ -20,6 +20,15 @@ import (
 // 避免两侧各自演进而漂移。
 const frameHeadLen = 6
 
+// maxResponseFrameSize 是客户端愿意为一个响应负载预分配的硬上限。dataLen 是对端
+// （服务端，或任何能在网络上冒充服务端的角色）声明的 u32，最大约 4.29GiB——不设
+// 上限的话，`make([]byte, dataLen)` 会在实际读到任何负载字节之前就按对端声称的
+// 长度分配内存，是 TLV 解析器的经典内存放大漏洞，服务端侧同一漏洞已在
+// bannet.Connection（hardMaxPackageSize）修过，这里是同一条协议在客户端侧的镜像
+// 攻击面：一个恶意或被攻陷的服务端只需回一个 6 字节头部就能让客户端尝试分配
+// 数 GiB。此值与服务端默认的 MaxPackageSize 数量级一致，属于合理的响应体量上限。
+const maxResponseFrameSize = 64 << 20 // 64MiB
+
 // conn 是一条到服务端的连接。BanNet 是严格的请求-响应协议：一条连接上必须
 // 「发一帧、收一帧」后才能发下一帧，故 conn 不可被并发使用——并发由连接池提供。
 type conn struct {
@@ -68,6 +77,13 @@ func (c *conn) roundTrip(msgID string, data []byte, deadline time.Time) (string,
 	}
 	dataLen := binary.LittleEndian.Uint32(head[0:4])
 	idLen := binary.LittleEndian.Uint16(head[4:6])
+
+	// 校验放在分配之前：绝不能先按对端声称的长度 make()，再发现读不到那么多字节——
+	// 到那时候内存已经花出去了。见 maxResponseFrameSize 的注释。
+	if dataLen > maxResponseFrameSize {
+		c.broken = true // 协议要求之外的巨帧，判定连接不再可信，不放回连接池
+		return "", nil, fmt.Errorf("%w: 响应声明的负载长度 %d 超过上限 %d", ErrProtocol, dataLen, maxResponseFrameSize)
+	}
 
 	rest := make([]byte, int(idLen)+int(dataLen))
 	if _, err := io.ReadFull(c.nc, rest); err != nil {

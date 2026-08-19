@@ -41,6 +41,12 @@ type GlobalConfig struct {
 	MaxConn        int
 	MaxPackageSize uint32
 
+	// ConnReadTimeoutMs 是每次读一帧的空闲超时（毫秒）：从上一字节读到之后开始计时，
+	// 超时未凑齐下一帧（哪怕只差 1 字节）即断开连接。防的是"半个帧后不发了"的慢客户端/
+	// 恶意连接长期占着一个 goroutine + 一个 MaxConn 名额不释放。<=0 表示不设超时
+	// （不建议，仅供无法容忍误断的场景显式选择）。
+	ConnReadTimeoutMs int
+
 	WorkerPoolSize   uint32
 	MaxWorkerTaskLen uint32
 	MaxMsgChanLen    uint32
@@ -135,6 +141,7 @@ func defaultGlobalConfig() *GlobalConfig {
 		Version:                  "1.0.0",
 		MaxConn:                  1000,
 		MaxPackageSize:           16 << 20, // 16MiB：容纳多模态大值(相机帧)与多条 SCAN 响应
+		ConnReadTimeoutMs:        30000,    // 30s：慢客户端/半帧连接的空闲上限
 		WorkerPoolSize:           10,
 		MaxWorkerTaskLen:         10000,
 		MaxMsgChanLen:            100,

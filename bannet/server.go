@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/NeverENG/BanDB/config"
 )
@@ -74,22 +75,44 @@ func (s *Server) Start() {
 	go s.acceptLoop(listener)
 }
 
+// acceptRetryMinDelay/acceptRetryMaxDelay 是瞬时 Accept 错误（如 EMFILE：句柄数耗尽）
+// 的退避区间。没有退避的话，一旦进入这类"每次 Accept 都立即报错"的持续错误状态，
+// acceptLoop 会用尽一个 CPU 核心空转打日志——这本身就是一种资源耗尽，而且是服务端
+// 自己造成的，不需要任何攻击者配合。退避借鉴 net/http.Server 对临时 Accept 错误的
+// 标准处理方式。
+const (
+	acceptRetryMinDelay = 5 * time.Millisecond
+	acceptRetryMaxDelay = time.Second
+)
+
 // acceptLoop 接受连接直到 Stop 关闭 listener/done。
 func (s *Server) acceptLoop(listener *net.TCPListener) {
 	var cid uint32
+	var retryDelay time.Duration
 	for {
 		conn, err := listener.AcceptTCP()
 		if err != nil {
 			// Stop 已关闭 listener → Accept 立即报错。用 done 区分「主动关停」（退出，不再
-			// 空转刷错误日志）与「瞬时错误」（继续）。
+			// 空转刷错误日志）与「瞬时错误」（继续，但退避）。
 			select {
 			case <-s.done:
 				return
 			default:
-				slog.Error("banNet accept failed", "error", err)
-				continue
 			}
+
+			if retryDelay == 0 {
+				retryDelay = acceptRetryMinDelay
+			} else {
+				retryDelay *= 2
+				if retryDelay > acceptRetryMaxDelay {
+					retryDelay = acceptRetryMaxDelay
+				}
+			}
+			slog.Error("banNet accept failed, retrying after backoff", "error", err, "backoff", retryDelay)
+			time.Sleep(retryDelay)
+			continue
 		}
+		retryDelay = 0 // 一次成功 Accept 即重置退避——只在连续失败时才升级等待
 
 		if s.ConnMgr.Len() >= config.G.MaxConn {
 			conn.Close()
@@ -133,6 +156,7 @@ func (s *Server) CallConnStartFunc(conn Conn) {
 	if s.ConnStartFunc == nil {
 		return // 未注册连接建立回调，静默跳过
 	}
+	defer recoverConnGoroutine(conn.ID(), "ConnStartFunc")
 	s.ConnStartFunc(conn)
 }
 
@@ -140,5 +164,6 @@ func (s *Server) CallConnStopFunc(conn Conn) {
 	if s.ConnStopFunc == nil {
 		return // 未注册连接关闭回调，静默跳过
 	}
+	defer recoverConnGoroutine(conn.ID(), "ConnStopFunc")
 	s.ConnStopFunc(conn)
 }

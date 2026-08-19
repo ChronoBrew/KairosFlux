@@ -31,6 +31,7 @@ var (
 	OffsetCommits             atomic.Int64 // 投递游标 offset 提交次数
 	CircuitOpen               atomic.Int64 // 下游 sink 熔断器跳到 open 的次数
 	AdmissionShed             atomic.Int64 // 网关自适应准入拒绝（shed）的请求数
+	PanicsRecovered           atomic.Int64 // bannet 连接/请求处理路径捕获并恢复的 panic 次数（应恒为 0，非 0 说明有 bug）
 )
 
 // 仪表：当前瞬时值，由持有者注册回调，快照时实时读取。
@@ -73,6 +74,7 @@ type Snapshot struct {
 	OffsetCommits         int64
 	CircuitOpen           int64
 	AdmissionShed         int64
+	PanicsRecovered       int64
 	MemTableInflightBytes int64
 	MemTableBudgetBytes   int64
 }
@@ -96,6 +98,7 @@ func Take() Snapshot {
 		OffsetCommits:         OffsetCommits.Load(),
 		CircuitOpen:           CircuitOpen.Load(),
 		AdmissionShed:         AdmissionShed.Load(),
+		PanicsRecovered:       PanicsRecovered.Load(),
 		MemTableInflightBytes: memTableInflight(),
 		MemTableBudgetBytes:   memTableBudget.Load(),
 	}
@@ -121,6 +124,7 @@ func LogSnapshot() {
 		"offset_commits", s.OffsetCommits,
 		"circuit_open", s.CircuitOpen,
 		"admission_shed", s.AdmissionShed,
+		"panics_recovered", s.PanicsRecovered,
 		"memtable_inflight_bytes", s.MemTableInflightBytes,
 		"memtable_budget_bytes", s.MemTableBudgetBytes,
 	)

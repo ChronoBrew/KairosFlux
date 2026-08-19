@@ -115,7 +115,22 @@ func DecodeScanResponse(payload []byte) (status string, entries []ScanEntry, err
 	count := int(binary.LittleEndian.Uint32(payload[off : off+4]))
 	off += 4
 
-	entries = make([]ScanEntry, 0, count)
+	// count 是攻击者/故障对端可控的 u32，最大 ~42 亿。在验证到底有没有那么多字节之前
+	// 就按 count 原样 make([]ScanEntry, 0, count) 预分配容量，是 TLV 解析器的经典
+	// 内存放大漏洞：ScanEntry 在 64 位平台上是 48 字节（两个切片头），count 撑到
+	// 0xFFFFFFFF 时这一行会尝试预留约 206GiB 容量。每个条目最少占 8 字节
+	// （keyLen+valueLen 头），故 count 不可能超过剩余负载字节数/8——按这个真实
+	// 上界夹住预分配容量，不管声明的 count 有多离谱，预分配都不会超过 payload 本身
+	// 的大小量级。
+	maxPossibleEntries := (len(payload) - off) / 8
+	preAlloc := count
+	if preAlloc > maxPossibleEntries {
+		preAlloc = maxPossibleEntries
+	}
+	if preAlloc < 0 {
+		preAlloc = 0
+	}
+	entries = make([]ScanEntry, 0, preAlloc)
 	for i := 0; i < count; i++ {
 		if off+8 > len(payload) {
 			return "", nil, fmt.Errorf("scan response truncated at entry %d header", i)
