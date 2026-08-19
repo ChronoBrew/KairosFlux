@@ -24,6 +24,7 @@ var _ handler.Conn = &fakeConnForDivZero{}
 
 func (f *fakeConnForDivZero) Start()                           {}
 func (f *fakeConnForDivZero) Stop()                            {}
+func (f *fakeConnForDivZero) BeginClosing()                    {}
 func (f *fakeConnForDivZero) TCPConn() *net.TCPConn            { return nil }
 func (f *fakeConnForDivZero) ID() uint32                       { return 5 }
 func (f *fakeConnForDivZero) RemoteAddr() net.Addr             { return nil }

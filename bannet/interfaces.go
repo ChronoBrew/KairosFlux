@@ -4,6 +4,8 @@
 
 package bannet
 
+import "time"
+
 // Codec 的定义见 codec.go（类型别名，指向 bannet/codec.Codec）——重构第一步
 // 把编解码相关类型迁到 bannet/codec 子包，根包只保留别名，故此处不再重复定义。
 
@@ -21,4 +23,12 @@ type ConnRegistry interface {
 	Get(connID uint32) Conn
 	Len() int
 	ClearConn()
+
+	// BeginClosingAll/Wait 是重构第四步（修复 bug①）新增的两个方法，
+	// 支撑 Server 优雅关闭的"广播 -> 等待 -> 强制"三段式：
+	// BeginClosingAll 给所有连接广播"决定关闭"（不物理清理），Wait
+	// 阻塞到所有连接都已完成物理关闭或超时。ClearConn 保留作为超时后
+	// 的强制兜底，语义不变。
+	BeginClosingAll()
+	Wait(timeout time.Duration) bool
 }

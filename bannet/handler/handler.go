@@ -38,6 +38,14 @@ import "net"
 type Conn interface {
 	Start()
 	Stop()
+	// BeginClosing 标记连接进入生命周期的 Closing 阶段（幂等）：只广播
+	// "决定关闭"的信号，不做任何物理清理，socket 与写路径此时仍然可用。
+	// 是重构第四步（拆 lifecycle 包）新增的方法，供 Server 优雅关闭时批量
+	// 广播给所有连接——Reader 据此在完成当前在途请求后主动退出读循环，
+	// 而不是被 Stop() 强行打断阻塞的读。与 Start/Stop 一样属于连接生命周期
+	// 管理，放进同一个接口不算引入新的关注点，只是这个接口本来就同时承担
+	// "业务发送 API" 与"生命周期控制"两类方法。
+	BeginClosing()
 	TCPConn() *net.TCPConn
 	ID() uint32
 	RemoteAddr() net.Addr

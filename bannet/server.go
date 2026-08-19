@@ -124,6 +124,37 @@ func (s *Server) acceptLoop(listener *net.TCPListener) {
 	}
 }
 
+// connGracePeriod 是优雅关闭里"等所有连接自己收尾"的上限——超过这个时间
+// 还没收尾完的连接（比如卡住的 Handler、极慢的客户端）会被 ClearConn 强制
+// 关闭，不无限等待。
+const connGracePeriod = 5 * time.Second
+
+// Stop 优雅关闭：detect（不再接受新连接/新工作）-> broadcast+wait（先排空
+// 分发层，再通知连接层关闭并等它们自己收尾）-> close（物理关闭剩下的
+// 一切），借鉴调研 Tokio 一节的三段式模型（不照抄其具体类型，用 context
+// 风格的广播 + WaitGroup 风格的等待表达，见 docs/rfc/bannet-重构.md C.3）。
+//
+// 这是本次重构修复 bug①的落地点：此前的实现是 ClearConn（立即强制关闭
+// 所有连接）在前、MsgHandle.Stop（此前也不等 worker 真正跑完）在后——
+// 两者都不等在途的 DoMsgHandle 处理完，一个正在业务逻辑里执行的请求，
+// 其响应会因为连接已经被 cancel/关闭而发不出去，见
+// docs/rfc/bannet-重构.md B.2 记录的这个真实竞态窗口。
+//
+//  1. 停止接受新连接/新的顶层信号（不变）。
+//  2. MsgHandle.Stop：先等 worker 池排空——此后不会再有任何 worker 往
+//     任何连接投递响应。必须放在 ConnMgr.BeginClosingAll 之前：如果反过来，
+//     一个连接可能在它对应的 worker 还没处理完排队/在途请求时就已经被
+//     判定"可以物理关闭"（连接自身的 Writer 只知道"这个连接的读循环
+//     退出了"，并不知道全局 worker 池是否还有它的活——这两者是不同粒度
+//     的信息，只能靠这里的顺序来保证正确的先后关系）。
+//  3. BeginClosingAll：广播"决定关闭"给所有连接——只标记 Closing，不做
+//     物理清理，写路径仍然打开（见 lifecycle 包与 Connection.BeginClosing
+//     的注释）；此时调用是安全的，因为上一步已经保证不会再有 worker
+//     池的响应因为这一步而丢失。
+//  4. ConnMgr.Wait：等所有连接自己完成收尾（读循环感知到 Closing 后退出
+//     -> Writer 排空 -> 物理关闭），有界等待（connGracePeriod）。
+//  5. ClearConn：强制关闭超过等待时间仍未收尾的连接（正常情况下这里应该
+//     已经没有连接剩下，是慢连接/卡住 Handler 的兜底，不是常规路径）。
 func (s *Server) Stop() {
 	s.stopOnce.Do(func() {
 		slog.Info("banNet server stopping", "addr", fmt.Sprintf("%s:%d", s.IP, s.Port))
@@ -131,8 +162,14 @@ func (s *Server) Stop() {
 		if s.listener != nil {
 			s.listener.Close() // 解除 AcceptTCP 阻塞
 		}
-		s.ConnMgr.ClearConn() // 关闭所有在途连接（各自 cancel + 关 conn）
-		s.MsgHandle.Stop()    // 关闭 worker 池
+
+		s.MsgHandle.Stop()          // 先等 worker 池排空在途+排队的请求
+		s.ConnMgr.BeginClosingAll() // 广播：决定关闭，写路径仍打开
+		if !s.ConnMgr.Wait(connGracePeriod) {
+			slog.Warn("banNet graceful shutdown grace period exceeded, forcing remaining connections closed")
+		}
+		s.ConnMgr.ClearConn() // 强制关闭仍未自行收尾的连接（正常情况下应为空）
+
 		slog.Debug("banNet server stopped")
 	})
 }
@@ -156,7 +193,11 @@ func (s *Server) CallConnStartFunc(conn Conn) {
 	if s.ConnStartFunc == nil {
 		return // 未注册连接建立回调，静默跳过
 	}
-	defer recoverConnGoroutine(conn.ID(), "ConnStartFunc")
+	// lc 传 nil：这里只持有 Conn 接口（业务契约），拿不到具体连接的
+	// lifecycle——回调 panic 时仍然 recover+记录（不崩进程），只是不会
+	// 触发状态机的 EventPanicRecovered 收敛（那是 Start/StartReader/
+	// StartWriter 这三个连接自身的收发 goroutine 才会做的事）。
+	defer recoverConnGoroutine(conn.ID(), "ConnStartFunc", nil)
 	s.ConnStartFunc(conn)
 }
 
@@ -164,6 +205,6 @@ func (s *Server) CallConnStopFunc(conn Conn) {
 	if s.ConnStopFunc == nil {
 		return // 未注册连接关闭回调，静默跳过
 	}
-	defer recoverConnGoroutine(conn.ID(), "ConnStopFunc")
+	defer recoverConnGoroutine(conn.ID(), "ConnStopFunc", nil)
 	s.ConnStopFunc(conn)
 }

@@ -17,6 +17,7 @@ type fakeConn struct {
 
 func (c *fakeConn) Start()                                  {}
 func (c *fakeConn) Stop()                                   {}
+func (c *fakeConn) BeginClosing()                           {}
 func (c *fakeConn) TCPConn() *net.TCPConn                   { return nil }
 func (c *fakeConn) ID() uint32                              { return 1 }
 func (c *fakeConn) RemoteAddr() net.Addr                    { return nil }

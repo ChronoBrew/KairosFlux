@@ -2,7 +2,6 @@ package bannet
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/NeverENG/BanDB/bannet/codec"
 	"github.com/NeverENG/BanDB/bannet/dispatch"
+	"github.com/NeverENG/BanDB/bannet/lifecycle"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/internal/metrics"
 )
@@ -21,13 +21,23 @@ import (
 // 顶部统一挂的兜底：这些 goroutine 里除了帧解析代码，还会调用外部回调
 // （ConnStartFunc/ConnStopFunc）与业务分派（MsgHandle.DoMsgHandle 已有自己的
 // recover，这里是第二层，防的是分派之外的代码，如帧解析本身、回调本身的 bug）。
-// 未被捕获的 panic 会终止整个进程而不只是这一个连接——见 msghandle.go 的
+// 未被捕获的 panic 会终止整个进程而不只是这一个连接——见 dispatch.go 的
 // DoMsgHandle 同款注释，该结论已用故意 panic 的 Handler 验证过。
-func recoverConnGoroutine(connID uint32, where string) {
+//
+// lc 非 nil 时，recover 到的 panic 会作为 EventPanicRecovered 事件推进
+// 状态机——这是任务要求的"四种终止诱因都收敛到 Closing"里的第四种。调用方
+// （StartReader/StartWriter）刻意把这个 defer 安排在 defer c.Stop() 之后
+// 注册（见各自函数体），这样 LIFO 展开时它先于 c.Stop() 执行，Transition
+// 记录的 EventPanicRecovered 才会是"生效的"那次收敛，而不是被 c.Stop()
+// 内部默认的 EventExplicitStop 抢先。
+func recoverConnGoroutine(connID uint32, where string, lc *lifecycle.Lifecycle) {
 	if r := recover(); r != nil {
 		metrics.PanicsRecovered.Add(1)
 		slog.Error("banNet connection goroutine panicked, recovered",
 			"connID", connID, "where", where, "panic", r, "stack", string(debug.Stack()))
+		if lc != nil {
+			lc.Transition(lifecycle.EventPanicRecovered)
+		}
 	}
 }
 
@@ -43,11 +53,22 @@ type Connection struct {
 	ConnID    uint32       // 连接唯一 ID
 	MsgHandle Dispatcher
 
-	// 生命周期：ctx 是唯一的取消信号。Stop 调 cancel() 广播退出、并关闭 Conn 以解除
-	// Reader 的阻塞读；Writer 与 Start 都 select ctx.Done()。stopOnce 保证 Stop 幂等。
-	ctx      context.Context
-	cancel   context.CancelFunc
-	stopOnce sync.Once
+	// 生命周期：显式状态机（Idle/Active/Closing/Closed），取代此前裸的
+	// ctx/cancel/stopOnce 组合——见 docs/rfc/bannet-重构.md C.1，以及
+	// bannet/lifecycle 包顶部注释里 Draining（决定关闭但写路径仍打开）与
+	// Done（物理关闭）两个信号的区分，这是修复 bug①（优雅关闭丢响应）的
+	// 关键机制。
+	lc *lifecycle.Lifecycle
+
+	// readerDone 在 StartReader 的 goroutine 返回前关闭，是"不会再有新的
+	// SendMsg/SendBuffMsg 调用"的信号——Writer 靠它判断"可以做最后一次排空
+	// 然后退出了"，而不是靠物理关闭信号（那样会有响应来不及写出就被关闭
+	// socket 的竞态，见 Stop 与 StartWriter 的注释）。
+	readerDone chan struct{}
+	// writerDone 在 StartWriter 的 goroutine 返回前关闭。Stop 在物理关闭
+	// socket 之前会等这个信号，确保 Writer 已经把队列里排空、不会有已经
+	// 写完一半或即将要写的响应被"物理关闭"打断。
+	writerDone chan struct{}
 
 	msgChan     chan []byte // 高优写通道
 	msgBuffChan chan []byte // 普通写通道
@@ -62,14 +83,14 @@ type Connection struct {
 }
 
 func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *Server) *Connection {
-	ctx, cancel := context.WithCancel(context.Background())
 	c := &Connection{
 		TCPServer:   server,
 		Conn:        conn,
 		ConnID:      connID,
 		MsgHandle:   handle,
-		ctx:         ctx,
-		cancel:      cancel,
+		lc:          lifecycle.New(),
+		readerDone:  make(chan struct{}),
+		writerDone:  make(chan struct{}),
 		msgChan:     make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
 		msgBuffChan: make(chan []byte, config.G.MaxMsgChanLen),
 		property:    make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
@@ -79,6 +100,37 @@ func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *
 	}
 	c.TCPServer.Conns().Add(c)
 	return c
+}
+
+// State 返回连接当前的生命周期状态，供测试/可观测性查询——见
+// docs/rfc/bannet-重构.md C.1 状态表："谁能查询 | Lifecycle.State()"。
+// 未放进 Conn 接口（业务代码不需要关心这个），只在持有具体类型时可用。
+func (c *Connection) State() lifecycle.State {
+	return c.lc.State()
+}
+
+// BeginClosing 实现 Conn 接口：标记本连接进入 Closing（幂等），只广播
+// "决定关闭"信号，不做任何物理清理——socket 与写路径此时仍然可用。供
+// Server 优雅关闭时批量广播给所有连接使用（见 conn_manager.go 的
+// BeginClosingAll），Reader 的读循环据此在完成当前在途请求后主动退出，
+// 而不是被动等外部强行打断阻塞的读。
+//
+// 一个关键的补充：对于此刻正阻塞在 io.ReadFull 里等下一帧的连接（也就是
+// "空闲"连接——没有在途请求，只是在等对端下一次发送，这在长连接/连接池
+// 场景下是最常见的状态），仅仅关闭 Draining 信号本身是不够的：读循环只在
+// 每次成功解出一帧、准备读下一帧之前才会检查 Draining，一个阻塞中的读不会
+// 主动醒来检查它。如果不额外处理，Server 优雅关闭时 ConnMgr.Wait 会为
+// 每一个空闲连接白白等满整个宽限期（实测：一个仅有 3 个长连接节点的集成
+// 测试，Stop 耗时从原来的近乎瞬间涨到近 30 秒）——而空闲连接本来就没有
+// 任何"在途请求的响应"需要保护，强制中断它的阻塞读不会丢失任何东西。
+// 用 SetReadDeadline(now) 强制打断（无论读是否正阻塞中，未来的读也会立即
+// 超时），读循环会像遇到真实读超时一样从 Decode 返回、被 EventReadTimeout
+// 收敛，走正常的收尾路径——不影响写路径（Draining 语义不变，仍然只打断
+// 读，不关 socket）。
+func (c *Connection) BeginClosing() {
+	if c.lc.Transition(lifecycle.EventExplicitStop) {
+		_ = c.Conn.SetReadDeadline(time.Now())
+	}
 }
 
 // connReadBufSize 是每连接读缓冲大小。帧头与 msgID 都只有几字节，无缓冲时读一帧需要
@@ -104,10 +156,17 @@ func (c *Connection) resetReadDeadline() {
 }
 
 func (c *Connection) StartReader() {
-	defer recoverConnGoroutine(c.ConnID, "StartReader")
+	// 注意注册顺序：defer c.Stop() 在前，defer close(c.readerDone) 在后，
+	// defer recoverConnGoroutine 最后——LIFO 展开时执行顺序是
+	// recoverConnGoroutine（若有 panic，先把 EventPanicRecovered 记进状态机）
+	// -> close(readerDone)（通知 Writer 可以做最后排空了）-> c.Stop()（等
+	// Writer 排空完再物理关闭）。这个顺序是 bug①修复能成立的前提，调整前
+	// 请重新读一遍 Stop/StartWriter 的注释。
+	defer c.Stop()
 	slog.Debug("conn reader started", "connID", c.ConnID)
 	defer slog.Debug("conn reader exited", "connID", c.ConnID)
-	defer c.Stop()
+	defer close(c.readerDone)
+	defer recoverConnGoroutine(c.ConnID, "StartReader", c.lc)
 
 	// reader 在循环外创建：仅本 goroutine 读取该连接，故可安全复用。
 	reader := bufio.NewReaderSize(c.Conn, connReadBufSize)
@@ -127,18 +186,31 @@ func (c *Connection) StartReader() {
 				// 对端声称的帧长超过上限：读取负载前已拒绝，不会按其声称的
 				// 长度分配内存——沿用重写前的 Warn 级别（值得单独关注/计数）。
 				slog.Warn("conn frame exceeds max package size", "connID", c.ConnID, "error", err)
+				c.lc.Transition(lifecycle.EventReadError)
 			case errors.Is(err, io.EOF):
 				// io.ReadFull 只在帧边界（尚未读到任何字节）返回 io.EOF：
 				// 对端在两帧之间正常断开，是最常见的退出路径，沿用 Debug 级别。
 				slog.Debug("conn read failed", "connID", c.ConnID, "error", err)
+				c.lc.Transition(lifecycle.EventEOF)
 			default:
-				// 其余情况（头部之外的位置提前断开 → io.ErrUnexpectedEOF、
-				// 解析头部失败、读超时等）沿用 Error 级别；具体是在哪一步失败
-				// 已由 Decode 通过 %w 链保留在 err 的文本里（"decode: read
-				// msgID: ..." 等），无需在此再区分。
-				slog.Error("conn decode frame failed", "connID", c.ConnID, "error", err)
+				var netErr net.Error
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					// 读超时（SetReadDeadline 到期）：对端不配合但连接本身
+					// 没有传输层错误，是我们主动放弃这个连接，Debug 级别，
+					// 与 EOF 同级但打上不同的 event 标签，供状态机/日志区分
+					// "对端主动挂断" vs "我们主动放弃"。
+					slog.Debug("conn read timeout", "connID", c.ConnID, "error", err)
+					c.lc.Transition(lifecycle.EventReadTimeout)
+				} else {
+					// 其余情况（头部之外的位置提前断开 → io.ErrUnexpectedEOF、
+					// 解析头部失败等）沿用 Error 级别；具体是在哪一步失败
+					// 已由 Decode 通过 %w 链保留在 err 的文本里（"decode: read
+					// msgID: ..." 等），无需在此再区分。
+					slog.Error("conn decode frame failed", "connID", c.ConnID, "error", err)
+					c.lc.Transition(lifecycle.EventReadError)
+				}
 			}
-			return // defer Stop 取消 ctx、关闭连接（含读超时：net.Error.Timeout()）
+			return // defer 链负责收敛：Writer 排空后再物理关闭，见上方注释
 		}
 
 		req := dispatch.NewRequest(msg, c)
@@ -153,19 +225,41 @@ func (c *Connection) StartReader() {
 		// 读循环生命周期上——不是给旧路径补追踪，是让这类 goroutine 不再
 		// 存在，详见 bannet/dispatch/dispatch.go 的 SendMsgToTaskQueue 注释。
 		c.MsgHandle.SendMsgToTaskQueue(req)
+
+		// 每处理完一帧，检查是否已经进入 Closing（比如 Server 正在优雅
+		// 关闭）——如果是，主动退出读循环，不再尝试读下一帧（那可能是一次
+		// 永久阻塞的读，会让优雅关闭的等待失去意义）。这一步是 bug①修复的
+		// 另一半：只有 Reader 主动让出，Server 端的等待才有个尽头。此时
+		// 上面这次 SendMsgToTaskQueue 已经同步跑完（同步分发模式）或者已经
+		// 把请求交给了 worker 池（池模式，池的排空由 MsgHandle.Stop 保证），
+		// 不会有"检查早了、请求其实还没处理完"的问题。
+		select {
+		case <-c.lc.Draining():
+			slog.Debug("conn reader stopping: closing in progress", "connID", c.ConnID)
+			return
+		default:
+		}
 	}
 }
 
 func (c *Connection) StartWriter() {
-	defer recoverConnGoroutine(c.ConnID, "StartWriter")
+	// 与 StartReader 对称的注册顺序，理由同上。
+	defer c.Stop()
 	slog.Debug("conn writer started", "connID", c.ConnID)
 	defer slog.Debug("conn writer exited", "connID", c.ConnID)
-	defer c.Stop()
+	defer close(c.writerDone)
+	defer recoverConnGoroutine(c.ConnID, "StartWriter", c.lc)
 
 	for {
-		// 优先冲刷高优通道，其空时再取普通通道；两处都随 ctx 取消而退出。
 		select {
-		case <-c.ctx.Done():
+		case <-c.readerDone:
+			// Reader 已经退出：不会再有新的 SendMsg/SendBuffMsg 调用（它们
+			// 只可能由本连接的 Handle() 触发，而 Handle() 只在 Reader 的
+			// 读循环里同步执行，或在 Reader 还活着时投递给的 worker 池里
+			// 执行——Server 优雅关闭时保证了 MsgHandle.Stop 会先排空 worker
+			// 池再让 Reader 感知 Draining 退出，见 server.go 的 Stop）。
+			// 现在可以安全地把已经排队但还没写出的内容一次性冲刷完，再退出。
+			c.drainPendingWrites()
 			return
 		case data := <-c.msgChan:
 			if err := c.write(data); err != nil {
@@ -173,7 +267,8 @@ func (c *Connection) StartWriter() {
 			}
 		default:
 			select {
-			case <-c.ctx.Done():
+			case <-c.readerDone:
+				c.drainPendingWrites()
 				return
 			case data := <-c.msgChan:
 				if err := c.write(data); err != nil {
@@ -185,6 +280,29 @@ func (c *Connection) StartWriter() {
 				}
 			}
 		}
+	}
+}
+
+// drainPendingWrites 非阻塞地把 msgChan/msgBuffChan 里已经排队但还没写出的
+// 内容写完。只应该在确认 readerDone 已关闭（不会再有新内容被投递）之后调用，
+// 否则这里的"排空"只是一个时间点快照，之后还可能有新内容进来但已经没有
+// 循环再去处理它——这是 bug①修复的核心步骤，必须在 Stop 物理关闭 socket
+// 之前完成，见 Stop 的注释。
+func (c *Connection) drainPendingWrites() {
+	for {
+		select {
+		case data := <-c.msgChan:
+			_ = c.write(data) // 尽力而为：关闭流程里，写失败只记录日志，不重试
+			continue
+		default:
+		}
+		select {
+		case data := <-c.msgBuffChan:
+			_ = c.write(data)
+			continue
+		default:
+		}
+		return
 	}
 }
 
@@ -206,23 +324,54 @@ func (c *Connection) write(data []byte) error {
 }
 
 func (c *Connection) Start() {
-	defer recoverConnGoroutine(c.ConnID, "Start")
+	defer recoverConnGoroutine(c.ConnID, "Start", c.lc)
+	c.lc.MarkActive()
 	slog.Debug("conn established", "connID", c.ConnID)
 	go c.StartReader()
 	go c.StartWriter()
 	c.TCPServer.CallConnStartFunc(c) // 用户注册的回调；一样可能 panic，同一顶兜底
-	<-c.ctx.Done()                   // 阻塞至连接被取消（Reader/Writer 出错或 Stop 触发）
+	<-c.lc.Done()                    // 阻塞至连接被物理关闭（Reader/Writer 出错或 Stop 触发）
 }
 
+// connStopWriterDrainTimeout 是 Stop 等 Writer 排空的上限：正常情况下这个
+// 等待应该近乎瞬间完成（Writer 只是把内存里已经排队的字节写给一个此时还
+// 打开着的 socket），设这个上限只是为了避免"Writer 从未真正启动过"这种
+// 边界场景（比如构造后从未 Start 就直接 Stop）或极端异常情况下把 Stop
+// 阻塞住——超时后记一条警告并继续物理关闭，不无限等待。
+const connStopWriterDrainTimeout = 5 * time.Second
+
 func (c *Connection) Stop() {
-	c.stopOnce.Do(func() {
-		slog.Debug("conn terminated", "connID", c.ConnID)
-		c.cancel()     // 唯一取消信号：唤醒 Writer 与 Start 的 <-ctx.Done()
-		c.Conn.Close() // 解除 Reader 的阻塞读，使其返回
-		c.TCPServer.CallConnStopFunc(c)
-		c.TCPServer.Conns().Remove(c)
-		// 不 close msgChan / msgBuffChan：worker 可能仍在 SendBuffMsg，close 会触发 send on closed channel
-	})
+	// 复用 BeginClosing 而不是直接调 c.lc.Transition：BeginClosing 除了
+	// 转状态，还会强制打断当前可能正阻塞的读（SetReadDeadline(now)）——
+	// 直接调用 Stop（不经过 Server 优雅关闭的 BeginClosingAll）在连接仍是
+	// Active、Reader 正阻塞等下一帧的场景下很常见（比如测试直接调用
+	// conn.Stop()，或者本方法自己被 EOF/超时/panic 之外的路径调用），如果
+	// 不强制打断，下面等 writerDone 的逻辑会因为 Reader 永远不会自己退出
+	// 而白白等满整个超时——这不是理论场景，是被测试直接复现过的真实时序。
+	c.BeginClosing()
+	if !c.lc.Close() {
+		return // 另一个并发的 Stop 调用已经在做/做完了物理清理
+	}
+	slog.Debug("conn terminated", "connID", c.ConnID)
+
+	// 物理关闭 socket 之前，先等 Writer 确认已经把队列排空——这是 bug①
+	// （Server.Stop 不等在途请求处理完，响应可能因连接已关闭而发不出去）的
+	// 修复核心：Writer 只有在观察到 readerDone 关闭（不会再有新响应被投递）
+	// 之后才会排空并关闭 writerDone，这里等它，就保证了不会有"已经产出但
+	// 还没写出的响应"在 socket 关闭时被丢弃。只有真正 Start 过的连接才需要
+	// 等（Started() 为 false 时说明 StartWriter 从未运行过，等它没有意义）。
+	if c.lc.Started() {
+		select {
+		case <-c.writerDone:
+		case <-time.After(connStopWriterDrainTimeout):
+			slog.Warn("conn stop: writer did not drain within timeout, closing anyway", "connID", c.ConnID)
+		}
+	}
+
+	c.Conn.Close() // 解除 Reader 的阻塞读（若它还没自己退出的话），使其返回
+	c.TCPServer.CallConnStopFunc(c)
+	c.TCPServer.Conns().Remove(c)
+	// 不 close msgChan / msgBuffChan：worker 可能仍在 SendBuffMsg，close 会触发 send on closed channel
 }
 func (c *Connection) ID() uint32 {
 	return c.ConnID
@@ -243,11 +392,14 @@ func (c *Connection) SendMsg(msgID string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	// 随 ctx 取消而返回错误，避免连接关闭后 Writer 不再排空时永久阻塞。
+	// 只随"物理关闭"（Done）而返回错误，不随"决定关闭"（Draining）——
+	// Closing 阶段写路径必须保持可用，否则在途请求处理完之后产出的响应会
+	// 因为连接被判定为"已关闭"而发不出去，这正是 bug①的病因。见
+	// bannet/lifecycle 包顶部关于 Draining 与 Done 的注释。
 	select {
 	case c.msgChan <- packet:
 		return nil
-	case <-c.ctx.Done():
+	case <-c.lc.Done():
 		return errConnClosed
 	}
 }
@@ -260,7 +412,7 @@ func (c *Connection) SendBuffMsg(msgID string, data []byte) error {
 	select {
 	case c.msgBuffChan <- packet:
 		return nil
-	case <-c.ctx.Done():
+	case <-c.lc.Done():
 		return errConnClosed
 	}
 }
