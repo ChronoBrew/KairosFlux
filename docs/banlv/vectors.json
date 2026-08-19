@@ -1,0 +1,79 @@
+[
+  {
+    "name": "put_request_basic",
+    "description": "PUT 请求：key=\"k1\" value=\"v1\"",
+    "msg_id": "PUT",
+    "data_hex": "02000000020000006b317631",
+    "frame_hex": "0c000000030050555402000000020000006b317631"
+  },
+  {
+    "name": "get_request_basic",
+    "description": "GET 请求：key=\"k1\"",
+    "msg_id": "GET",
+    "data_hex": "020000006b31",
+    "frame_hex": "060000000300474554020000006b31"
+  },
+  {
+    "name": "del_request_basic",
+    "description": "DEL 请求：key=\"k1\"（负载形状与 GET 相同）",
+    "msg_id": "DEL",
+    "data_hex": "020000006b31",
+    "frame_hex": "06000000030044454c020000006b31"
+  },
+  {
+    "name": "resp_ok_put",
+    "description": "PUT/DEL 成功响应：status=\"ok\"",
+    "msg_id": "OK",
+    "data_hex": "026f6b",
+    "frame_hex": "0300000002004f4b026f6b"
+  },
+  {
+    "name": "resp_ok_get_with_value",
+    "description": "GET 成功响应：status=\"ok\" + value=\"v1\"",
+    "msg_id": "OK",
+    "data_hex": "026f6b020000007631",
+    "frame_hex": "0900000002004f4b026f6b020000007631"
+  },
+  {
+    "name": "resp_err_notfound",
+    "description": "错误响应：status=\"notfound\"（键不存在，非故障）",
+    "msg_id": "ERR",
+    "data_hex": "086e6f74666f756e64",
+    "frame_hex": "090000000300455252086e6f74666f756e64"
+  },
+  {
+    "name": "resp_err_dropped",
+    "description": "错误响应：status=\"dropped\"（被 PreHandle 钩子按策略丢弃）",
+    "msg_id": "ERR",
+    "data_hex": "0764726f70706564",
+    "frame_hex": "0800000003004552520764726f70706564"
+  },
+  {
+    "name": "resp_err_overloaded",
+    "description": "错误响应：status=\"overloaded\"（网关自适应准入 shed，可重试）",
+    "msg_id": "ERR",
+    "data_hex": "0a6f7665726c6f61646564",
+    "frame_hex": "0b00000003004552520a6f7665726c6f61646564"
+  },
+  {
+    "name": "resp_err_server",
+    "description": "错误响应：status=\"error\"（服务端内部错误）",
+    "msg_id": "ERR",
+    "data_hex": "056572726f72",
+    "frame_hex": "060000000300455252056572726f72"
+  },
+  {
+    "name": "put_request_quote",
+    "description": "PUT 请求：行情快照，key=\"quote:2026-08-17:600000\"",
+    "msg_id": "PUT",
+    "data_hex": "170000007700000071756f74653a323032362d30382d31373a3630303030307b22636f6465223a22363030303030222c2264617465223a22323032362d30382d3137222c226f70656e223a31302e302c2268696768223a31302e352c226c6f77223a392e382c22636c6f7365223a31302e322c22766f6c756d65223a313030303030302c22707265765f636c6f7365223a31302e307d",
+    "frame_hex": "960000000300505554170000007700000071756f74653a323032362d30382d31373a3630303030307b22636f6465223a22363030303030222c2264617465223a22323032362d30382d3137222c226f70656e223a31302e302c2268696768223a31302e352c226c6f77223a392e382c22636c6f7365223a31302e322c22766f6c756d65223a313030303030302c22707265765f636c6f7365223a31302e307d"
+  },
+  {
+    "name": "put_request_malformed_lengths",
+    "description": "畸形 PUT 负载：keyLen 声明为 100 但实际数据不足——外层帧头(dataLen)正确、可被 bannet.DataPack 正常解出整帧，畸形性在 PUT 负载内部的keyLen/valueLen 字段与实际字节数不符，由 service/ingesthook.Filter 在应用层拒绝（预期两端客户端都应收到 resp_err_dropped）。",
+    "msg_id": "PUT",
+    "data_hex": "64000000000000006162",
+    "frame_hex": "0a000000030050555464000000000000006162"
+  }
+]
