@@ -1,3 +1,6 @@
+//go:build experimental
+
+// 隔离说明见同包 command.go 顶部注释。
 package shardkv
 
 import (

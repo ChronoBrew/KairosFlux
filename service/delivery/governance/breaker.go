@@ -1,3 +1,12 @@
+//go:build experimental
+
+// 本包未被任何生产投递路径接线——service.StartDeliveryFromConfig 骨架期只接
+// 单个 FileSink（见 service/delivery_bootstrap.go 注释），多 sink 治理路由的
+// 接线留待后续。用 //go:build experimental 隔离，默认 `go build ./...` 不编译；
+// 需要时用 `go build -tags experimental ./...`。不物理删除：测试齐全
+// （66.3% 覆盖），下游增加第二个真实 sink 时是现成的治理层起点。见
+// docs/iteration-2026-08-19-slimdown-quant-adapt.md 的瘦身路线记录。
+//
 // Package governance 是投递层的「治理」子包，借鉴 dubbo-go 的服务治理模型但落在数据面：
 // 把多个下游 sink 当作一组要被治理的后端——熔断（breaker）、健康感知路由（router）、
 // 健康探测（health）、退避重试（retry）。全程零依赖，只用标准库。

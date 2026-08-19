@@ -1,3 +1,7 @@
+//go:build experimental
+
+// 隔离说明见同包 command.go 顶部注释。
+//
 // Package shardkv 是「Multi-Raft 分片 KV」集成层（v1）：把已打通的 Multi-Raft 接进 KV——
 // 每个分片是一个 Raft 组、写按 key 路由到分片组的 leader、每分片一个状态机（FSM）把已提交
 // 命令应用到该分片的 store。
