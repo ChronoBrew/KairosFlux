@@ -66,6 +66,28 @@ type GlobalConfig struct {
 	DeliveryIntervalMs  int    // 投递轮询间隔（毫秒）
 	DeliveryExactlyOnce bool   // 用幂等 sink（按 key HWM 去重）达 effectively-once；关则 at-least-once
 
+	// DeliverySinkType 选择投递目标："file"（默认，单一 FileSink）或 "clickhouse"
+	// （ClickHouseSink 为主 + FileSink 兜底，经 governance.Router 健康感知路由：
+	// ClickHouse 不健康时自动降级落文件，恢复后自动切回主）。
+	DeliverySinkType string
+
+	// ClickHouse sink 配置，仅 DeliverySinkType="clickhouse" 时生效。
+	ClickHouseAddr     string // HTTP 接口地址，如 "http://127.0.0.1:8123"
+	ClickHouseDatabase string
+	ClickHouseTable    string
+	ClickHouseUsername string // 可选；为空则不发 Basic Auth
+	ClickHousePassword string
+
+	ClickHouseTimeoutMs      int // 单次 HTTP 插入请求超时（毫秒）
+	ClickHouseMaxRetries     int // Send 内部重试次数（含首次尝试）
+	ClickHouseRetryBackoffMs int // 重试间隔（毫秒，固定退避）
+
+	// DeliveryBreakerFailThreshold/DeliveryBreakerOpenTimeoutMs 是 governance.Router
+	// 为每个 sink 配的熔断器参数：连续失败达阈值即 open，经 openTimeout 后转 half-open
+	// 探测。仅 DeliverySinkType="clickhouse" 时生效。
+	DeliveryBreakerFailThreshold int
+	DeliveryBreakerOpenTimeoutMs int
+
 	// RetentionEnabled 开启保留期回收：投递游标推进后，丢弃已整体投递完的 SSTable 文件。
 	// 默认关闭——开启即意味着已投递的数据不再可从本地读回，这是「缓冲」而非「存储」的语义，
 	// 必须由使用方明示。关闭时缓冲只增不减，长跑必然涨满磁盘。
@@ -133,6 +155,16 @@ func defaultGlobalConfig() *GlobalConfig {
 		DeliveryIntervalMs:       1000,
 		DeliveryExactlyOnce:      true,  // 启用投递时默认走幂等 sink
 		RetentionEnabled:         false, // 默认不回收：语义变化必须显式开启
+
+		DeliverySinkType:             "file", // 默认单一 FileSink，不接 ClickHouse
+		ClickHouseAddr:               "http://127.0.0.1:8123",
+		ClickHouseDatabase:           "default",
+		ClickHouseTable:              "quote_snapshot",
+		ClickHouseTimeoutMs:          5000,
+		ClickHouseMaxRetries:         3,
+		ClickHouseRetryBackoffMs:     200,
+		DeliveryBreakerFailThreshold: 3,
+		DeliveryBreakerOpenTimeoutMs: 10000,
 
 		ShardCount:            1,   // 默认单分片
 		VNodes:                128, // 一致性哈希默认虚拟节点数
