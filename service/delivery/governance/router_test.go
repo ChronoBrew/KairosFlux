@@ -1,6 +1,3 @@
-//go:build experimental
-
-// 隔离说明见同包 breaker.go 顶部注释。
 package governance
 
 import (
@@ -68,6 +65,62 @@ func TestRouterAllUnavailableReturnsError(t *testing.T) {
 	r := NewRouter([]delivery.Sink{s1, s2}, 3, time.Second)
 	if err := r.Send(context.Background(), batch); !errors.Is(err, ErrNoHealthySink) {
 		t.Fatalf("expected ErrNoHealthySink, got %v", err)
+	}
+}
+
+// TestPriorityRouter_FailsOverToBackupAndReturnsToPrimary 验证「主 + 兜底」语义：
+// 主 sink 健康时永远优先命中（不像 round-robin 会分流到兜底）；主故障时自动降级到
+// 兜底；主恢复健康后（模拟运维介入/自愈，不依赖熔断器的 half-open 探测节奏）
+// 立即切回主——这正是 ClickHouse 主 + FileSink 兜底场景需要的行为。
+func TestPriorityRouter_FailsOverToBackupAndReturnsToPrimary(t *testing.T) {
+	primary := &stubSink{name: "primary", healthy: true}
+	backup := &stubSink{name: "backup", healthy: true}
+	r := NewPriorityRouter([]delivery.Sink{primary, backup}, 1, time.Millisecond)
+
+	// 主健康：即便兜底也健康，round-robin 会分流，priority 必须恒选主。
+	for i := 0; i < 3; i++ {
+		if err := r.Send(context.Background(), batch); err != nil {
+			t.Fatalf("主健康时 Send 不应报错: %v", err)
+		}
+	}
+	if primary.calls != 3 || backup.calls != 0 {
+		t.Fatalf("主健康时应恒选主，得到 primary=%d backup=%d", primary.calls, backup.calls)
+	}
+
+	// 主变为不健康：应自动降级到兜底。
+	primary.healthy = false
+	if err := r.Send(context.Background(), batch); err != nil {
+		t.Fatalf("降级到兜底不应报错: %v", err)
+	}
+	if backup.calls != 1 {
+		t.Fatalf("主不健康时应降级到兜底，得到 backup.calls=%d", backup.calls)
+	}
+
+	// 主恢复健康：下一次 Send 应立即切回主，不再继续走兜底。
+	primary.healthy = true
+	if err := r.Send(context.Background(), batch); err != nil {
+		t.Fatalf("主恢复后 Send 不应报错: %v", err)
+	}
+	if primary.calls != 4 {
+		t.Fatalf("主恢复后应立即切回主，得到 primary.calls=%d", primary.calls)
+	}
+	if backup.calls != 1 {
+		t.Fatalf("切回主后不应再调用兜底，得到 backup.calls=%d", backup.calls)
+	}
+}
+
+// TestPriorityRouter_PrimaryFailureRoutesToBackup 验证主 Send 报错（而非 Health
+// 不健康）时同一轮内也会降级到兜底——不要求先观测到 Health()=false 才切换。
+func TestPriorityRouter_PrimaryFailureRoutesToBackup(t *testing.T) {
+	primary := &stubSink{name: "primary", healthy: true, err: errors.New("mock 5xx")}
+	backup := &stubSink{name: "backup", healthy: true}
+	r := NewPriorityRouter([]delivery.Sink{primary, backup}, 3, time.Minute)
+
+	if err := r.Send(context.Background(), batch); err != nil {
+		t.Fatalf("应在同一轮内降级到兜底成功，得到: %v", err)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("应先尝试主再降级到兜底，得到 primary=%d backup=%d", primary.calls, backup.calls)
 	}
 }
 

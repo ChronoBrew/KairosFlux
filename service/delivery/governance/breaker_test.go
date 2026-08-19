@@ -1,6 +1,3 @@
-//go:build experimental
-
-// 隔离说明见同包 breaker.go 顶部注释。
 package governance
 
 import (
