@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet/codec"
+	"github.com/NeverENG/BanDB/bannet/dispatch"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/internal/metrics"
 )
@@ -56,7 +57,6 @@ type Connection struct {
 
 	// 构造时从全局配置快照的几项策略，避免在每帧读取路径上访问可变全局状态。
 	maxPackageSize uint32
-	useWorkerPool  bool
 	// readTimeout<=0 表示不设读超时（不建议，见 NewConnection 的默认值来源）。
 	readTimeout time.Duration
 }
@@ -75,7 +75,6 @@ func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *
 		property:    make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
 
 		maxPackageSize: config.G.MaxPackageSize,
-		useWorkerPool:  config.G.WorkerPoolSize > 0,
 		readTimeout:    time.Duration(config.G.ConnReadTimeoutMs) * time.Millisecond,
 	}
 	c.TCPServer.Conns().Add(c)
@@ -142,13 +141,18 @@ func (c *Connection) StartReader() {
 			return // defer Stop 取消 ctx、关闭连接（含读超时：net.Error.Timeout()）
 		}
 
-		req := newRequest(msg, c)
-		// 根据有没有启动 worker 池选择投递方式
-		if c.useWorkerPool {
-			c.MsgHandle.SendMsgToTaskQueue(req)
-		} else {
-			go c.MsgHandle.DoMsgHandle(req)
-		}
+		req := dispatch.NewRequest(msg, c)
+		// 投递方式（走 worker 池还是同步执行）完全由 dispatch 内部决定
+		// （SendMsgToTaskQueue 是分发层唯一的请求入口），transport 不再自己
+		// 判断"要不要另起一个 goroutine"——这正是本次重构修复的 bug②：此前
+		// useWorkerPool==false 时会在此处 `go c.MsgHandle.DoMsgHandle(req)`，
+		// 每帧一个不受追踪、无上限的临时 goroutine，是一个 goroutine 泄漏/
+		// 爆炸的入口（见 docs/rfc/bannet-重构.md B.4）。现在统一调用
+		// SendMsgToTaskQueue，workerPoolSize==0 时它在调用方（也就是本
+		// goroutine）上同步执行，不新增任何 goroutine，天然绑定在连接的
+		// 读循环生命周期上——不是给旧路径补追踪，是让这类 goroutine 不再
+		// 存在，详见 bannet/dispatch/dispatch.go 的 SendMsgToTaskQueue 注释。
+		c.MsgHandle.SendMsgToTaskQueue(req)
 	}
 }
 

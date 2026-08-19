@@ -28,11 +28,14 @@ func (h *panickingHandler) Handle(bannet.Request) {
 
 // TestHandlerPanicRecovered 复现并锁定最高优先级的修复：业务 Handler.Handle
 // 里任意一个 panic，此前会顺着 goroutine 调用栈一路冒到 Go 运行时、终止整个
-// 进程（已用故意 panic 的 Handler 验证过，见迭代记录）。现在 MsgHandle.
-// DoMsgHandle 有 recover 兜底：这个 goroutine（无论是 worker 池的常驻 worker，
-// 还是无 worker 池时的一次性 go DoMsgHandle）会记录 panic 并继续存活，其它
-// 连接完全不受影响。用真实 TCP 服务端而非直接调用 DoMsgHandle，是因为回归的
-// 正是"进程会不会被打死"这件事，必须让 panic 真的在独立 goroutine 里发生。
+// 进程（已用故意 panic 的 Handler 验证过，见迭代记录）。现在 dispatch.MsgHandle.
+// DoMsgHandle 有 recover 兜底：这个 goroutine（worker 池的常驻 worker，或
+// workerPoolSize==0 时同步执行 DoMsgHandle 的连接读循环 goroutine——重构后
+// 不再有"无 worker 池时的一次性 go DoMsgHandle"这条路径，见
+// bannet/dispatch/dispatch.go 的 SendMsgToTaskQueue 注释）会记录 panic 并
+// 继续存活，其它连接完全不受影响。用真实 TCP 服务端而非直接调用
+// DoMsgHandle，是因为回归的正是"进程会不会被打死"这件事，必须让 panic
+// 真的在独立 goroutine 里发生。
 func TestHandlerPanicRecovered(t *testing.T) {
 	before := metrics.PanicsRecovered.Load()
 
@@ -97,5 +100,10 @@ func TestHandlerPanicRecovered(t *testing.T) {
 }
 
 // divide-by-zero 的精确复现（workerPoolSize==0 时 SendMsgToTaskQueue 的取模操作）
-// 需要直接构造未导出字段，见同包内测试 msghandle_internal_test.go 的
+// 需要直接构造未导出字段，随 msghandle.go 迁入 dispatch 包后见
+// bannet/dispatch/dispatch_internal_test.go 的
 // TestSendMsgToTaskQueue_ZeroWorkerPoolSizeNoPanic。
+//
+// 每帧一次性 goroutine（曾经的 bug②：workerPoolSize==0 时 `go DoMsgHandle`
+// 不受追踪、无上限）的回归锁定见本文件下方的
+// TestZeroWorkerPoolSizeDoesNotLeakGoroutines。
