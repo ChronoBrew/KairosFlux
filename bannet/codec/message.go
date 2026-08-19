@@ -1,7 +1,11 @@
-package bannet
+// Package codec 是 BANLV 帧格式的编解码层：字节 ↔ Message 的转换，只认字节，
+// 不认 msgID 该分派给谁、不认连接生命周期——这是重构 RFC
+// （docs/rfc/bannet-重构.md）第一步迁移的目标包，从根包 bannet 的
+// message.go/datapack.go 原样搬入，本步不改变任何字节布局或行为，只搬家。
+package codec
 
-import ()
-
+// Message 是一帧的内存表示：ID（msgID 字符串）+ Data（负载字节）。
+// IDLen/DataLen 是解码定长头部时使用的中间字段。
 type Message struct {
 	ID string
 

@@ -13,11 +13,8 @@ type ConnRegistry interface {
 	ClearConn()
 }
 
-type Codec interface {
-	HeadLen() uint32
-	Pack(msg *Message) ([]byte, error)
-	UnPack([]byte) (*Message, error)
-}
+// Codec 的定义见 codec.go（类型别名，指向 bannet/codec.Codec）——本次重构第一步
+// 把编解码相关类型迁到 bannet/codec 子包，根包只保留别名，故此处不再重复定义。
 
 type Dispatcher interface {
 	AddRouter(msgID string, router Handler)

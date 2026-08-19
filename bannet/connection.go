@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/NeverENG/BanDB/bannet/codec"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/internal/metrics"
 )
@@ -31,13 +32,9 @@ func recoverConnGoroutine(connID uint32, where string) {
 
 var _ Conn = &Connection{}
 
-// hardMaxPackageSize 是帧长上限的绝对安全兜底：当 config.G.MaxPackageSize 被设为 0
-// （运维本意常是"不限制"）时，若真的按"不限制"执行，攻击者只需发 6 字节头部声称
-// dataLen=0xFFFFFFFF（近 4GiB）就能让服务端在读负载前先做一次 4GiB 的 make([]byte,...)
-// ——这是 TLV 解析器最经典的内存放大 DoS，配置项的"0=不限"语义本身就是这个漏洞的
-// 入口。此兜底把"0"重新解释为"用这个硬上限"而不是"完全不设上限"，消除这个入口；
-// 真的需要更大帧的部署应显式调高 MaxPackageSize，而不是设 0。
-const hardMaxPackageSize = 256 << 20 // 256MiB
+// 帧长上限的绝对安全兜底（原 hardMaxPackageSize）现由 bannet/codec 持有——
+// 那是判断"一帧声明的长度是否合法"的编解码层职责，见 codec.EffectiveMaxSize
+// 与 codec.DataPack.Decode 的注释；本包不再重复定义。
 
 type Connection struct {
 	TCPServer *Server      // 注入 ConnMgr
@@ -85,15 +82,6 @@ func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *
 	return c
 }
 
-// effectiveMaxPackageSize 返回本连接实际生效的帧长上限：0 时退回 hardMaxPackageSize
-// 而不是"不限制"，理由见 hardMaxPackageSize 的注释。
-func (c *Connection) effectiveMaxPackageSize() uint32 {
-	if c.maxPackageSize == 0 {
-		return hardMaxPackageSize
-	}
-	return c.maxPackageSize
-}
-
 // connReadBufSize 是每连接读缓冲大小。帧头与 msgID 都只有几字节，无缓冲时读一帧需要
 // 三次 read syscall（头 / msgID / 负载）；一层缓冲即可把它们摊薄到每若干帧一次内核往返。
 // 超过缓冲的大帧由 io.ReadFull 自行循环读取，故此值无需覆盖 MaxPackageSize。
@@ -122,53 +110,38 @@ func (c *Connection) StartReader() {
 	defer slog.Debug("conn reader exited", "connID", c.ConnID)
 	defer c.Stop()
 
-	// reader 与 headData 在循环外创建：仅本 goroutine 读取该连接，故可安全复用。
+	// reader 在循环外创建：仅本 goroutine 读取该连接，故可安全复用。
 	reader := bufio.NewReaderSize(c.Conn, connReadBufSize)
-	dp := NewDataPack()
-	headData := make([]byte, dp.HeadLen())
+	dp := codec.NewDataPack()
 
 	for {
-		c.resetReadDeadline()
-		if _, err := io.ReadFull(reader, headData); err != nil {
-			slog.Debug("conn read header failed", "connID", c.ConnID, "error", err)
+		// 帧的完整读取（头部 → 校验帧长上限 → msgID → 负载）已合并进
+		// codec.DataPack.Decode——见 docs/rfc/bannet-重构.md B.3：此前这段逻辑
+		// 散落在本循环里，是分层不完整的直接证据。resetReadDeadline 作为
+		// beforeRead 回调传入，在每个逻辑读取单元（头部/msgID/负载）真正阻塞
+		// 之前重设超时，语义与重写前完全一致：一个正常但慢的大帧不会被腰斩，
+		// 只有"某一步完全不发了"才会超时。
+		msg, err := dp.Decode(reader, c.maxPackageSize, c.resetReadDeadline)
+		if err != nil {
+			switch {
+			case errors.Is(err, codec.ErrFrameTooLarge):
+				// 对端声称的帧长超过上限：读取负载前已拒绝，不会按其声称的
+				// 长度分配内存——沿用重写前的 Warn 级别（值得单独关注/计数）。
+				slog.Warn("conn frame exceeds max package size", "connID", c.ConnID, "error", err)
+			case errors.Is(err, io.EOF):
+				// io.ReadFull 只在帧边界（尚未读到任何字节）返回 io.EOF：
+				// 对端在两帧之间正常断开，是最常见的退出路径，沿用 Debug 级别。
+				slog.Debug("conn read failed", "connID", c.ConnID, "error", err)
+			default:
+				// 其余情况（头部之外的位置提前断开 → io.ErrUnexpectedEOF、
+				// 解析头部失败、读超时等）沿用 Error 级别；具体是在哪一步失败
+				// 已由 Decode 通过 %w 链保留在 err 的文本里（"decode: read
+				// msgID: ..." 等），无需在此再区分。
+				slog.Error("conn decode frame failed", "connID", c.ConnID, "error", err)
+			}
 			return // defer Stop 取消 ctx、关闭连接（含读超时：net.Error.Timeout()）
 		}
-		msg, err := dp.UnPack(headData)
-		if err != nil {
-			slog.Error("conn unpack header failed", "connID", c.ConnID, "error", err)
-			return
-		}
-		// 帧长上限在此执行：读取负载之前拒绝超限帧，避免按对端声称的长度分配内存。
-		// 用 effectiveMaxPackageSize 而非 c.maxPackageSize 直接比较——配置为 0 时
-		// 退回 hardMaxPackageSize，消除"0=不限"被当字面意思执行的内存放大入口。
-		if maxSize := c.effectiveMaxPackageSize(); msg.MsgLen() > maxSize {
-			slog.Warn("conn frame exceeds max package size",
-				"connID", c.ConnID, "dataLen", msg.MsgLen(), "max", maxSize)
-			return
-		}
 
-		// 头部之后, 先按 IDLen 读取 msgID 字符串
-		if msg.IDLen > 0 {
-			idBuf := make([]byte, msg.IDLen)
-			c.resetReadDeadline()
-			if _, err := io.ReadFull(reader, idBuf); err != nil {
-				slog.Error("conn read msgID failed", "connID", c.ConnID, "error", err)
-				return
-			}
-			msg.SetMsgID(string(idBuf))
-		}
-
-		var data []byte
-		if msg.MsgLen() > 0 {
-			data = make([]byte, msg.MsgLen())
-
-			c.resetReadDeadline()
-			if _, err := io.ReadFull(reader, data); err != nil {
-				slog.Error("conn read body failed", "connID", c.ConnID, "error", err)
-				return
-			}
-		}
-		msg.SetData(data)
 		req := newRequest(msg, c)
 		// 根据有没有启动 worker 池选择投递方式
 		if c.useWorkerPool {
