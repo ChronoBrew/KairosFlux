@@ -18,6 +18,8 @@ var (
 	FramesDroppedMalformed    atomic.Int64 // 被钩子按「畸形帧」丢弃
 	FramesDroppedOversized    atomic.Int64 // 被钩子按「value 超限」丢弃
 	FramesDroppedNonMonotonic atomic.Int64 // 被钩子按「时间戳回退/重放」丢弃
+	FramesDroppedSchema       atomic.Int64 // 被 schema 校验器按「类型规则不满足」丢弃（见 service/ingesthook/schema）
+	SchemaChecksSkipped       atomic.Int64 // schema 校验器因缺少可选比对字段而跳过某一项检查的次数（如无昨收时跳过涨跌幅校验）
 	Writes                    atomic.Int64 // 成功写入（PUT）次数
 	Reads                     atomic.Int64 // 读取（GET）次数
 	Scans                     atomic.Int64 // 边缘范围查询（SCAN）次数
@@ -58,6 +60,8 @@ type Snapshot struct {
 	DroppedMalformed      int64
 	DroppedOversized      int64
 	DroppedNonMonotonic   int64
+	DroppedSchema         int64
+	SchemaChecksSkipped   int64
 	Writes                int64
 	Reads                 int64
 	Scans                 int64
@@ -79,6 +83,8 @@ func Take() Snapshot {
 		DroppedMalformed:      FramesDroppedMalformed.Load(),
 		DroppedOversized:      FramesDroppedOversized.Load(),
 		DroppedNonMonotonic:   FramesDroppedNonMonotonic.Load(),
+		DroppedSchema:         FramesDroppedSchema.Load(),
+		SchemaChecksSkipped:   SchemaChecksSkipped.Load(),
 		Writes:                Writes.Load(),
 		Reads:                 Reads.Load(),
 		Scans:                 Scans.Load(),
@@ -102,6 +108,8 @@ func LogSnapshot() {
 		"dropped_malformed", s.DroppedMalformed,
 		"dropped_oversized", s.DroppedOversized,
 		"dropped_non_monotonic", s.DroppedNonMonotonic,
+		"dropped_schema", s.DroppedSchema,
+		"schema_checks_skipped", s.SchemaChecksSkipped,
 		"writes", s.Writes,
 		"reads", s.Reads,
 		"scans", s.Scans,
