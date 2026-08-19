@@ -40,7 +40,7 @@ SETTINGS index_granularity = 8192;
 字段与 `service/ingesthook/schema/quote.go` 的 `QuoteSnapshot` 校验规则一一对应：
 必填字段齐全、价格 `>0`、`volume>=0`、OHLC 一致、涨跌幅在 ±21% 以内（阈值取
 21% 而非更常见的 20%，是为了容纳创业板/科创板 ±20% 涨跌停在四舍五入到分后
-可能出现的 +20.0x% 边界值，见 `docs/iteration-2026-08-19-quantscout-realdata-fixes.md`
+可能出现的 +20.0x% 边界值，见 `docs/iteration-2026-08-20-quantscout-realdata-fixes.md`
 的 D1 记录）——校验已经在 BanDB 落盘前做过一遍，这张表的约束更多是审计/回归用，
 不代表 ClickHouse 侧还要重新校验。
 

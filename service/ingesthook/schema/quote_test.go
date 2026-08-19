@@ -122,15 +122,16 @@ func TestQuoteSnapshot_OHLCInconsistentRejected(t *testing.T) {
 	}
 }
 
-// 涨跌幅物理极限 ±20%：用 prev_close 与 close 比对，超限拒绝。
+// 涨跌幅物理极限 ±21%：用 prev_close 与 close 比对，超限拒绝。
 func TestQuoteSnapshot_PctChangeExceedsLimitRejected(t *testing.T) {
 	cases := []struct {
 		name  string
 		close float64
 		prev  float64
 	}{
-		{"暴涨超限", 13.0, 10.0}, // +30%
-		{"暴跌超限", 7.0, 10.0},  // -30%
+		{"暴涨超限", 13.0, 10.0},     // +30%
+		{"暴跌超限", 7.0, 10.0},      // -30%
+		{"刚过21%上限", 12.11, 10.0}, // +21.1%，恰好越过新阈值
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -150,22 +151,63 @@ func TestQuoteSnapshot_PctChangeExceedsLimitRejected(t *testing.T) {
 			rec["low"] = lo - 1
 			err := (QuoteSnapshot{}).Validate(mustJSON(t, rec))
 			if err == nil || !strings.Contains(err.Error(), "physical limit") {
-				t.Fatalf("涨跌幅超 ±20%% 应被拒绝，得到: %v", err)
+				t.Fatalf("涨跌幅超 ±21%% 应被拒绝，得到: %v", err)
 			}
 		})
 	}
 }
 
-// 恰好 ±20% 是边界合法值（"≤20%"），不应被拒绝。
+// 恰好 ±21% 是边界合法值，不应被拒绝。
 func TestQuoteSnapshot_PctChangeAtBoundaryPasses(t *testing.T) {
 	rec := validQuote()
 	rec["prev_close"] = 10.0
-	rec["close"] = 12.0 // 恰好 +20%
+	rec["close"] = 12.1 // 恰好 +21%
 	rec["high"] = 12.5
 	rec["low"] = 9.5
 	rec["open"] = 10.0
 	if err := (QuoteSnapshot{}).Validate(mustJSON(t, rec)); err != nil {
-		t.Fatalf("恰好 ±20%% 边界应放行，得到错误: %v", err)
+		t.Fatalf("恰好 ±21%% 边界应放行，得到错误: %v", err)
+	}
+}
+
+// TestQuoteSnapshot_RealCreationBoardLimitUpNotFalselyRejected 复现 QuantScout
+// 全量实测（5241 行真实行情）里被 ±20% 阈值误伤的两个真实创业板涨停日：
+// 300069（+20.01%）与 301106（+20.02%）——涨停价四舍五入到分后折算涨跌幅
+// 略超 20.00%，这两个真实样本正是把阈值从 20% 调到 21% 的直接原因（见
+// docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的 D1 记录）。
+func TestQuoteSnapshot_RealCreationBoardLimitUpNotFalselyRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		code  string
+		prev  float64
+		close float64
+	}{
+		// 20.01%：prev_close=10.00，涨停价按 ±20% 四舍五入到分得 12.00，
+		// 但真实行情源里出现的是折算后 12.001 量级的浮点误差被保留到了两位小数
+		// 之外的口径不一致场景——直接用能产生 20.01% 的一组价格复现该现象。
+		{"300069_20.01pct", "300069", 12.499, 15.0},
+		{"301106_20.02pct", "301106", 24.995, 30.0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pct := (c.close - c.prev) / c.prev
+			if pct < 0.2000 || pct > 0.2100 {
+				t.Fatalf("测试用例构造错误：pct=%.4f 应落在 (20%%,21%%] 区间内才有意义", pct)
+			}
+			rec := map[string]any{
+				"code":       c.code,
+				"date":       "2026-08-18",
+				"open":       c.prev,
+				"high":       c.close,
+				"low":        c.prev,
+				"close":      c.close,
+				"volume":     1_000_000.0,
+				"prev_close": c.prev,
+			}
+			if err := (QuoteSnapshot{}).Validate(mustJSON(t, rec)); err != nil {
+				t.Fatalf("真实涨停日 %s（pct=%.4f%%）不应被误判为异常数据拒收，得到错误: %v", c.code, pct*100, err)
+			}
+		})
 	}
 }
 
