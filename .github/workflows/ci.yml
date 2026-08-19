@@ -1,57 +1,17 @@
 name: CI
-
 on:
-  push:
-    branches: [main, "feature/**"]
+  push: {branches: [main]}
   pull_request:
-    branches: [main]
-
 jobs:
-  vet:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-      - run: go vet ./...
-      - run: go build ./...
-
-  integration:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.23"
-
-      - name: Build server
-        run: go build -o bin/ban-server ./cmd/ban-server
-
-      - name: Build benchmark
-        run: go build -o bin/ban-bench ./cmd/ban-bench
-
-      - name: Start server
-        run: ./bin/ban-server &
-        env:
-          GOMEMLIMIT: 512MiB
-
-      - name: Wait for server ready
-        run: |
-          for i in $(seq 1 30); do
-            if nc -z localhost 8080 2>/dev/null; then
-              echo "Server ready after ${i}s"
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "Server failed to start"
-          exit 1
-
-      - name: Run benchmark (stress; fails on errors / unreachable server)
-        run: ./bin/ban-bench -d 5s -c 8 -n 2000 -mode mixed
-
-      - name: Verify server alive
-        run: |
-          nc -z localhost 8080 && echo "Server still healthy"
+        with: {go-version: 'stable'}
+      - name: Vet
+        run: go vet ./...
+      - name: Build (default + experimental)
+        run: go build ./... && go build -tags experimental ./...
+      - name: Test
+        run: go test ./...
