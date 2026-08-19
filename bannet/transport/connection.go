@@ -1,4 +1,14 @@
-package bannet
+// Package transport 是传输层：只认原始字节的收发（Reader/Writer 循环、
+// 连接注册表），不认 BANLV 帧内容该分派给谁——见 docs/rfc/bannet-重构.md
+// C.2/C.5，是重构第五步（最后一步）的迁移目标。
+//
+// 依赖 codec（解出/编码 Frame）、lifecycle（连接生命周期状态机）、handler
+// （Conn 契约类型），不依赖 dispatch——与 dispatch 是兄弟关系，互相不
+// import，只在根包 bannet 里被组合到一起（根包用回调把 transport 解出来
+// 的 Frame 转交给 dispatch，而不是让 transport 直接 import dispatch，见
+// docs/rfc/bannet-重构.md C.4.2）。这也是 Connection 持有 OnFrame 回调
+// 字段、而不是持有 dispatch.Dispatcher 字段的原因。
+package transport
 
 import (
 	"bufio"
@@ -11,7 +21,7 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet/codec"
-	"github.com/NeverENG/BanDB/bannet/dispatch"
+	"github.com/NeverENG/BanDB/bannet/handler"
 	"github.com/NeverENG/BanDB/bannet/lifecycle"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/internal/metrics"
@@ -19,10 +29,11 @@ import (
 
 // recoverConnGoroutine 是每个连接生命周期 goroutine（Start/StartReader/StartWriter）
 // 顶部统一挂的兜底：这些 goroutine 里除了帧解析代码，还会调用外部回调
-// （ConnStartFunc/ConnStopFunc）与业务分派（MsgHandle.DoMsgHandle 已有自己的
-// recover，这里是第二层，防的是分派之外的代码，如帧解析本身、回调本身的 bug）。
-// 未被捕获的 panic 会终止整个进程而不只是这一个连接——见 dispatch.go 的
-// DoMsgHandle 同款注释，该结论已用故意 panic 的 Handler 验证过。
+// （ConnStartFunc/ConnStopFunc）与业务分派（dispatch.MsgHandle.DoMsgHandle
+// 已有自己的 recover，这里是第二层，防的是分派之外的代码，如帧解析本身、
+// 回调本身的 bug）。未被捕获的 panic 会终止整个进程而不只是这一个连接——
+// 见 dispatch 包 DoMsgHandle 的同款注释，该结论已用故意 panic 的 Handler
+// 验证过。
 //
 // lc 非 nil 时，recover 到的 panic 会作为 EventPanicRecovered 事件推进
 // 状态机——这是任务要求的"四种终止诱因都收敛到 Closing"里的第四种。调用方
@@ -41,17 +52,29 @@ func recoverConnGoroutine(connID uint32, where string, lc *lifecycle.Lifecycle) 
 	}
 }
 
-var _ Conn = &Connection{}
-
-// 帧长上限的绝对安全兜底（原 hardMaxPackageSize）现由 bannet/codec 持有——
-// 那是判断"一帧声明的长度是否合法"的编解码层职责，见 codec.EffectiveMaxSize
-// 与 codec.DataPack.Decode 的注释；本包不再重复定义。
+var _ handler.Conn = &Connection{}
 
 type Connection struct {
-	TCPServer *Server      // 注入 ConnMgr
-	Conn      *net.TCPConn // 底层 TCP 连接
-	ConnID    uint32       // 连接唯一 ID
-	MsgHandle Dispatcher
+	Conn   *net.TCPConn // 底层 TCP 连接
+	ConnID uint32       // 连接唯一 ID
+
+	// Registry 是本连接建立/关闭时用于自我注册/注销的连接表，供 Server
+	// 优雅关闭时统一枚举、广播 Closing、等待所有连接收尾——不依赖具体类型，
+	// 只依赖同包定义的 ConnRegistry 接口。
+	Registry ConnRegistry
+
+	// OnFrame 在每次成功解出一帧后被调用，交给上层（根包 bannet，持有
+	// dispatch.MsgHandle）决定怎么分派——这正是 transport 不 import
+	// dispatch 的关键：transport 只管"喂 Frame"，不知道、也不需要知道
+	// Frame 之后被谁处理、用什么并发策略处理。
+	OnFrame func(msg *codec.Message, conn handler.Conn)
+
+	// ConnStartFunc/ConnStopFunc 是连接建立/关闭时的用户回调（可为 nil），
+	// 由 Server.SetConnStartFunc/SetConnStopFunc 注册后经由 NewConnection
+	// 传入；调用时套了与收发 goroutine 相同的 recover 兜底（见
+	// callConnStartFunc/callConnStopFunc）。
+	ConnStartFunc func(conn handler.Conn)
+	ConnStopFunc  func(conn handler.Conn)
 
 	// 生命周期：显式状态机（Idle/Active/Closing/Closed），取代此前裸的
 	// ctx/cancel/stopOnce 组合——见 docs/rfc/bannet-重构.md C.1，以及
@@ -82,38 +105,50 @@ type Connection struct {
 	readTimeout time.Duration
 }
 
-func NewConnection(conn *net.TCPConn, connID uint32, handle Dispatcher, server *Server) *Connection {
+// NewConnection 构造一个连接并注册进 registry。onFrame 是分派回调（见
+// Connection.OnFrame 的注释），connStartFunc/connStopFunc 可为 nil。
+func NewConnection(
+	conn *net.TCPConn,
+	connID uint32,
+	registry ConnRegistry,
+	onFrame func(msg *codec.Message, conn handler.Conn),
+	connStartFunc func(conn handler.Conn),
+	connStopFunc func(conn handler.Conn),
+) *Connection {
 	c := &Connection{
-		TCPServer:   server,
-		Conn:        conn,
-		ConnID:      connID,
-		MsgHandle:   handle,
-		lc:          lifecycle.New(),
-		readerDone:  make(chan struct{}),
-		writerDone:  make(chan struct{}),
-		msgChan:     make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
-		msgBuffChan: make(chan []byte, config.G.MaxMsgChanLen),
-		property:    make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
+		Conn:          conn,
+		ConnID:        connID,
+		Registry:      registry,
+		OnFrame:       onFrame,
+		ConnStartFunc: connStartFunc,
+		ConnStopFunc:  connStopFunc,
+		lc:            lifecycle.New(),
+		readerDone:    make(chan struct{}),
+		writerDone:    make(chan struct{}),
+		msgChan:       make(chan []byte, 10), // 高优通道加小缓冲，避免硬阻塞
+		msgBuffChan:   make(chan []byte, config.G.MaxMsgChanLen),
+		property:      make(map[string]any), // 必须初始化，否则 SetProperty 写 nil map 会 panic
 
 		maxPackageSize: config.G.MaxPackageSize,
 		readTimeout:    time.Duration(config.G.ConnReadTimeoutMs) * time.Millisecond,
 	}
-	c.TCPServer.Conns().Add(c)
+	c.Registry.Add(c)
 	return c
 }
 
 // State 返回连接当前的生命周期状态，供测试/可观测性查询——见
 // docs/rfc/bannet-重构.md C.1 状态表："谁能查询 | Lifecycle.State()"。
-// 未放进 Conn 接口（业务代码不需要关心这个），只在持有具体类型时可用。
+// 未放进 handler.Conn 接口（业务代码不需要关心这个），只在持有具体类型时
+// 可用。
 func (c *Connection) State() lifecycle.State {
 	return c.lc.State()
 }
 
-// BeginClosing 实现 Conn 接口：标记本连接进入 Closing（幂等），只广播
+// BeginClosing 实现 handler.Conn：标记本连接进入 Closing（幂等），只广播
 // "决定关闭"信号，不做任何物理清理——socket 与写路径此时仍然可用。供
-// Server 优雅关闭时批量广播给所有连接使用（见 conn_manager.go 的
-// BeginClosingAll），Reader 的读循环据此在完成当前在途请求后主动退出，
-// 而不是被动等外部强行打断阻塞的读。
+// Server 优雅关闭时批量广播给所有连接使用（见 registry.go 的
+// ConnManager.BeginClosingAll），Reader 的读循环据此在完成当前在途请求后
+// 主动退出，而不是被动等外部强行打断阻塞的读。
 //
 // 一个关键的补充：对于此刻正阻塞在 io.ReadFull 里等下一帧的连接（也就是
 // "空闲"连接——没有在途请求，只是在等对端下一次发送，这在长连接/连接池
@@ -213,26 +248,19 @@ func (c *Connection) StartReader() {
 			return // defer 链负责收敛：Writer 排空后再物理关闭，见上方注释
 		}
 
-		req := dispatch.NewRequest(msg, c)
-		// 投递方式（走 worker 池还是同步执行）完全由 dispatch 内部决定
-		// （SendMsgToTaskQueue 是分发层唯一的请求入口），transport 不再自己
-		// 判断"要不要另起一个 goroutine"——这正是本次重构修复的 bug②：此前
-		// useWorkerPool==false 时会在此处 `go c.MsgHandle.DoMsgHandle(req)`，
-		// 每帧一个不受追踪、无上限的临时 goroutine，是一个 goroutine 泄漏/
-		// 爆炸的入口（见 docs/rfc/bannet-重构.md B.4）。现在统一调用
-		// SendMsgToTaskQueue，workerPoolSize==0 时它在调用方（也就是本
-		// goroutine）上同步执行，不新增任何 goroutine，天然绑定在连接的
-		// 读循环生命周期上——不是给旧路径补追踪，是让这类 goroutine 不再
-		// 存在，详见 bannet/dispatch/dispatch.go 的 SendMsgToTaskQueue 注释。
-		c.MsgHandle.SendMsgToTaskQueue(req)
+		// 分派完全交给上层回调决定（见 OnFrame 字段注释）：transport 只管
+		// "喂字节、拿 Message"，不知道 Frame 之后被谁处理、用什么并发策略——
+		// 这正是本次重构修复的 bug②：此前 useWorkerPool==false 时会在此处
+		// `go c.MsgHandle.DoMsgHandle(req)`，每帧一个不受追踪、无上限的
+		// 临时 goroutine（见 docs/rfc/bannet-重构.md B.4），现在这个决策
+		// 完全下沉到 dispatch 包内部（根包的 OnFrame 实现里），transport
+		// 不再持有、也不再需要知道 Dispatcher 类型。
+		c.OnFrame(msg, c)
 
 		// 每处理完一帧，检查是否已经进入 Closing（比如 Server 正在优雅
 		// 关闭）——如果是，主动退出读循环，不再尝试读下一帧（那可能是一次
 		// 永久阻塞的读，会让优雅关闭的等待失去意义）。这一步是 bug①修复的
-		// 另一半：只有 Reader 主动让出，Server 端的等待才有个尽头。此时
-		// 上面这次 SendMsgToTaskQueue 已经同步跑完（同步分发模式）或者已经
-		// 把请求交给了 worker 池（池模式，池的排空由 MsgHandle.Stop 保证），
-		// 不会有"检查早了、请求其实还没处理完"的问题。
+		// 另一半：只有 Reader 主动让出，Server 端的等待才有个尽头。
 		select {
 		case <-c.lc.Draining():
 			slog.Debug("conn reader stopping: closing in progress", "connID", c.ConnID)
@@ -256,8 +284,8 @@ func (c *Connection) StartWriter() {
 			// Reader 已经退出：不会再有新的 SendMsg/SendBuffMsg 调用（它们
 			// 只可能由本连接的 Handle() 触发，而 Handle() 只在 Reader 的
 			// 读循环里同步执行，或在 Reader 还活着时投递给的 worker 池里
-			// 执行——Server 优雅关闭时保证了 MsgHandle.Stop 会先排空 worker
-			// 池再让 Reader 感知 Draining 退出，见 server.go 的 Stop）。
+			// 执行——Server 优雅关闭时保证了 dispatch 层会先排空 worker 池
+			// 再让 Reader 感知 Draining 退出，见根包 server.go 的 Stop）。
 			// 现在可以安全地把已经排队但还没写出的内容一次性冲刷完，再退出。
 			c.drainPendingWrites()
 			return
@@ -323,14 +351,34 @@ func (c *Connection) write(data []byte) error {
 	return nil
 }
 
+// callConnStartFunc 调用用户注册的连接建立回调（可能为 nil），套上与收发
+// goroutine 相同的 recover 兜底——取代此前"Server.CallConnStartFunc"的角色：
+// Connection 不再持有 *Server 引用（那会让 transport 依赖根包，根包又依赖
+// transport，形成环），回调改由构造时以函数值的形式直接注入。
+func (c *Connection) callConnStartFunc() {
+	if c.ConnStartFunc == nil {
+		return
+	}
+	defer recoverConnGoroutine(c.ConnID, "ConnStartFunc", c.lc)
+	c.ConnStartFunc(c)
+}
+
+func (c *Connection) callConnStopFunc() {
+	if c.ConnStopFunc == nil {
+		return
+	}
+	defer recoverConnGoroutine(c.ConnID, "ConnStopFunc", c.lc)
+	c.ConnStopFunc(c)
+}
+
 func (c *Connection) Start() {
 	defer recoverConnGoroutine(c.ConnID, "Start", c.lc)
 	c.lc.MarkActive()
 	slog.Debug("conn established", "connID", c.ConnID)
 	go c.StartReader()
 	go c.StartWriter()
-	c.TCPServer.CallConnStartFunc(c) // 用户注册的回调；一样可能 panic，同一顶兜底
-	<-c.lc.Done()                    // 阻塞至连接被物理关闭（Reader/Writer 出错或 Stop 触发）
+	c.callConnStartFunc()
+	<-c.lc.Done() // 阻塞至连接被物理关闭（Reader/Writer 出错或 Stop 触发）
 }
 
 // connStopWriterDrainTimeout 是 Stop 等 Writer 排空的上限：正常情况下这个
@@ -369,8 +417,8 @@ func (c *Connection) Stop() {
 	}
 
 	c.Conn.Close() // 解除 Reader 的阻塞读（若它还没自己退出的话），使其返回
-	c.TCPServer.CallConnStopFunc(c)
-	c.TCPServer.Conns().Remove(c)
+	c.callConnStopFunc()
+	c.Registry.Remove(c)
 	// 不 close msgChan / msgBuffChan：worker 可能仍在 SendBuffMsg，close 会触发 send on closed channel
 }
 func (c *Connection) ID() uint32 {
@@ -388,7 +436,7 @@ func (c *Connection) RemoteAddr() net.Addr {
 var errConnClosed = errors.New("banNet: connection closed")
 
 func (c *Connection) SendMsg(msgID string, data []byte) error {
-	packet, err := NewDataPack().Pack(NewMessage(msgID, data))
+	packet, err := codec.NewDataPack().Pack(codec.NewMessage(msgID, data))
 	if err != nil {
 		return err
 	}
@@ -405,7 +453,7 @@ func (c *Connection) SendMsg(msgID string, data []byte) error {
 }
 
 func (c *Connection) SendBuffMsg(msgID string, data []byte) error {
-	packet, err := NewDataPack().Pack(NewMessage(msgID, data))
+	packet, err := codec.NewDataPack().Pack(codec.NewMessage(msgID, data))
 	if err != nil {
 		return err
 	}

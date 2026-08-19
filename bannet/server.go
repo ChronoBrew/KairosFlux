@@ -10,6 +10,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/NeverENG/BanDB/bannet/codec"
+	"github.com/NeverENG/BanDB/bannet/dispatch"
+	"github.com/NeverENG/BanDB/bannet/transport"
 	"github.com/NeverENG/BanDB/config"
 )
 
@@ -53,6 +56,16 @@ func (s *Server) Conns() ConnRegistry {
 	return s.ConnMgr
 }
 
+// onFrame 是 transport.Connection 解出一帧后调用的分派回调——把
+// transport 解出来的 Frame 转交给 dispatch，而不是让 transport 直接
+// import dispatch（见 docs/rfc/bannet-重构.md C.4.2）。这个回调是本次
+// 重构里 transport 与 dispatch 两个兄弟包唯一的接线点，只有根包（同时
+// 依赖两者）能扮演这个角色。
+func (s *Server) onFrame(msg *codec.Message, conn Conn) {
+	req := dispatch.NewRequest(msg, conn)
+	s.MsgHandle.SendMsgToTaskQueue(req)
+}
+
 func (s *Server) Start() {
 	slog.Info("banNet server starting", "name", s.Name, "addr", fmt.Sprintf("%s:%d", s.IP, s.Port))
 
@@ -86,6 +99,12 @@ const (
 )
 
 // acceptLoop 接受连接直到 Stop 关闭 listener/done。
+//
+// 留在根包而不随迁移映射表字面表述搬进 transport：acceptLoop 是 Server
+// 的方法，Server 本身出于"不能让 transport 依赖 dispatch"的约束留在根包
+// （见 transport.go 顶部注释的第二处偏差说明），acceptLoop 自然跟着留下；
+// 它现在调用 transport.NewConnection 而不是包内构造函数，实际的连接收发
+// 逻辑已经完全在 transport 包里。
 func (s *Server) acceptLoop(listener *net.TCPListener) {
 	var cid uint32
 	var retryDelay time.Duration
@@ -119,7 +138,7 @@ func (s *Server) acceptLoop(listener *net.TCPListener) {
 			continue
 		}
 
-		go NewConnection(conn, cid, s.MsgHandle, s).Start()
+		go transport.NewConnection(conn, cid, s.ConnMgr, s.onFrame, s.ConnStartFunc, s.ConnStopFunc).Start()
 		cid++
 	}
 }
@@ -188,23 +207,4 @@ func (s *Server) SetConnStartFunc(f func(conn Conn)) {
 }
 func (s *Server) SetConnStopFunc(f func(conn Conn)) {
 	s.ConnStopFunc = f
-}
-func (s *Server) CallConnStartFunc(conn Conn) {
-	if s.ConnStartFunc == nil {
-		return // 未注册连接建立回调，静默跳过
-	}
-	// lc 传 nil：这里只持有 Conn 接口（业务契约），拿不到具体连接的
-	// lifecycle——回调 panic 时仍然 recover+记录（不崩进程），只是不会
-	// 触发状态机的 EventPanicRecovered 收敛（那是 Start/StartReader/
-	// StartWriter 这三个连接自身的收发 goroutine 才会做的事）。
-	defer recoverConnGoroutine(conn.ID(), "ConnStartFunc", nil)
-	s.ConnStartFunc(conn)
-}
-
-func (s *Server) CallConnStopFunc(conn Conn) {
-	if s.ConnStopFunc == nil {
-		return // 未注册连接关闭回调，静默跳过
-	}
-	defer recoverConnGoroutine(conn.ID(), "ConnStopFunc", nil)
-	s.ConnStopFunc(conn)
 }
