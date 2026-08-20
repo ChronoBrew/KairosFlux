@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
+	"github.com/NeverENG/BanDB/bannet/codec"
 	"github.com/NeverENG/BanDB/client"
 	"github.com/NeverENG/BanDB/config"
 	"github.com/NeverENG/BanDB/proto"
@@ -267,4 +269,83 @@ func TestCrosslang_GoAndPythonAgree(t *testing.T) {
 			t.Fatalf("Python 写入的值经 Go 客户端读回不一致\n  期望: %s\n  实际: %s", validQuote, got)
 		}
 	})
+}
+
+// TestCrosslang_V2FrameCrossLanguage 是 BANLV v2 帧编解码（docs/rfc/BANLV-2.md
+// §2/§3）的跨语言联调测试：不需要起服务端，只验证两侧的 v2 帧编解码本身
+// 互相兼容——这是 vectors-v2.json 静态向量比对之外的第二重证据（两侧各自
+// 读同一份 JSON 断言，理论上仍可能"两侧对同一份向量的理解方式恰好一致地
+// 错"；本测试让 Go 与 Python 直接互相喂对方产出的字节，不经过共享的向量
+// 文件这个中间层）。
+//
+// 覆盖两个方向：
+//  1. Python 编码一帧 → Go 用 bannet/codec.DataPackV2.UnPack 解析，断言字段
+//     与构造参数一致（"Python 编的帧 Go 能解"）。
+//  2. Go 用 bannet/codec.DataPackV2.Pack 编码一帧 → Python 侧
+//     examples/v2_probe.py decode 解析，断言打印出的字段与 Go 的构造参数
+//     一致（"Go 编的帧 Python 能解"）。
+func TestCrosslang_V2FrameCrossLanguage(t *testing.T) {
+	python3 := requirePython3(t)
+	script := filepath.Join("examples", "v2_probe.py")
+
+	t.Run("python_encodes_go_decodes", func(t *testing.T) {
+		cmd := exec.Command(python3, script, "encode",
+			"--opcode", "1", "--type", "1", "--corrid", "42", "--payload-hex", "6b317631")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("python3 v2_probe.py encode 执行失败: %v\n输出:\n%s", err, out)
+		}
+		frameHex := parseFrameHexLine(t, string(out))
+
+		frame, err := hex.DecodeString(frameHex)
+		if err != nil {
+			t.Fatalf("Python 输出的 frame_hex 不是合法十六进制: %v", err)
+		}
+		h, err := codec.NewDataPackV2().UnPack(frame[:codec.HeaderV2Len])
+		if err != nil {
+			t.Fatalf("Go 侧 UnPack Python 编码的帧失败: %v", err)
+		}
+		if h.Opcode != 1 || h.Type != 1 || h.CorrID != 42 {
+			t.Fatalf("字段不一致: opcode=%d type=%d corr_id=%d，期望 1/1/42", h.Opcode, h.Type, h.CorrID)
+		}
+		if got := hex.EncodeToString(frame[codec.HeaderV2Len:]); got != "6b317631" {
+			t.Fatalf("负载=%q，期望 6b317631", got)
+		}
+	})
+
+	t.Run("go_encodes_python_decodes", func(t *testing.T) {
+		msg := codec.NewMessageV2(codec.HeaderV2{
+			Opcode: 3,
+			Type:   0,
+			CorrID: 7,
+		}, []byte("k1"))
+		frame, err := codec.NewDataPackV2().Pack(msg)
+		if err != nil {
+			t.Fatalf("Pack 失败: %v", err)
+		}
+
+		cmd := exec.Command(python3, script, "decode", "--frame-hex", hex.EncodeToString(frame))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("python3 v2_probe.py decode 执行失败: %v\n输出:\n%s", err, out)
+		}
+		line := strings.TrimSpace(string(out))
+		want := "flags=0 opcode=3 type=0 corr_id=7 data_hex=6b31"
+		if line != want {
+			t.Fatalf("Python 解析结果=%q，期望 %q", line, want)
+		}
+	})
+}
+
+// parseFrameHexLine 从 v2_probe.py encode 的输出里解析 "frame_hex=..." 行。
+func parseFrameHexLine(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "frame_hex=") {
+			return strings.TrimPrefix(line, "frame_hex=")
+		}
+	}
+	t.Fatalf("未能从 python3 输出解析 frame_hex，输出:\n%s", out)
+	return ""
 }

@@ -305,3 +305,243 @@ class BanDBClient:
         err = _status_to_exception(status, rest)
         if err is not None:
             raise err
+
+
+# ---------------------------------------------------------------------------
+# BANLV v2（docs/rfc/BANLV-2.md）。以下是纯新增区块，不改动上面 v1 的任何一行
+# ——v1 是且仍是生产协议，v2 是本阶段追加的能力，两者在这个文件里完全独立。
+#
+# 权威实现对照：bannet/codec/v2.go（帧编解码）、bannet/negotiate/negotiate.go
+# （§5/§5.1 HELLO 协商）。跨语言测试向量见 docs/banlv/vectors-v2.json，Python
+# 侧测试见 test_bandb_client_v2.py（对应 Go 侧 bannet/vectors_v2_test.go）。
+# ---------------------------------------------------------------------------
+
+# --- 帧格式常量 (RFC §2/§3) ---------------------------------------------------
+
+MAGIC_V2 = 0xBA
+VERSION_V2 = 0x02
+HEADER_V2_LEN = 14  # magic+ver(2) + flags(1) + opcode(1) + type(2) + corr_id(4) + dataLen(4)
+
+# struct 格式字符串必须带 "<" 前缀（显式小端、无原生对齐填充）——不带前缀时
+# "HBBHII" 会按原生对齐规则在字段间插入填充字节，令这个 14 字节头部在本机
+# 变成 16 字节，本地测试看起来"通过"（因为编解码用的是同一个 pack/unpack 调
+# 用），但产出的字节与 Go 侧、与协议本身规定的 14 字节定长头部不一致——这正是
+# 本文件其它地方（_HEAD_STRUCT）已经在用的同一条纪律，这里只是对 v2 头部重申。
+_HEADER_V2_STRUCT = struct.Struct("<HBBHII")
+
+# opcode（RFC §3.1）。0x00-0x7F 请求，0x80-0xFF 响应。
+OPCODE_PUT = 0x01
+OPCODE_GET = 0x02
+OPCODE_DEL = 0x03
+OPCODE_SCAN = 0x04
+OPCODE_HELLO = 0x05  # v2 起第一次被赋予行为（协商，见下）
+OPCODE_BYE = 0x06  # 语义待定（RFC §3.1/§7），本阶段只保留常量
+
+# OPCODE_FLUSH/OPCODE_STAT: RFC §11 交互模式（ack=window/none）新增 opcode，
+# 第二阶段实现——本阶段只保留常量定义，不实现其行为。
+OPCODE_FLUSH = 0x07
+OPCODE_STAT = 0x08
+
+OPCODE_OK = 0x80
+OPCODE_ERR = 0x81
+
+# OPCODE_WINDOW_ACK/OPCODE_STAT_ACK: 同上，RFC §11 交互模式，第二阶段实现。
+OPCODE_WINDOW_ACK = 0x82
+OPCODE_STAT_ACK = 0x83
+
+# type（RFC §3.2），与 service/ingesthook/schema 的注册表对齐。
+TYPE_UNSPECIFIED = 0  # 未声明类型，向后兼容默认值，退化为 v1 行为（RFC §6）
+TYPE_QUOTE = 1  # 对应 "quote:" 前缀校验器
+
+
+class UnsupportedV2VersionError(BanDBError):
+    """magic 匹配但版本号不是本实现认识的 VERSION_V2——这是协议不兼容错误，
+    不应被当作"这是 v1 帧"静默处理（对应 Go: codec.ErrUnsupportedV2Version）。
+    """
+
+
+def encode_magic_ver(magic: int, version: int) -> int:
+    """组装 magic+ver 字段的 u16 数值：数值 = magic<<8 | version（高字节
+    magic、低字节 version，RFC §2 原文措辞）。对应 Go: codec.EncodeMagicVer。
+    """
+    return ((magic & 0xFF) << 8) | (version & 0xFF)
+
+
+def decode_magic_ver(v: int) -> Tuple[int, int]:
+    """从 u16 数值里拆出 (magic, version)。对应 Go: codec.DecodeMagicVer。"""
+    return (v >> 8) & 0xFF, v & 0xFF
+
+
+# sniff_version 的三种返回值（对应 Go: codec.SniffResult 的三个常量）。
+SNIFF_V1 = "v1"
+SNIFF_V2 = "v2"
+SNIFF_UNSUPPORTED_VERSION = "unsupported_version"
+
+
+def sniff_version(first2_bytes: bytes) -> str:
+    """RFC §6 双栈判据：给定帧最前 2 字节，判断应该按 v1 头部回退解释、还是
+    按 v2 头部继续解析、还是 magic 匹配但版本不受支持（这第三种不应该被
+    误判为"这是 v1 帧"，见 Go 侧 codec.SniffVersion 的同款文档）。
+
+    对应 Go: codec.SniffVersion。
+    """
+    if len(first2_bytes) != 2:
+        raise ProtocolError(f"sniff_version 需要恰好 2 字节，收到 {len(first2_bytes)}")
+    (magic_ver,) = struct.unpack("<H", first2_bytes)
+    magic, version = decode_magic_ver(magic_ver)
+    if magic != MAGIC_V2:
+        return SNIFF_V1
+    if version != VERSION_V2:
+        return SNIFF_UNSUPPORTED_VERSION
+    return SNIFF_V2
+
+
+def encode_frame_v2(flags: int, opcode: int, type_: int, corr_id: int, payload: bytes) -> bytes:
+    """按 v2 线格式编码一帧：14 字节定长头 + 负载。
+
+    对应 Go: codec.DataPackV2.Pack。
+    """
+    head = _HEADER_V2_STRUCT.pack(
+        encode_magic_ver(MAGIC_V2, VERSION_V2), flags, opcode, type_, corr_id, len(payload)
+    )
+    return head + payload
+
+
+class HeaderV2:
+    """v2 定长头部的内存表示（不含负载），对应 Go: codec.HeaderV2。"""
+
+    __slots__ = ("flags", "opcode", "type", "corr_id", "data_len")
+
+    def __init__(self, flags: int, opcode: int, type_: int, corr_id: int, data_len: int):
+        self.flags = flags
+        self.opcode = opcode
+        self.type = type_
+        self.corr_id = corr_id
+        self.data_len = data_len
+
+
+def decode_header_v2(head: bytes) -> HeaderV2:
+    """解析 14 字节定长头部，校验 magic/version。对应 Go: codec.DataPackV2.UnPack。"""
+    if len(head) != HEADER_V2_LEN:
+        raise ProtocolError(f"v2 头部必须是 {HEADER_V2_LEN} 字节，收到 {len(head)}")
+    magic_ver, flags, opcode, type_, corr_id, data_len = _HEADER_V2_STRUCT.unpack(head)
+    magic, version = decode_magic_ver(magic_ver)
+    if magic != MAGIC_V2:
+        raise ProtocolError(f"不携带 v2 magic: got {magic:#x}")
+    if version != VERSION_V2:
+        raise UnsupportedV2VersionError(f"不受支持的 v2 版本号: got {version:#x}")
+    return HeaderV2(flags, opcode, type_, corr_id, data_len)
+
+
+# --- HELLO 协商 (RFC §5/§5.1) ------------------------------------------------
+
+# ack 三档 (RFC §11.2)；本阶段客户端恒发送 ACK_EVERY、服务端恒回复
+# ACK_EVERY——ACK_WINDOW/ACK_NONE 的编号已保留，行为留给后续阶段实现。
+ACK_EVERY = 0
+ACK_WINDOW = 1  # §11 交互模式，第二阶段实现——本阶段不发送/不生效
+ACK_NONE = 2  # 同上
+
+
+def encode_hello_probe_v2() -> bytes:
+    """按 §5.1 编码 v2 客户端的探测帧：v1 帧格式（msgID="HELLO"），负载
+    [version u8][ackPref u8]。对应 Go: negotiate.encodeHelloProbe（未导出，
+    这里是 Python 侧的对应实现）。
+    """
+    payload = bytes([VERSION_V2, ACK_EVERY])
+    return encode_frame(MSG_HELLO, payload)
+
+
+def build_hello_response_v2() -> bytes:
+    """按 §5.1 构造 v2 服务端对探测帧的响应：v2 帧格式，opcode=OK、type=0、
+    corr_id=0，负载 [version u8][ackPref u8]。对应 Go:
+    negotiate.BuildHelloResponseV2。
+    """
+    payload = bytes([VERSION_V2, ACK_EVERY])
+    return encode_frame_v2(0, OPCODE_OK, TYPE_UNSPECIFIED, 0, payload)
+
+
+# MSG_HELLO 是 v1 帧格式里 HELLO 探测帧使用的 msgID 字符串——注意这与
+# OPCODE_HELLO(0x05) 是两回事：后者是 v2 原生帧格式下的 opcode 分派项，
+# 协商阶段客户端还不知道对端是否支持 v2，只能、也应该用 v1 格式探测
+# （见 encode_hello_probe_v2 与 docs/rfc/BANLV-2.md §5.1 的说明）。
+MSG_HELLO = "HELLO"
+
+
+def negotiate_client(sock: "socket.socket", timeout: float) -> Tuple[str, int]:
+    """v2 客户端一侧的协商入口：写入 §5.1 探测帧，在 timeout 内等待响应，
+    返回 (version, ack)，version 是 "v1"/"v2"。对应 Go: negotiate.ClientNegotiate。
+
+    三种读取结果分别处理（不能塌缩成"读失败就当 v1"，见 Go 侧同名函数的
+    文档——这里是同一套判断逻辑的 Python 实现，必须保持一致）：
+
+      1. 一个字节都没读到就超时：判定为 v1，不是错误。
+      2. 超时或提前断开，但已经读到了部分字节：协议错误，连接已不可信。
+      3. 收到完整 2 字节 magic+ver：按 sniff_version 分派，非 v2 视为协议
+         错误（真正的 v1 服务端根本不会发送任何字节）。
+    """
+    sock.sendall(encode_hello_probe_v2())
+
+    original_timeout = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        magic_ver = _recv_exact_or_none(sock, 2)
+        if magic_ver is None:
+            # 情形 1：一个字节都没读到就超时——正常降级路径。
+            return SNIFF_V1, ACK_EVERY
+
+        sniff = sniff_version(magic_ver)
+        if sniff == SNIFF_V2:
+            rest = _recv_exact_or_none(sock, HEADER_V2_LEN - 2)
+            if rest is None:
+                raise ProtocolError("negotiate: 读响应剩余头部时超时（半读，连接不可信）")
+            header = decode_header_v2(magic_ver + rest)
+            if header.opcode != OPCODE_OK:
+                raise ProtocolError(f"negotiate: 响应 opcode={header.opcode:#x}，期望 OK(0x80)")
+            payload = b""
+            if header.data_len > 0:
+                payload = _recv_exact_or_none(sock, header.data_len)
+                if payload is None:
+                    raise ProtocolError("negotiate: 读响应负载时超时（半读，连接不可信）")
+            if len(payload) < 2:
+                raise ProtocolError(f"negotiate: 响应负载长度={len(payload)}，期望至少 2 字节")
+            server_version = payload[0]
+            if server_version != VERSION_V2:
+                raise ProtocolError(f"negotiate: 服务端选定版本={server_version:#x}，本实现只认识 {VERSION_V2:#x}")
+            # payload[1] 是 ackPref；本阶段服务端恒回 ACK_EVERY，忽略取值。
+            return SNIFF_V2, ACK_EVERY
+        elif sniff == SNIFF_UNSUPPORTED_VERSION:
+            raise ProtocolError("negotiate: 对端 magic 匹配但版本号不受支持")
+        else:
+            # 情形 2 的另一半：收到了字节但不是 v2 magic——真正的 v1 服务端
+            # 不该发送任何字节，收到非预期字节是协议错误，不是"降级为 v1"。
+            raise ProtocolError("negotiate: 收到非预期的响应字节（既非超时也非 v2 magic）")
+    finally:
+        sock.settimeout(original_timeout)
+
+
+def _recv_exact_or_none(sock: "socket.socket", n: int) -> "bytes | None":
+    """在 sock 当前设置的超时内尝试读满 n 字节。
+
+    - 一个字节都没读到就超时：返回 None（供调用方判定为"降级"这一正常
+      路径，不是错误）。
+    - 读到部分字节后超时/对端提前关闭：抛 ProtocolError（半读，连接已经
+      不可信，不能静默当作"没读到"处理——这是 negotiate_client 三态判断
+      里最容易被错误合并的一种情形，单独判断以避免误判）。
+    - 正常读满：返回完整的 n 字节。
+    """
+    chunks = []
+    remaining = n
+    try:
+        while remaining > 0:
+            chunk = sock.recv(remaining)
+            if not chunk:
+                if remaining == n:
+                    return None
+                raise ProtocolError("negotiate: 连接在读取过程中被对端关闭（半读）")
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    except socket.timeout:
+        if remaining == n:
+            return None
+        raise ProtocolError("negotiate: 读取过程中超时（半读，连接不可信）")
+    return b"".join(chunks)

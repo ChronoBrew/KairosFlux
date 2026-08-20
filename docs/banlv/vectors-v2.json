@@ -1,0 +1,154 @@
+{
+  "_comment": "BANLV v2 跨语言测试向量（RFC docs/rfc/BANLV-2.md §2/§3/§5/§8）。与 vectors.json（v1，12 条向量）独立存在，不合并——两者是完全不同的字节布局，见 §8 迁移方案第 2 条。三个分区: frames（v2 帧格式本体，14 字节定长头 + 负载）、header_only（只断言头部字节，负载不物化——如声明 dataLen=0xFFFFFFFF 的场景）、negotiation（§5 HELLO 协商的探测/响应帧，注意探测帧是 v1 格式、响应帧是 v2 格式，两者不是同一种 HELLO——frames 分区里 opcode=0x05 的原生 v2 HELLO 帧是协议层 opcode 分派用例，不是 §5 协商时实际收发的帧，见该条目的 description）。所有向量的字节均按 RFC 字段布局手工推导（u16/u32 皆 LE；magic+ver 字段数值 = magic<<8|ver，LE 存储后 wire 上先出现 version 字节、后出现 magic 字节），未使用本仓库任何一侧的 v2 编解码实现生成——这是本文件与 v1 vectors.json（由 Go 实现生成）在方法论上的刻意差异，避免'两侧实现共享同一个系统性错误、向量自洽但整体错误'的风险。",
+
+  "frames": [
+    {
+      "name": "v2_put_request_quote",
+      "description": "PUT 请求：opcode=0x01(PUT) type=0x0001(quote) corr_id=1 payload=ascii\"k1v1\"(4字节，任意占位内容，v2 帧编解码层不关心负载内部结构)",
+      "flags": 0,
+      "opcode": 1,
+      "type": 1,
+      "corr_id": 1,
+      "data_hex": "6b317631",
+      "frame_hex": "02ba0001010001000000040000006b317631"
+    },
+    {
+      "name": "v2_get_request_unspecified_type",
+      "description": "GET 请求：opcode=0x02(GET) type=0x0000(未声明类型，退化为v1行为) corr_id=2 payload=ascii\"k1\"",
+      "flags": 0,
+      "opcode": 2,
+      "type": 0,
+      "corr_id": 2,
+      "data_hex": "6b31",
+      "frame_hex": "02ba0002000002000000020000006b31"
+    },
+    {
+      "name": "v2_del_request",
+      "description": "DEL 请求：opcode=0x03(DEL) type=0x0000 corr_id=3 payload=ascii\"k1\"",
+      "flags": 0,
+      "opcode": 3,
+      "type": 0,
+      "corr_id": 3,
+      "data_hex": "6b31",
+      "frame_hex": "02ba0003000003000000020000006b31"
+    },
+    {
+      "name": "v2_scan_request_quote",
+      "description": "SCAN 请求：opcode=0x04(SCAN) type=0x0001(quote) corr_id=4 payload=ascii\"prefix\"",
+      "flags": 0,
+      "opcode": 4,
+      "type": 1,
+      "corr_id": 4,
+      "data_hex": "707265666978",
+      "frame_hex": "02ba000401000400000006000000707265666978"
+    },
+    {
+      "name": "v2_resp_ok",
+      "description": "OK 响应：opcode=0x80(OK) type=0x0000 corr_id=5 payload=ascii\"ok\"（§4 结构化响应体细节本轮不定稿，此处 payload 只是不透明字节，验证的是帧头分派，不是响应体内部结构）",
+      "flags": 0,
+      "opcode": 128,
+      "type": 0,
+      "corr_id": 5,
+      "data_hex": "6f6b",
+      "frame_hex": "02ba0080000005000000020000006f6b"
+    },
+    {
+      "name": "v2_resp_err",
+      "description": "ERR 响应：opcode=0x81(ERR) type=0x0000 corr_id=6 payload=ascii\"bad\"",
+      "flags": 0,
+      "opcode": 129,
+      "type": 0,
+      "corr_id": 6,
+      "data_hex": "626164",
+      "frame_hex": "02ba008100000600000003000000626164"
+    },
+    {
+      "name": "v2_opcode_hello_native_v2_framing",
+      "description": "opcode=0x05(HELLO) 用原生 v2 帧格式封装的分派用例——纯粹验证'给定 opcode 字节能不能被正确识别为 HELLO'这一协议层事实。这不是 §5 描述的协商探测帧：真正的协商探测请求永远是 v1 格式（见 negotiation 分区的 v2_negotiation_client_probe_v1_format），v2 客户端在协商阶段不知道对端是否支持 v2，不可能发出这种帧；此向量只覆盖 opcode 分派表，corr_id=7，空负载。",
+      "flags": 0,
+      "opcode": 5,
+      "type": 0,
+      "corr_id": 7,
+      "data_hex": "",
+      "frame_hex": "02ba000500000700000000000000"
+    },
+    {
+      "name": "v2_empty_payload",
+      "description": "边界：dataLen=0 的合法帧（DEL 请求，corr_id=8，无负载——如 key 为空场景的帧层面表示，是否合法由业务层判断，帧层面 dataLen=0 是完全合法值）",
+      "flags": 0,
+      "opcode": 3,
+      "type": 0,
+      "corr_id": 8,
+      "data_hex": "",
+      "frame_hex": "02ba000300000800000000000000"
+    },
+    {
+      "name": "v2_corr_id_zero",
+      "description": "边界：corr_id=0x00000000（GET 请求，payload=ascii\"z\"）——0 是合法的 corr_id 取值，不是保留哨兵值",
+      "flags": 0,
+      "opcode": 2,
+      "type": 0,
+      "corr_id": 0,
+      "data_hex": "7a",
+      "frame_hex": "02ba0002000000000000010000007a"
+    },
+    {
+      "name": "v2_corr_id_max",
+      "description": "边界：corr_id=0xFFFFFFFF（u32 最大值，GET 请求，payload=ascii\"m\"）",
+      "flags": 0,
+      "opcode": 2,
+      "type": 0,
+      "corr_id": 4294967295,
+      "data_hex": "6d",
+      "frame_hex": "02ba00020000ffffffff010000006d"
+    },
+    {
+      "name": "v2_magic_byte_order_lock",
+      "description": "锁定 magic+ver 字段的 wire 字节序：字段数值 = magic(0xBA)<<8 | version(0x02) = 0xBA02，按 LE u16 存储，故 wire 上第 0 字节是 version(0x02)、第 1 字节才是 magic(0xBA)——RFC §2 '高字节固定魔数、低字节协议版本号' 描述的是数值层面的字节角色，不是 wire 顺序；这条向量与专门的 Go/Python 断言（frame[0]==0x02 且 frame[1]==0xBA）配对，防止两侧实现在这一点上达成'一致但都搞反'的静默分歧（GET 请求，corr_id=9，payload=ascii\"x\"）",
+      "flags": 0,
+      "opcode": 2,
+      "type": 0,
+      "corr_id": 9,
+      "data_hex": "78",
+      "frame_hex": "02ba00020000090000000100000078"
+    }
+  ],
+
+  "header_only": [
+    {
+      "name": "v2_max_declared_datalen_header",
+      "description": "边界：dataLen 声明为 0xFFFFFFFF（近 4GiB）——只断言头部 14 字节能被正确解出 DataLen 字段本身，不物化对应的负载字节（那样测试数据文件本身就要接近 4GiB）。真正读取时必须被 DataPackV2.Decode 的帧长上限（复用 v1 DataPack.EffectiveMaxSize/ErrFrameTooLarge，不新开第二套上限）拒绝，而不是真的尝试分配 4GiB。opcode=0x01(PUT) type=0x0001(quote) corr_id=10。",
+      "flags": 0,
+      "opcode": 1,
+      "type": 1,
+      "corr_id": 10,
+      "data_len": 4294967295,
+      "header_hex": "02ba000101000a000000ffffffff"
+    }
+  ],
+
+  "negotiation": [
+    {
+      "name": "v2_negotiation_client_probe_v1_format",
+      "description": "§5 协商流程第一步：v2 客户端连接后发送的探测帧，故意用 v1 帧格式（[dataLen u32 LE][idLen u16 LE][id bytes][data]，与 vectors.json 里的 v1 向量同一布局），这样一个真正的 v1 服务端能把它当成一条普通（未识别的）消息安静地不响应，而不会因为帧格式不认识就断连接。负载按 §5.1（本任务回写 RFC 的最小格式，标注'实现定版 2026-08-20'）编码：[version u8][ackPref u8]，本阶段固定 version=0x02、ackPref=0x00(=every)。msg_id=\"HELLO\"。",
+      "msg_id": "HELLO",
+      "payload_hex": "0200",
+      "frame_hex": "02000000050048454c4c4f0200"
+    },
+    {
+      "name": "v2_negotiation_server_response_v2_format",
+      "description": "§5 协商流程第二步：v2 服务端识别出上一条探测帧后，回复的响应帧——这次改用 v2 帧格式（14 字节头），是 v2 客户端借以判断'对端确实支持 v2'的信号本身。按 §5.1：opcode=0x80(OK，复用§3.1既有的OK opcode，未单独定义HELLO专属响应opcode) type=0x0000 corr_id=0x00000000（请求是 v1 帧、没有 corr_id 字段可回带，固定为 0），负载 [version u8][ackPref u8]=服务端选定版本0x02+确认的ack档位0x00(=every，本阶段恒定，忽略客户端请求的ackPref取值)。",
+      "flags": 0,
+      "opcode": 128,
+      "type": 0,
+      "corr_id": 0,
+      "data_hex": "0200",
+      "frame_hex": "02ba0080000000000000020000000200"
+    },
+    {
+      "name": "v2_negotiation_v1_server_silence",
+      "description": "§5 协商流程的降级路径：v2 客户端连接的是真正的 v1 服务端时，v1 服务端的 Router.Handle switch 语句没有 MsgHello 分支（已读代码确认，见 service/router.go），对 v2_negotiation_client_probe_v1_format 这一帧不会发送任何响应字节——这一条目没有 frame_hex（没有字节可断言，'不响应'不是一个字节序列），仅作为静态向量文件里的文档锚点；实际的超时降级行为由 bannet/negotiate 包的集成测试（对一个真实启动的 v1 生产服务端发起协商、断言在配置的超时窗口内收到 0 字节并判定为 v1）验证，见 bannet/negotiate/negotiate_test.go 的 TestClientNegotiate_RealV1Server_DowngradesOnTimeout。",
+      "expect_no_response": true
+    }
+  ]
+}
