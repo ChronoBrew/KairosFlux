@@ -51,6 +51,15 @@ type Conn interface {
 	RemoteAddr() net.Addr
 	SendMsg(msgID string, data []byte) error
 	SendBuffMsg(msgID string, data []byte) error
+	// SendRawMsg 直接把一个已经编码好的完整帧写出去，不经过 v1 的
+	// codec.DataPack.Pack（那会把 data 当成 v1 msgID+payload 重新打包，产出
+	// 错误的字节）。BANLV v2 响应（RFC docs/rfc/BANLV-2.md §2/§3/§11）与 §5
+	// 的 HELLO 协商响应都用 codec.DataPackV2（或协商阶段的裸 v1 探测响应）
+	// 自行编码好整帧后调用这个方法——v2 连接上的每一次响应都必须走这里，
+	// 不能走 SendMsg/SendBuffMsg（那两个方法硬编码 v1 帧格式，v2 连接上调用
+	// 会在 wire 上产出与协商结果不符的 v1 帧，是静默的协议破坏，不是"两者都
+	// 能用、选一个方便的"）。
+	SendRawMsg(frame []byte) error
 	SetProperty(key string, value any)
 	Property(key string) any
 	RemoveProperty(key string)
@@ -65,6 +74,30 @@ type Request interface {
 	MsgID() string
 	// SetMsgData 改写本帧负载，供 PreHandle 钩子做脱敏/裁剪。
 	SetMsgData([]byte)
+}
+
+// RequestV2 是一次分派给 HandlerV2 的 BANLV v2 请求单元（RFC
+// docs/rfc/BANLV-2.md §2/§3）：已解码的 v2 帧字段 + 发出该帧的连接引用。
+// 与 v1 的 Request 分开是刻意的——v2 帧没有字符串 msgID，分派键是数字
+// opcode，且额外携带 type/corr_id 两个 v1 没有的字段，勉强复用同一个接口
+// 会让 v1 的 MsgID() 在 v2 场景下变成"opcode 的字符串化"这种没有意义的
+// 兼容层，故用一个独立的、字段对齐 v2 帧结构的接口。
+type RequestV2 interface {
+	Conn() Conn
+	Opcode() uint8
+	Type() uint16
+	CorrID() uint32
+	Data() []byte
+}
+
+// HandlerV2 是处理 BANLV v2 帧的业务契约：单一方法内部按 Opcode 自行分派
+// （与 v1 Handler.Handle 内部按 MsgID switch 的写法对称，见 service.Router.
+// Handle）。不设 PreHandle/PostHandle 两个钩子——v2 的 ack=window/none 语义
+// （RFC §11.2）需要在一次 HandleV2 调用内完成"这一帧算不算被接受"的判定
+// 并累计计数，拆成三段钩子不会让这件事更清晰，只会让计数逻辑被迫散落在
+// 三个方法之间。
+type HandlerV2 interface {
+	HandleV2(req RequestV2)
 }
 
 // HookAction 是 PreHandle 钩子对一帧请求的处置决定。

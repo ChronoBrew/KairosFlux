@@ -11,8 +11,8 @@ func TestPutFrameRoundTrip(t *testing.T) {
 		key, value []byte
 	}{
 		{[]byte("imu:dev0:1"), []byte(`{"az":9.8}`)},
-		{[]byte(""), []byte("")},           // 空 key/value 合法
-		{[]byte("k"), nil},                 // nil value 与空 slice 编解码后均得空 slice
+		{[]byte(""), []byte("")}, // 空 key/value 合法
+		{[]byte("k"), nil},       // nil value 与空 slice 编解码后均得空 slice
 		{[]byte("quote:2026-08-19:600000"), []byte(`{"code":"600000"}`)},
 	}
 	for _, c := range cases {

@@ -127,6 +127,87 @@
     }
   ],
 
+  "window_stat_bye": [
+    {
+      "name": "v2_flush_request",
+      "description": "FLUSH 请求（RFC §11.2.2）：opcode=0x07(FLUSH) type=0x0000 corr_id=100 无负载——FLUSH 本身不携带需要匹配的 corr_id，它的语义就是'现在关闭当前窗口'，WINDOW_ACK 响应里的 corr_id 取被关闭窗口自己的 corr_id，不是这一帧的 corr_id（这一帧的 corr_id=100 只是本向量为了字节层面非零占位选的任意值，不代表协议赋予它意义）。",
+      "flags": 0,
+      "opcode": 7,
+      "type": 0,
+      "corr_id": 100,
+      "data_hex": "",
+      "frame_hex": "02ba000700006400000000000000"
+    },
+    {
+      "name": "v2_stat_request",
+      "description": "STAT 请求（RFC §11.2.3）：opcode=0x08(STAT) type=0x0000 corr_id=42 无负载——STAT_ACK 响应会原样带回这个 corr_id（普通请求-响应关联用法，不是窗口分组）。",
+      "flags": 0,
+      "opcode": 8,
+      "type": 0,
+      "corr_id": 42,
+      "data_hex": "",
+      "frame_hex": "02ba000800002a00000000000000"
+    },
+    {
+      "name": "v2_bye_request",
+      "description": "BYE 请求（RFC §11.4）：opcode=0x06(BYE) type=0x0000 corr_id=7 无负载。ack=window/none 连接上会触发收尾（若窗口打开先关闭+WINDOW_ACK，再回传一次连接累计摘要，格式复用 STAT_ACK，corr_id 取这一帧自己的 corr_id——见 v2_stat_ack_clean 向量的描述）；ack=every 连接上语义不变，是保留位。",
+      "flags": 0,
+      "opcode": 6,
+      "type": 0,
+      "corr_id": 7,
+      "data_hex": "",
+      "frame_hex": "02ba000600000700000000000000"
+    },
+    {
+      "name": "v2_window_ack_with_rejection",
+      "description": "WINDOW_ACK 响应（RFC §11.2.2）：一个 corr_id=100 的窗口内收到 3 条写帧，2 条接受、1 条因 schema 校验被拒绝（errCode=0x3001，与 bannet/codec.ErrCodeSchemaValidation 对齐），reason=\"bad_price\"（9 字节）。帧头：opcode=0x82(WINDOW_ACK) type=0x0000 corr_id=100（被关闭窗口自己的 corr_id）。响应体格式 [corr_id u32][received u32][accepted u32][rejected u32][firstErrCode u16][firstErrReasonLen u16][firstErrReason]（与 STAT_ACK 共享同一格式，见 RFC §11.2.2/§11.2.3）——注意 corr_id 在帧头与响应体内各出现一次（RFC 原文两处都写了这个字段，不是笔误/冗余，见 proto.V2AckBody 的文档），本向量的两处取值相同（都是被关闭窗口的 corr_id=100）。",
+      "flags": 0,
+      "opcode": 130,
+      "type": 0,
+      "corr_id": 100,
+      "body_corr_id": 100,
+      "received": 3,
+      "accepted": 2,
+      "rejected": 1,
+      "first_err_code": 12289,
+      "first_err_reason": "bad_price",
+      "data_hex": "64000000030000000200000001000000013009006261645f7072696365",
+      "frame_hex": "02ba00820000640000001d00000064000000030000000200000001000000013009006261645f7072696365"
+    },
+    {
+      "name": "v2_stat_ack_clean",
+      "description": "STAT_ACK 响应（RFC §11.2.3）：对应 v2_stat_request（corr_id=42）的回答——连接自建立以来累计 received=accepted=5、rejected=0（本地发送计数与服务端吻合的'干净对账'场景），firstErrCode=0x0000(ErrCodeNone)、无 reason。帧头：opcode=0x83(STAT_ACK) type=0x0000 corr_id=42（回带 STAT 请求自己的 corr_id）。响应体格式同 v2_window_ack_with_rejection。",
+      "flags": 0,
+      "opcode": 131,
+      "type": 0,
+      "corr_id": 42,
+      "body_corr_id": 42,
+      "received": 5,
+      "accepted": 5,
+      "rejected": 0,
+      "first_err_code": 0,
+      "first_err_reason": "",
+      "data_hex": "2a00000005000000050000000000000000000000",
+      "frame_hex": "02ba008300002a000000140000002a00000005000000050000000000000000000000"
+    },
+    {
+      "name": "v2_window_ack_empty_flush",
+      "description": "边界：FLUSH 到达时没有任何打开的窗口（客户端在还没写过任何帧之前就发了一次 FLUSH）——服务端回一个全零、corr_id=0 的 WINDOW_ACK 作为'当前无待关闭窗口'的诚实回应，而不是静默忽略或报错（见 service.RouterV2.handleFlush）。帧头：opcode=0x82(WINDOW_ACK) type=0x0000 corr_id=0。",
+      "flags": 0,
+      "opcode": 130,
+      "type": 0,
+      "corr_id": 0,
+      "body_corr_id": 0,
+      "received": 0,
+      "accepted": 0,
+      "rejected": 0,
+      "first_err_code": 0,
+      "first_err_reason": "",
+      "data_hex": "0000000000000000000000000000000000000000",
+      "frame_hex": "02ba0082000000000000140000000000000000000000000000000000000000000000"
+    }
+  ],
+
   "negotiation": [
     {
       "name": "v2_negotiation_client_probe_v1_format",

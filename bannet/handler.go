@@ -20,6 +20,13 @@ type Conn = handler.Conn
 // Request 是一次分派给 Handler 的请求单元，参见 bannet/handler.Request。
 type Request = handler.Request
 
+// RequestV2 是一次分派给 HandlerV2 的 BANLV v2 请求单元，参见
+// bannet/handler.RequestV2。
+type RequestV2 = handler.RequestV2
+
+// HandlerV2 是处理 BANLV v2 帧的业务契约，参见 bannet/handler.HandlerV2。
+type HandlerV2 = handler.HandlerV2
+
 // Handler 是业务代码要实现的契约，参见 bannet/handler.Handler。
 type Handler = handler.Handler
 

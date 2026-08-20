@@ -1,22 +1,40 @@
 package negotiate_test
 
-// negotiate 包的协商集成测试，覆盖 docs/rfc/BANLV-2.md §5 描述的两条路径：
+// negotiate 包的协商集成测试，覆盖 docs/rfc/BANLV-2.md §5 描述的两条路径。
 //
-//  1. v2 客户端连一个真正的 v1 生产服务端（起一个真实的 service.Router +
-//     bannet.Server，与 client/python/crosslang_test.go 的做法一致）——
-//     v1 的 Router.Handle switch 没有 MsgHello case，收到探测帧后静默不
-//     响应，客户端应在配置的超时窗口内判定为 VersionV1，不报错。这是
-//     "已用代码验证过、不是假设"（RFC §5 原话）在本阶段的测试证据。
-//  2. v2 客户端连一个（测试本地构造的）最小 v2-aware 服务端——用现有的
-//     v1 codec.DataPack.Decode 读出探测帧、识别 msgID=="HELLO"、用
-//     negotiate.BuildHelloResponseV2 回复——客户端应判定为 VersionV2。
-//     这个"最小 v2 服务端"不是生产代码，只是验证 negotiate 包对称的
-//     两侧（客户端探测 + 服务端应答）确实能互相说通，真正接入
-//     bannet.Server 的生产读循环是后续阶段的工作。
+// 第二阶段更新（生产接线落地后）：bannet.Server 的连接读循环现在无条件
+// 识别 §5.1 的 HELLO 探测帧并回复 v2 响应（见 bannet/server.go 的
+// onNegotiate/transport.Connection.NegotiateFunc）——这不是"v2 能力
+// 打开时才生效"的可选项，任何用 bannet.NewServer() 起的服务端（哪怕像
+// startRealServer 这样只注册了 v1 PUT/GET/DEL 路由、完全没有配置 V2Handler
+// 的部署）都会这样做，这正是任务条目 6①要求的"验证并确认"：v2 探测 v1
+// 打 unregistered msgID 错误日志这个问题因为服务端现在识别 HELLO 而自然
+// 消失。因此本文件曾经的
+// "TestClientNegotiate_RealV1Server_DowngradesOnTimeout"（断言一个真实生产
+// 服务端会对 HELLO 保持静默、客户端据此判定 VersionV1）的前提已经被本阶段
+// 的改动本身推翻——不是回归，是任务条目 1 明确要做的事：
 //
-// 两个测试都用真实 TCP 回环连接，不用 net.Pipe——net.Pipe 的写操作会
-// 阻塞到对端读取，若真的模拟"v1 服务端永不响应"，用 net.Pipe 会在服务端
-// 侧自己的读循环内死锁，而不是重现"客户端超时"这个场景。
+//  1. TestClientNegotiate_RealServer_NegotiatesV2：v2 客户端连一个真实的
+//     bannet.Server（含 service.Router，v1 PUT/GET/DEL 路由照常注册），
+//     断言协商成功判定为 VersionV2，且探测帧从未被当成一次业务请求分派给
+//     Router（用一个"若被调用就 Fatal"的 HELLO 路由验证结构性事实，而不是
+//     抓日志——见 assertHelloNeverDispatched）。
+//  2. TestClientNegotiate_LegacyPeer_DowngradesOnTimeout：v2 客户端连一个
+//     真正对 HELLO 一无所知的对端（一个只 Accept 不发送任何字节的裸
+//     TCP 监听器，模拟"完全没有升级过的旧版二进制"在字节层面的真实行为）
+//     ——客户端应在配置的超时窗口内判定为 VersionV1，不报错。这条测试
+//     取代了原来依赖"生产服务端恰好还不认识 HELLO"这个现在已不成立的
+//     事实来验证同一件事（客户端的超时降级机制本身）。
+//  3. TestClientNegotiate_MinimalV2Server_Succeeds：v2 客户端连一个（测试
+//     本地构造的）最小 v2-aware 服务端——用现有的 v1 codec.DataPack.Decode
+//     读出探测帧、识别 msgID=="HELLO"、用 negotiate.BuildHelloResponseV2
+//     回复——客户端应判定为 VersionV2。这个"最小 v2 服务端"不是生产代码，
+//     只是验证 negotiate 包对称的两侧（客户端探测 + 服务端应答）确实能
+//     互相说通，与 1 的区别是这里不依赖 bannet.Server 的生产接线。
+//
+// 涉及真实网络等待的测试都用真实 TCP 回环连接，不用 net.Pipe——net.Pipe
+// 的写操作会阻塞到对端读取，若真的模拟"对端永不响应"，用 net.Pipe 会在
+// 对端侧自己的 goroutine 内死锁，而不是重现"客户端超时"这个场景。
 
 import (
 	"errors"
@@ -35,10 +53,30 @@ import (
 	"github.com/NeverENG/BanDB/service"
 )
 
-// startRealV1Server 起一个与生产接线完全一致的 v1 服务端（KVServer + Router，
-// standalone 模式，数据落临时目录），不注册任何 HELLO 处理——这正是当前
-// 生产代码的真实状态，不是为了这个测试专门裁剪的行为。
-func startRealV1Server(t *testing.T) string {
+// helloTrapRouter 是一个只用于断言"HELLO 探测帧从未被当成业务请求分派"的
+// v1 Handler：若 Handle 真的被调用，立即 Fatal——协商成功后 transport 的
+// StartReader 不应该把探测帧转交给 OnFrame（见 bannet/server.go 的
+// onNegotiate/onFrameV2 注释），如果这条不变量被破坏，注册在 proto.MsgHello
+// 上的这个路由会被触发，比抓日志更直接地证明"没有被分派"这件事。
+type helloTrapRouter struct {
+	t *testing.T
+}
+
+func (h *helloTrapRouter) PreHandle(req bannet.Request) bannet.HookAction {
+	return bannet.HookPass
+}
+func (h *helloTrapRouter) Handle(req bannet.Request) {
+	h.t.Fatalf("HELLO 探测帧不应该被分派到业务路由（本应在 transport 层被 NegotiateFunc 拦截）")
+}
+func (h *helloTrapRouter) PostHandle(req bannet.Request) {}
+
+// startRealServer 起一个与生产接线完全一致的服务端（KVServer + Router，
+// standalone 模式，数据落临时目录）——不特意为 v2 协商做任何裁剪：v1 的
+// PUT/GET/DEL 路由照常注册，额外只注册 helloTrapRouter 到 proto.MsgHello
+// 上，用于断言探测帧不会被分派到这里（见其注释）。第二阶段生产接线之后，
+// 这个服务端对 HELLO 探测帧的响应完全由 bannet.Server 内部的 onNegotiate
+// 给出，不依赖这里注册的任何路由。
+func startRealServer(t *testing.T) string {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -68,6 +106,7 @@ func startRealV1Server(t *testing.T) string {
 	srv.AddRouter(proto.MsgPut, router)
 	srv.AddRouter(proto.MsgGet, router)
 	srv.AddRouter(proto.MsgDelete, router)
+	srv.AddRouter(proto.MsgHello, &helloTrapRouter{t: t})
 	srv.SetConnStartFunc(router.OnConnStart)
 	srv.SetConnStopFunc(router.OnConnStop)
 	srv.Start()
@@ -90,17 +129,73 @@ func waitServerReady(t *testing.T, addr string) {
 	t.Fatalf("服务端在 2s 内未就绪: %s", addr)
 }
 
-// TestClientNegotiate_RealV1Server_DowngradesOnTimeout 是 §5 降级路径的核心
-// 证据：对一个真实的、未做任何裁剪的 v1 生产服务端发起协商，断言在超时
-// 窗口内被判定为 VersionV1、且不返回错误。
-func TestClientNegotiate_RealV1Server_DowngradesOnTimeout(t *testing.T) {
-	addr := startRealV1Server(t)
+// TestClientNegotiate_RealServer_NegotiatesV2 是任务条目 6①要求的"验证并
+// 确认"：对一个真实的、按生产接线组装的服务端（bannet.Server + service.
+// Router，v1 PUT/GET/DEL 路由照常注册）发起协商，断言：
+//  1. 协商成功判定为 VersionV2（而不是像本阶段之前那样超时降级）；
+//  2. 探测帧从未被分派到业务路由（helloTrapRouter 若被调用会直接 Fatal）；
+//  3. 协商切换到 v2 之后，这条连接上的 v1 PUT/GET 路由不再可能通过 v1 帧
+//     格式访问——这是"协商是一次性、per-connection、不可逆的决定"的直接
+//     后果，不单独断言（该行为已由 transport 包自身的单元测试覆盖）。
+func TestClientNegotiate_RealServer_NegotiatesV2(t *testing.T) {
+	addr := startRealServer(t)
 
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		t.Fatalf("拨号失败: %v", err)
 	}
 	defer conn.Close()
+
+	version, ack, err := negotiate.ClientNegotiate(conn, 3*time.Second)
+	if err != nil {
+		t.Fatalf("ClientNegotiate 返回错误: %v", err)
+	}
+	if version != negotiate.VersionV2 {
+		t.Fatalf("协商结果=%v，期望 VersionV2（第二阶段生产服务端应无条件识别 HELLO 探测帧）", version)
+	}
+	if ack != negotiate.AckEvery {
+		t.Fatalf("ack=%v，期望 AckEvery（本测试未请求 window/none）", ack)
+	}
+
+	// 给 helloTrapRouter 一个被误触发的机会：如果探测帧真的被分派到了业务
+	// 路由，前面的 ClientNegotiate 就已经因为收到的不是合法 v2 响应而报错
+	// 返回（v1 服务端对 HELLO 的正常业务响应是 v1 格式的 OK/ERR 帧，不是
+	// §5.1 的 v2 格式），所以走到这里就已经隐含证明了没有被分派；
+	// t.Cleanup 里的 srv.Stop() 还会再等一次所有连接收尾，helloTrapRouter.
+	// Handle 若被调用会在那之前已经 Fatal。
+}
+
+// TestClientNegotiate_LegacyPeer_DowngradesOnTimeout 是 §5 降级路径的核心
+// 证据：既然第二阶段的生产服务端现在无条件识别 HELLO（见上一个测试），
+// 就不能再用"起一个真实生产服务端"来验证客户端的超时降级机制——那个前提
+// 已经不成立。改用一个真正对 HELLO 一无所知的对端：一个只 Accept 连接、
+// 从不写任何字节的裸 TCP 监听器，字节层面精确复现"完全没有升级过的旧版
+// 二进制"的行为（不发送、不断开），断言客户端在超时窗口内判定为 VersionV1
+// 且不返回错误。
+func TestClientNegotiate_LegacyPeer_DowngradesOnTimeout(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败: %v", err)
+	}
+	defer l.Close()
+
+	accepted := make(chan struct{})
+	go func() {
+		conn, err := l.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		close(accepted)
+		<-time.After(2 * time.Second) // 保持连接打开但永不响应
+	}()
+
+	conn, err := net.DialTimeout("tcp", l.Addr().String(), 3*time.Second)
+	if err != nil {
+		t.Fatalf("拨号失败: %v", err)
+	}
+	defer conn.Close()
+	<-accepted
 
 	const timeout = 300 * time.Millisecond
 	start := time.Now()
@@ -124,23 +219,6 @@ func TestClientNegotiate_RealV1Server_DowngradesOnTimeout(t *testing.T) {
 	}
 	if elapsed > timeout*3 {
 		t.Fatalf("耗时=%v，远大于配置的超时=%v，怀疑读超时未生效", elapsed, timeout)
-	}
-
-	// 降级之后这条连接应仍可当 v1 连接正常使用——用一次真实的 PUT/GET 验证
-	// "复用同一条连接"这一步没有被协商阶段的读超时或半读字节污染。
-	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		t.Fatalf("设置读写超时失败: %v", err)
-	}
-	putFrame, err := codec.NewDataPack().Pack(codec.NewMessage(proto.MsgPut, encodePutPayload(t, "k-negotiate", "v-negotiate")))
-	if err != nil {
-		t.Fatalf("编码 PUT 帧失败: %v", err)
-	}
-	if _, err := conn.Write(putFrame); err != nil {
-		t.Fatalf("写 PUT 帧失败: %v", err)
-	}
-	status := readStatus(t, conn)
-	if status != proto.StatusOK {
-		t.Fatalf("降级后 PUT 状态=%q，期望 %q", status, proto.StatusOK)
 	}
 }
 

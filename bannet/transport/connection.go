@@ -63,11 +63,36 @@ type Connection struct {
 	// 只依赖同包定义的 ConnRegistry 接口。
 	Registry ConnRegistry
 
-	// OnFrame 在每次成功解出一帧后被调用，交给上层（根包 bannet，持有
-	// dispatch.MsgHandle）决定怎么分派——这正是 transport 不 import
-	// dispatch 的关键：transport 只管"喂 Frame"，不知道、也不需要知道
-	// Frame 之后被谁处理、用什么并发策略处理。
+	// OnFrame 在每次用 v1 codec 成功解出一帧后被调用，交给上层（根包
+	// bannet，持有 dispatch.MsgHandle）决定怎么分派——这正是 transport 不
+	// import dispatch 的关键：transport 只管"喂 Frame"，不知道、也不需要
+	// 知道 Frame 之后被谁处理、用什么并发策略处理。
 	OnFrame func(msg *codec.Message, conn handler.Conn)
+
+	// NegotiateFunc 是 BANLV v2 协商的接入点（docs/rfc/BANLV-2.md §5/§5.1），
+	// 可为 nil（v1-only 场景，如直接构造 Connection 的测试，行为与不存在
+	// 这个字段时完全一致）。每次用 v1 codec 解出一帧、且本连接尚未切换到
+	// v2 之前，都会先把这一帧交给 NegotiateFunc 判断——这不是逐帧都要
+	// "嗅探字节"，判断逻辑（是不是 HELLO 探测帧）完全由外部注入的函数体
+	// 决定，transport 本身不认识 HELLO 这个 msgID 语义，只认识"有一个可能
+	// 拦截当前帧、要求切换解码格式的钩子"，与 ConnStartFunc/OnFrame 是
+	// 同一种"transport 提供机制、根包注入策略"的模式。
+	//
+	// 返回 switchToV2=true 时：respond 是需要原样写回连接的完整响应帧
+	// 字节（已经是 v2 格式），本帧不再走 OnFrame（协商帧不应该被当成一次
+	// 正常业务请求分派出去），且此后本连接所有帧改用 v2 codec 解析、
+	// 通过 OnFrameV2 分派。返回 switchToV2=false 表示这不是协商帧，
+	// StartReader 照常调用 OnFrame，v1 客户端的行为不受这个字段存在与否
+	// 影响（这是 RFC 任务要求的"未探测/v1 客户端照常走 v1 路径零影响"）。
+	NegotiateFunc func(msg *codec.Message, conn handler.Conn) (respond []byte, switchToV2 bool)
+
+	// OnFrameV2 在协商切换到 v2 之后，每次用 v2 codec 成功解出一帧被调用，
+	// 与 OnFrame 对称但接收 codec.MessageV2。可为 nil（NegotiateFunc 为 nil
+	// 时不会有任何帧切换到 v2，OnFrameV2 自然也不会被调用；即使
+	// NegotiateFunc 非 nil 但 OnFrameV2 为 nil，切换后的 v2 帧会被静默
+	// 丢弃分派——上层若开启了协商就应该同时提供 OnFrameV2，这是调用方
+	// 的接线责任，不是 transport 需要校验的前置条件）。
+	OnFrameV2 func(msg *codec.MessageV2, conn handler.Conn)
 
 	// ConnStartFunc/ConnStopFunc 是连接建立/关闭时的用户回调（可为 nil），
 	// 由 Server.SetConnStartFunc/SetConnStopFunc 注册后经由 NewConnection
@@ -107,6 +132,9 @@ type Connection struct {
 
 // NewConnection 构造一个连接并注册进 registry。onFrame 是分派回调（见
 // Connection.OnFrame 的注释），connStartFunc/connStopFunc 可为 nil。
+// negotiateFunc/onFrameV2 是 BANLV v2 协商/分派的接入点（见各自字段的
+// 注释），同样可为 nil——nil 时本连接永远不会切换到 v2，行为与 v2 协商
+// 能力不存在时完全一致。
 func NewConnection(
 	conn *net.TCPConn,
 	connID uint32,
@@ -114,12 +142,16 @@ func NewConnection(
 	onFrame func(msg *codec.Message, conn handler.Conn),
 	connStartFunc func(conn handler.Conn),
 	connStopFunc func(conn handler.Conn),
+	negotiateFunc func(msg *codec.Message, conn handler.Conn) (respond []byte, switchToV2 bool),
+	onFrameV2 func(msg *codec.MessageV2, conn handler.Conn),
 ) *Connection {
 	c := &Connection{
 		Conn:          conn,
 		ConnID:        connID,
 		Registry:      registry,
 		OnFrame:       onFrame,
+		NegotiateFunc: negotiateFunc,
+		OnFrameV2:     onFrameV2,
 		ConnStartFunc: connStartFunc,
 		ConnStopFunc:  connStopFunc,
 		lc:            lifecycle.New(),
@@ -206,56 +238,63 @@ func (c *Connection) StartReader() {
 	// reader 在循环外创建：仅本 goroutine 读取该连接，故可安全复用。
 	reader := bufio.NewReaderSize(c.Conn, connReadBufSize)
 	dp := codec.NewDataPack()
+	dpV2 := codec.NewDataPackV2()
+	// usingV2 一旦置 true 永不回退——BANLV v2 协商（RFC §5）是一次性的、
+	// per-connection 的决定，一条连接不会中途"变回" v1。
+	usingV2 := false
 
 	for {
-		// 帧的完整读取（头部 → 校验帧长上限 → msgID → 负载）已合并进
-		// codec.DataPack.Decode——见 docs/rfc/bannet-重构.md B.3：此前这段逻辑
-		// 散落在本循环里，是分层不完整的直接证据。resetReadDeadline 作为
-		// beforeRead 回调传入，在每个逻辑读取单元（头部/msgID/负载）真正阻塞
-		// 之前重设超时，语义与重写前完全一致：一个正常但慢的大帧不会被腰斩，
-		// 只有"某一步完全不发了"才会超时。
-		msg, err := dp.Decode(reader, c.maxPackageSize, c.resetReadDeadline)
-		if err != nil {
-			switch {
-			case errors.Is(err, codec.ErrFrameTooLarge):
-				// 对端声称的帧长超过上限：读取负载前已拒绝，不会按其声称的
-				// 长度分配内存——沿用重写前的 Warn 级别（值得单独关注/计数）。
-				slog.Warn("conn frame exceeds max package size", "connID", c.ConnID, "error", err)
-				c.lc.Transition(lifecycle.EventReadError)
-			case errors.Is(err, io.EOF):
-				// io.ReadFull 只在帧边界（尚未读到任何字节）返回 io.EOF：
-				// 对端在两帧之间正常断开，是最常见的退出路径，沿用 Debug 级别。
-				slog.Debug("conn read failed", "connID", c.ConnID, "error", err)
-				c.lc.Transition(lifecycle.EventEOF)
-			default:
-				var netErr net.Error
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					// 读超时（SetReadDeadline 到期）：对端不配合但连接本身
-					// 没有传输层错误，是我们主动放弃这个连接，Debug 级别，
-					// 与 EOF 同级但打上不同的 event 标签，供状态机/日志区分
-					// "对端主动挂断" vs "我们主动放弃"。
-					slog.Debug("conn read timeout", "connID", c.ConnID, "error", err)
-					c.lc.Transition(lifecycle.EventReadTimeout)
-				} else {
-					// 其余情况（头部之外的位置提前断开 → io.ErrUnexpectedEOF、
-					// 解析头部失败等）沿用 Error 级别；具体是在哪一步失败
-					// 已由 Decode 通过 %w 链保留在 err 的文本里（"decode: read
-					// msgID: ..." 等），无需在此再区分。
-					slog.Error("conn decode frame failed", "connID", c.ConnID, "error", err)
-					c.lc.Transition(lifecycle.EventReadError)
+		if !usingV2 {
+			// 帧的完整读取（头部 → 校验帧长上限 → msgID → 负载）已合并进
+			// codec.DataPack.Decode——见 docs/rfc/bannet-重构.md B.3：此前这段
+			// 逻辑散落在本循环里，是分层不完整的直接证据。resetReadDeadline
+			// 作为 beforeRead 回调传入，在每个逻辑读取单元（头部/msgID/负载）
+			// 真正阻塞之前重设超时，语义与重写前完全一致：一个正常但慢的
+			// 大帧不会被腰斩，只有"某一步完全不发了"才会超时。
+			msg, err := dp.Decode(reader, c.maxPackageSize, c.resetReadDeadline)
+			if err != nil {
+				c.handleDecodeError(err)
+				return // defer 链负责收敛：Writer 排空后再物理关闭，见上方注释
+			}
+
+			// BANLV v2 协商接入点（docs/rfc/BANLV-2.md §5/§5.1）：在把这一帧
+			// 交给正常的 v1 分派之前，先问一次 NegotiateFunc 这是不是协商
+			// 探测帧——为 nil 或返回 switchToV2=false 时完全零影响，直接
+			// 落到下面的 c.OnFrame(msg, c)，v1 客户端的路径不受影响。
+			handledByNegotiate := false
+			if c.NegotiateFunc != nil {
+				if respond, switchToV2 := c.NegotiateFunc(msg, c); switchToV2 {
+					if err := c.SendRawMsg(respond); err != nil {
+						return
+					}
+					usingV2 = true
+					handledByNegotiate = true
 				}
 			}
-			return // defer 链负责收敛：Writer 排空后再物理关闭，见上方注释
-		}
 
-		// 分派完全交给上层回调决定（见 OnFrame 字段注释）：transport 只管
-		// "喂字节、拿 Message"，不知道 Frame 之后被谁处理、用什么并发策略——
-		// 这正是本次重构修复的 bug②：此前 useWorkerPool==false 时会在此处
-		// `go c.MsgHandle.DoMsgHandle(req)`，每帧一个不受追踪、无上限的
-		// 临时 goroutine（见 docs/rfc/bannet-重构.md B.4），现在这个决策
-		// 完全下沉到 dispatch 包内部（根包的 OnFrame 实现里），transport
-		// 不再持有、也不再需要知道 Dispatcher 类型。
-		c.OnFrame(msg, c)
+			// 分派完全交给上层回调决定（见 OnFrame 字段注释）：transport 只管
+			// "喂字节、拿 Message"，不知道 Frame 之后被谁处理、用什么并发策略——
+			// 这正是本次重构修复的 bug②：此前 useWorkerPool==false 时会在此处
+			// `go c.MsgHandle.DoMsgHandle(req)`，每帧一个不受追踪、无上限的
+			// 临时 goroutine（见 docs/rfc/bannet-重构.md B.4），现在这个决策
+			// 完全下沉到 dispatch 包内部（根包的 OnFrame 实现里），transport
+			// 不再持有、也不再需要知道 Dispatcher 类型。协商帧（
+			// handledByNegotiate==true）不调用 OnFrame——它已经被完整处理
+			// （响应已写回、连接已切换到 v2），不应该再被当成一次业务请求
+			// 分派给路由表（本来也没有任何路由注册 msgID=="HELLO"）。
+			if !handledByNegotiate {
+				c.OnFrame(msg, c)
+			}
+		} else {
+			msg2, err := dpV2.Decode(reader, c.maxPackageSize, c.resetReadDeadline)
+			if err != nil {
+				c.handleDecodeError(err)
+				return
+			}
+			if c.OnFrameV2 != nil {
+				c.OnFrameV2(msg2, c)
+			}
+		}
 
 		// 每处理完一帧，检查是否已经进入 Closing（比如 Server 正在优雅
 		// 关闭）——如果是，主动退出读循环，不再尝试读下一帧（那可能是一次
@@ -266,6 +305,42 @@ func (c *Connection) StartReader() {
 			slog.Debug("conn reader stopping: closing in progress", "connID", c.ConnID)
 			return
 		default:
+		}
+	}
+}
+
+// handleDecodeError 把一次帧解码失败（无论 v1 还是 v2 codec 产出）归类到
+// 生命周期状态机——两套 codec 的 Decode 都包裹同一批哨兵错误
+// （codec.ErrFrameTooLarge、io.EOF、net.Error 超时），分类逻辑因此可以
+// 完全复用，不需要为 v2 另写一份几乎相同的 switch。
+func (c *Connection) handleDecodeError(err error) {
+	switch {
+	case errors.Is(err, codec.ErrFrameTooLarge):
+		// 对端声称的帧长超过上限：读取负载前已拒绝，不会按其声称的
+		// 长度分配内存——沿用重写前的 Warn 级别（值得单独关注/计数）。
+		slog.Warn("conn frame exceeds max package size", "connID", c.ConnID, "error", err)
+		c.lc.Transition(lifecycle.EventReadError)
+	case errors.Is(err, io.EOF):
+		// io.ReadFull 只在帧边界（尚未读到任何字节）返回 io.EOF：
+		// 对端在两帧之间正常断开，是最常见的退出路径，沿用 Debug 级别。
+		slog.Debug("conn read failed", "connID", c.ConnID, "error", err)
+		c.lc.Transition(lifecycle.EventEOF)
+	default:
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			// 读超时（SetReadDeadline 到期）：对端不配合但连接本身
+			// 没有传输层错误，是我们主动放弃这个连接，Debug 级别，
+			// 与 EOF 同级但打上不同的 event 标签，供状态机/日志区分
+			// "对端主动挂断" vs "我们主动放弃"。
+			slog.Debug("conn read timeout", "connID", c.ConnID, "error", err)
+			c.lc.Transition(lifecycle.EventReadTimeout)
+		} else {
+			// 其余情况（头部之外的位置提前断开 → io.ErrUnexpectedEOF、
+			// 解析头部失败等）沿用 Error 级别；具体是在哪一步失败
+			// 已由 Decode 通过 %w 链保留在 err 的文本里（"decode: read
+			// msgID: ..." 等），无需在此再区分。
+			slog.Error("conn decode frame failed", "connID", c.ConnID, "error", err)
+			c.lc.Transition(lifecycle.EventReadError)
 		}
 	}
 }
@@ -459,6 +534,21 @@ func (c *Connection) SendBuffMsg(msgID string, data []byte) error {
 	}
 	select {
 	case c.msgBuffChan <- packet:
+		return nil
+	case <-c.lc.Done():
+		return errConnClosed
+	}
+}
+
+// SendRawMsg 实现 handler.Conn：写出一个已经编码好的完整帧，不经过
+// codec.DataPack.Pack（那是 v1 专属的编码，会把 data 误当成 v1 msgID+
+// payload 重新打包）。BANLV v2 的所有响应（含协商响应本身，见 StartReader
+// 里 NegotiateFunc 分支）都必须走这里——与 SendMsg/SendBuffMsg 共享同一个
+// msgChan，写入仍然完全串行化在 Writer goroutine 里，不会与 v1 帧或彼此
+// 产生交织写入。
+func (c *Connection) SendRawMsg(frame []byte) error {
+	select {
+	case c.msgChan <- frame:
 		return nil
 	case <-c.lc.Done():
 		return errConnClosed

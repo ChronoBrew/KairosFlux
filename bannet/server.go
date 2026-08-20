@@ -12,6 +12,7 @@ import (
 
 	"github.com/NeverENG/BanDB/bannet/codec"
 	"github.com/NeverENG/BanDB/bannet/dispatch"
+	"github.com/NeverENG/BanDB/bannet/negotiate"
 	"github.com/NeverENG/BanDB/bannet/transport"
 	"github.com/NeverENG/BanDB/config"
 )
@@ -24,6 +25,16 @@ type Server struct {
 	exitCh    chan os.Signal
 	MsgHandle Dispatcher
 	ConnMgr   ConnRegistry
+
+	// V2Handler 处理 BANLV v2 帧（RFC docs/rfc/BANLV-2.md），可为 nil（不
+	// 开启 v2 能力：连接协商 HELLO 探测帧仍会成功——v2 帧格式/协商本身与
+	// 是否注册业务处理器无关——但协商切换之后的每一帧都会被静默丢弃，见
+	// transport.Connection.OnFrameV2 字段注释）。与 v1 的 MsgHandle
+	// （msgID → Handler 路由表）不同，v2 只有一个处理器：v2 帧靠数字
+	// opcode 分派，内部由 HandlerV2.HandleV2 自行 switch（与
+	// service.Router.Handle 对 msgID 的 switch 同一写法），不需要一张
+	// opcode → Handler 的路由表。
+	V2Handler HandlerV2
 
 	ConnStartFunc func(conn Conn)
 	ConnStopFunc  func(conn Conn)
@@ -64,6 +75,49 @@ func (s *Server) Conns() ConnRegistry {
 func (s *Server) onFrame(msg *codec.Message, conn Conn) {
 	req := dispatch.NewRequest(msg, conn)
 	s.MsgHandle.SendMsgToTaskQueue(req)
+}
+
+// onNegotiate 是 transport.Connection.NegotiateFunc 的具体实现：把"这是不是
+// HELLO 探测帧、该怎么响应"这个判断委托给 bannet/negotiate（唯一认识
+// proto.MsgHello 语义与 §5.1 负载格式的包），协商成功后把确认的 ack 档位
+// 挂到连接属性上供 V2Handler（RouterV2）读取。transport 本身不 import
+// negotiate/proto——这个闭包是根包（同时依赖 transport 与 negotiate）
+// "组合而不是让子包互相依赖"的又一个例子，与 onFrame 桥接 transport/
+// dispatch 是同一种模式。
+func (s *Server) onNegotiate(msg *codec.Message, conn Conn) ([]byte, bool) {
+	respond, ack, isProbe, err := negotiate.ServerHandleProbe(msg)
+	if err != nil {
+		slog.Error("banNet v2 negotiate failed", "connID", conn.ID(), "error", err)
+		return nil, false
+	}
+	if !isProbe {
+		return nil, false
+	}
+	conn.SetProperty(negotiate.ConnPropertyAckTier, ack)
+	return respond, true
+}
+
+// onFrameV2 是 transport.Connection.OnFrameV2 的具体实现：与 onFrame 对称，
+// 但 v2 帧同步分派给 V2Handler（不经过 MsgHandle 的 worker 池）——这是
+// RFC §11.2.2"窗口内写帧严格按到达顺序处理"这条不变量在实现层面的落点：
+// 一条连接的 v2 帧永远在它自己的 Reader goroutine 里顺序处理，不存在
+// MsgHandle.SendMsgToTaskQueue 的 work-stealing 可能打乱同连接内帧顺序的
+// 风险（该风险在 v1 路径上是已知且被接受的，见
+// service/ingesthook/filter.go 的注释）；作为直接推论，RouterV2 为每条
+// 连接维护的窗口/累计计数状态不需要加锁——同一时刻只有这一个 goroutine
+// 会碰它。V2Handler 为 nil 时静默丢弃（未开启 v2 业务能力的部署，协商仍
+// 可以成功，但没有任何处理器）。
+func (s *Server) onFrameV2(msg *codec.MessageV2, conn Conn) {
+	if s.V2Handler == nil {
+		return
+	}
+	req := dispatch.NewRequestV2(msg, conn)
+	s.V2Handler.HandleV2(req)
+}
+
+// AddRouterV2 注册 v2 业务处理器（见 V2Handler 字段注释）。
+func (s *Server) AddRouterV2(h HandlerV2) {
+	s.V2Handler = h
 }
 
 func (s *Server) Start() {
@@ -138,7 +192,7 @@ func (s *Server) acceptLoop(listener *net.TCPListener) {
 			continue
 		}
 
-		go transport.NewConnection(conn, cid, s.ConnMgr, s.onFrame, s.ConnStartFunc, s.ConnStopFunc).Start()
+		go transport.NewConnection(conn, cid, s.ConnMgr, s.onFrame, s.ConnStartFunc, s.ConnStopFunc, s.onNegotiate, s.onFrameV2).Start()
 		cid++
 	}
 }

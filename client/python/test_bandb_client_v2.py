@@ -17,19 +17,29 @@ import unittest
 
 from bandb_client import (
     ACK_EVERY,
+    ACK_NONE,
+    ACK_WINDOW,
     HEADER_V2_LEN,
     MAGIC_V2,
     MSG_HELLO,
+    OPCODE_BYE,
+    OPCODE_FLUSH,
     OPCODE_OK,
+    OPCODE_STAT,
+    OPCODE_STAT_ACK,
+    OPCODE_WINDOW_ACK,
     SNIFF_V1,
     SNIFF_V2,
     SNIFF_UNSUPPORTED_VERSION,
     VERSION_V2,
     ProtocolError,
+    ReconciliationError,
     UnsupportedV2VersionError,
     build_hello_response_v2,
+    decode_ack_body,
     decode_frame_header,
     decode_header_v2,
+    encode_ack_body,
     encode_frame,
     encode_frame_v2,
     encode_hello_probe_v2,
@@ -204,6 +214,67 @@ class NegotiationVectorTests(unittest.TestCase):
         self.assertNotIn("frame_hex", v)
 
 
+class WindowStatByeVectorTests(unittest.TestCase):
+    """window_stat_bye 分区：RFC §11.2.2/§11.2.3/§11.4 新增的 FLUSH/STAT/BYE
+    请求帧与 WINDOW_ACK/STAT_ACK 响应体，双向编解码校验（对应 Go 侧
+    TestVectorsV2_WindowStatByeFramesMatchGolden/TestVectorsV2_AckBodyMatchesGolden）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        doc = _load_vectors()
+        cls.vecs = {v["name"]: v for v in doc["window_stat_bye"]}
+
+    def test_flush_request(self):
+        v = self.vecs["v2_flush_request"]
+        got = encode_frame_v2(v["flags"], v["opcode"], v["type"], v["corr_id"], b"")
+        self.assertEqual(got.hex(), v["frame_hex"])
+        self.assertEqual(v["opcode"], OPCODE_FLUSH)
+
+    def test_stat_request(self):
+        v = self.vecs["v2_stat_request"]
+        got = encode_frame_v2(v["flags"], v["opcode"], v["type"], v["corr_id"], b"")
+        self.assertEqual(got.hex(), v["frame_hex"])
+        self.assertEqual(v["opcode"], OPCODE_STAT)
+
+    def test_bye_request(self):
+        v = self.vecs["v2_bye_request"]
+        got = encode_frame_v2(v["flags"], v["opcode"], v["type"], v["corr_id"], b"")
+        self.assertEqual(got.hex(), v["frame_hex"])
+        self.assertEqual(v["opcode"], OPCODE_BYE)
+
+    def _assert_ack_matches(self, name, want_opcode):
+        v = self.vecs[name]
+        self.assertEqual(v["opcode"], want_opcode)
+        want_body = bytes.fromhex(v["data_hex"])
+
+        fields = decode_ack_body(want_body)
+        self.assertEqual(fields.corr_id, v["body_corr_id"])
+        self.assertEqual(fields.received, v["received"])
+        self.assertEqual(fields.accepted, v["accepted"])
+        self.assertEqual(fields.rejected, v["rejected"])
+        self.assertEqual(fields.first_err_code, v["first_err_code"])
+        self.assertEqual(fields.first_err_reason, v["first_err_reason"])
+
+        got_body = encode_ack_body(
+            v["body_corr_id"], v["received"], v["accepted"], v["rejected"],
+            v["first_err_code"], v["first_err_reason"].encode("utf-8"),
+        )
+        self.assertEqual(got_body.hex(), v["data_hex"])
+
+        got_frame = encode_frame_v2(v["flags"], v["opcode"], v["type"], v["corr_id"], got_body)
+        self.assertEqual(got_frame.hex(), v["frame_hex"])
+
+    def test_window_ack_with_rejection(self):
+        self._assert_ack_matches("v2_window_ack_with_rejection", OPCODE_WINDOW_ACK)
+
+    def test_stat_ack_clean(self):
+        self._assert_ack_matches("v2_stat_ack_clean", OPCODE_STAT_ACK)
+
+    def test_window_ack_empty_flush(self):
+        self._assert_ack_matches("v2_window_ack_empty_flush", OPCODE_WINDOW_ACK)
+
+
 class NegotiateClientTests(unittest.TestCase):
     """negotiate_client() 的行为测试——对应 Go 侧
     bannet/negotiate/negotiate_test.go 的同名场景。用 socket.socketpair()
@@ -267,6 +338,94 @@ class NegotiateClientTests(unittest.TestCase):
 
         with self.assertRaises(ProtocolError):
             negotiate_client(self.client_sock, timeout=0.5)
+
+
+class BanDBClientV2ReconciliationTests(unittest.TestCase):
+    """BanDBClientV2 的 ack=none 对账逻辑（RFC §11.2.3）与 ack=window/none
+    的 BYE 收尾解析（RFC §11.4）——用 socket.socketpair() 模拟服务端一侧
+    的响应字节，不起真实服务器，只验证客户端库自身的记账/解析逻辑（与
+    真实 Go 服务端的端到端联调见 crosslang_test.go 的
+    TestCrosslang_V2WindowBatchAndReconcile）。
+
+    直接向 client._sock/client.ack 赋值（绕开 connect()，它需要真实地址）
+    是刻意的：这里测的是协商完成之后的行为，不是协商本身（协商已由
+    NegotiateClientTests 覆盖）。
+    """
+
+    def setUp(self):
+        self.client_sock, self.server_sock = socket.socketpair()
+        self.addCleanup(self.client_sock.close)
+        self.addCleanup(self.server_sock.close)
+
+    def _make_client(self, ack):
+        from bandb_client import BanDBClientV2
+
+        c = BanDBClientV2("unused:0")
+        c._sock = self.client_sock
+        c.ack = ack
+        return c
+
+    def test_reconcile_succeeds_when_counts_match(self):
+        c = self._make_client(ACK_NONE)
+        c.put_none(b"k1", b"v1")
+        c.put_none(b"k2", b"v2")
+
+        self.server_sock.sendall(encode_frame_v2(0, OPCODE_STAT_ACK, 0, 0, encode_ack_body(0, 2, 2, 0, 0, b"")))
+        fields = c.reconcile()
+        self.assertEqual(fields.received, 2)
+        self.assertEqual(fields.accepted, 2)
+        self.assertEqual(fields.rejected, 0)
+
+    def test_reconcile_raises_on_mismatch(self):
+        c = self._make_client(ACK_NONE)
+        c.put_none(b"k1", b"v1")
+        c.put_none(b"k2", b"v2")
+        c.put_none(b"k3", b"v3")
+
+        # 服务端只报告收到 2 条（模拟丢包/连接抖动），本地却真的发送了 3 条。
+        self.server_sock.sendall(encode_frame_v2(0, OPCODE_STAT_ACK, 0, 0, encode_ack_body(0, 2, 2, 0, 0, b"")))
+        with self.assertRaises(ReconciliationError) as cm:
+            c.reconcile()
+        self.assertEqual(cm.exception.local_sent, 3)
+        self.assertEqual(cm.exception.server_received, 2)
+
+    def test_reconcile_reflects_injected_rejections_without_raising(self):
+        # 人为注入拒绝：received 与本地发送计数吻合（帧层面没有丢失），但
+        # accepted < received——这不是 ReconciliationError 的场景（RFC 原文：
+        # "这不是异常，是正常的拒绝反馈"），reconcile() 不应该抛异常。
+        c = self._make_client(ACK_NONE)
+        c.put_none(b"k1", b"v1")
+        c.put_none(b"k2", b"bad")
+
+        body = encode_ack_body(0, 2, 1, 1, 0x3001, b"schema: bad value")
+        self.server_sock.sendall(encode_frame_v2(0, OPCODE_STAT_ACK, 0, 0, body))
+        fields = c.reconcile()
+        self.assertEqual(fields.received, 2)
+        self.assertEqual(fields.accepted, 1)
+        self.assertEqual(fields.rejected, 1)
+        self.assertEqual(fields.first_err_code, 0x3001)
+        self.assertEqual(fields.first_err_reason, "schema: bad value")
+
+    def test_bye_window_consumes_window_ack_then_stat_ack(self):
+        c = self._make_client(ACK_WINDOW)
+        window_ack_body = encode_ack_body(5, 2, 2, 0, 0, b"")
+        stat_ack_body = encode_ack_body(9, 2, 2, 0, 0, b"")
+        self.server_sock.sendall(
+            encode_frame_v2(0, OPCODE_WINDOW_ACK, 0, 5, window_ack_body)
+            + encode_frame_v2(0, OPCODE_STAT_ACK, 0, 9, stat_ack_body)
+        )
+        window_ack, stat_ack = c.bye(corr_id=9)
+        self.assertIsNotNone(window_ack)
+        self.assertEqual(window_ack.corr_id, 5)
+        self.assertEqual(stat_ack.corr_id, 9)
+
+    def test_bye_none_returns_only_stat_ack(self):
+        c = self._make_client(ACK_NONE)
+        stat_ack_body = encode_ack_body(3, 4, 4, 0, 0, b"")
+        self.server_sock.sendall(encode_frame_v2(0, OPCODE_STAT_ACK, 0, 3, stat_ack_body))
+        window_ack, stat_ack = c.bye(corr_id=3)
+        self.assertIsNone(window_ack)
+        self.assertEqual(stat_ack.received, 4)
 
 
 if __name__ == "__main__":

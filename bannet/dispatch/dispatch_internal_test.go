@@ -30,6 +30,7 @@ func (f *fakeConnForDivZero) ID() uint32                       { return 5 }
 func (f *fakeConnForDivZero) RemoteAddr() net.Addr             { return nil }
 func (f *fakeConnForDivZero) SendMsg(string, []byte) error     { return nil }
 func (f *fakeConnForDivZero) SendBuffMsg(string, []byte) error { return nil }
+func (f *fakeConnForDivZero) SendRawMsg([]byte) error          { return nil }
 func (f *fakeConnForDivZero) SetProperty(string, any)          {}
 func (f *fakeConnForDivZero) Property(string) any              { return nil }
 func (f *fakeConnForDivZero) RemoveProperty(string)            {}

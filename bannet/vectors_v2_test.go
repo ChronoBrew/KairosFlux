@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/NeverENG/BanDB/bannet/codec"
+	"github.com/NeverENG/BanDB/proto"
 )
 
 type frameVectorV2 struct {
@@ -54,10 +55,36 @@ type negotiationVectorV2 struct {
 	ExpectNoResponse bool   `json:"expect_no_response"`
 }
 
+// windowStatByeVectorV2 覆盖 RFC §11.2.2/§11.2.3/§11.4 新增的 opcode/响应体
+// 格式：FLUSH/STAT/BYE 请求帧，以及 WINDOW_ACK/STAT_ACK 响应帧（含响应体
+// 字段的黄金值，供 proto.DecodeV2AckBody/proto.V2AckBody 双向校验）。
+type windowStatByeVectorV2 struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Flags       uint8  `json:"flags"`
+	Opcode      uint8  `json:"opcode"`
+	Type        uint16 `json:"type"`
+	CorrID      uint32 `json:"corr_id"`
+	DataHex     string `json:"data_hex"`
+	FrameHex    string `json:"frame_hex"`
+
+	// 以下字段仅 WINDOW_ACK/STAT_ACK 向量非零：响应体（RFC §11.2.2）的黄金
+	// 字段值，DataHex 即这些字段编码后的字节。
+	BodyCorrID     *uint32 `json:"body_corr_id"`
+	Received       *uint32 `json:"received"`
+	Accepted       *uint32 `json:"accepted"`
+	Rejected       *uint32 `json:"rejected"`
+	FirstErrCode   *uint16 `json:"first_err_code"`
+	FirstErrReason *string `json:"first_err_reason"`
+}
+
+func (v windowStatByeVectorV2) isAck() bool { return v.BodyCorrID != nil }
+
 type vectorsV2File struct {
-	Frames      []frameVectorV2       `json:"frames"`
-	HeaderOnly  []headerOnlyVectorV2  `json:"header_only"`
-	Negotiation []negotiationVectorV2 `json:"negotiation"`
+	Frames        []frameVectorV2         `json:"frames"`
+	HeaderOnly    []headerOnlyVectorV2    `json:"header_only"`
+	Negotiation   []negotiationVectorV2   `json:"negotiation"`
+	WindowStatBye []windowStatByeVectorV2 `json:"window_stat_bye"`
 }
 
 func loadVectorsV2(t *testing.T) vectorsV2File {
@@ -362,5 +389,104 @@ func TestVectorsV2_NegotiationResponseIsV2Format(t *testing.T) {
 	}
 	if h.CorrID != 0 {
 		t.Fatalf("CorrID=%d，期望 0", h.CorrID)
+	}
+}
+
+// TestVectorsV2_WindowStatByeFramesMatchGolden 验证 window_stat_bye 分区里
+// 的每一条请求帧（FLUSH/STAT/BYE，无响应体）都能被 DataPackV2 正确解出
+// opcode/type/corr_id/负载，且与 Pack 后重新编码的字节与向量完全一致。
+func TestVectorsV2_WindowStatByeFramesMatchGolden(t *testing.T) {
+	dp := codec.NewDataPackV2()
+	for _, v := range loadVectorsV2(t).WindowStatBye {
+		if v.isAck() {
+			continue // 带响应体的向量由下面的 TestVectorsV2_AckBodyMatchesGolden 单独覆盖
+		}
+		v := v
+		t.Run(v.Name, func(t *testing.T) {
+			wantFrame, err := hex.DecodeString(v.FrameHex)
+			if err != nil {
+				t.Fatalf("frame_hex 不是合法十六进制: %v", err)
+			}
+			data, err := hex.DecodeString(v.DataHex)
+			if err != nil {
+				t.Fatalf("data_hex 不是合法十六进制: %v", err)
+			}
+
+			h, err := dp.UnPack(wantFrame[:dp.HeadLen()])
+			if err != nil {
+				t.Fatalf("UnPack 失败: %v", err)
+			}
+			if h.Opcode != v.Opcode || h.Type != v.Type || h.CorrID != v.CorrID {
+				t.Fatalf("头部字段=%+v，期望 opcode=%#x type=%d corr_id=%d", h, v.Opcode, v.Type, v.CorrID)
+			}
+
+			msg := codec.NewMessageV2(codec.HeaderV2{Flags: v.Flags, Opcode: v.Opcode, Type: v.Type, CorrID: v.CorrID}, data)
+			gotFrame, err := dp.Pack(msg)
+			if err != nil {
+				t.Fatalf("Pack 失败: %v", err)
+			}
+			if hex.EncodeToString(gotFrame) != hex.EncodeToString(wantFrame) {
+				t.Fatalf("帧字节与向量不一致\n  向量: %x\n  实际: %x", wantFrame, gotFrame)
+			}
+		})
+	}
+}
+
+// TestVectorsV2_AckBodyMatchesGolden 验证 WINDOW_ACK/STAT_ACK 响应体
+// （RFC §11.2.2，corr_id 在帧头与响应体内各出现一次）双向编解码：
+// proto.DecodeV2AckBody 从向量的 data_hex 解出的字段与黄金值一致，
+// proto.V2AckBody 用黄金字段重新编码的字节与向量的 data_hex 完全一致。
+func TestVectorsV2_AckBodyMatchesGolden(t *testing.T) {
+	for _, v := range loadVectorsV2(t).WindowStatBye {
+		if !v.isAck() {
+			continue
+		}
+		v := v
+		t.Run(v.Name, func(t *testing.T) {
+			wantBody, err := hex.DecodeString(v.DataHex)
+			if err != nil {
+				t.Fatalf("data_hex 不是合法十六进制: %v", err)
+			}
+
+			fields, ok := proto.DecodeV2AckBody(wantBody)
+			if !ok {
+				t.Fatalf("DecodeV2AckBody 解析失败: %x", wantBody)
+			}
+			if fields.CorrID != *v.BodyCorrID {
+				t.Fatalf("body corr_id=%d，期望 %d", fields.CorrID, *v.BodyCorrID)
+			}
+			if fields.Received != *v.Received || fields.Accepted != *v.Accepted || fields.Rejected != *v.Rejected {
+				t.Fatalf("received/accepted/rejected=%d/%d/%d，期望 %d/%d/%d",
+					fields.Received, fields.Accepted, fields.Rejected, *v.Received, *v.Accepted, *v.Rejected)
+			}
+			if fields.FirstErrCode != *v.FirstErrCode {
+				t.Fatalf("firstErrCode=%#x，期望 %#x", fields.FirstErrCode, *v.FirstErrCode)
+			}
+			if fields.FirstErrReason != *v.FirstErrReason {
+				t.Fatalf("firstErrReason=%q，期望 %q", fields.FirstErrReason, *v.FirstErrReason)
+			}
+
+			gotBody := proto.V2AckBody(*v.BodyCorrID, *v.Received, *v.Accepted, *v.Rejected, *v.FirstErrCode, *v.FirstErrReason)
+			if hex.EncodeToString(gotBody) != hex.EncodeToString(wantBody) {
+				t.Fatalf("重新编码的响应体与向量不一致\n  向量: %x\n  实际: %x", wantBody, gotBody)
+			}
+
+			// 帧头本身也断言一遍：opcode/type/corr_id，以及帧头 corr_id 与
+			// 响应体 corr_id 在本向量里取值相同（RFC 要求两处都存在，不要求
+			// 两处相等——本向量恰好相等只是"关闭的就是这个窗口/回带的就是
+			// 这次 STAT"这个业务事实的体现，不是协议强制的相等关系）。
+			wantFrame, err := hex.DecodeString(v.FrameHex)
+			if err != nil {
+				t.Fatalf("frame_hex 不是合法十六进制: %v", err)
+			}
+			dp := codec.NewDataPackV2()
+			h, err := dp.UnPack(wantFrame[:dp.HeadLen()])
+			if err != nil {
+				t.Fatalf("UnPack 失败: %v", err)
+			}
+			if h.Opcode != v.Opcode || h.Type != v.Type || h.CorrID != v.CorrID {
+				t.Fatalf("头部字段=%+v，期望 opcode=%#x type=%d corr_id=%d", h, v.Opcode, v.Type, v.CorrID)
+			}
+		})
 	}
 }

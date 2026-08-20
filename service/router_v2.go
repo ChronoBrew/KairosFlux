@@ -1,0 +1,397 @@
+package service
+
+import (
+	"errors"
+	"log/slog"
+
+	"github.com/NeverENG/BanDB/bannet"
+	"github.com/NeverENG/BanDB/bannet/codec"
+	"github.com/NeverENG/BanDB/bannet/negotiate"
+	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/NeverENG/BanDB/proto"
+	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/NeverENG/BanDB/storage"
+)
+
+// RouterV2 是 BANLV v2（docs/rfc/BANLV-2.md）的业务处理器：单一 HandleV2
+// 方法内部按 opcode switch（与 v1 Router.Handle 对 msgID switch 是同一写法），
+// 由 bannet.Server.AddRouterV2 注册。
+//
+// 与 v1 Router 的两处刻意的范围收缩（本阶段明确不做，不是遗漏）：
+//   - 不支持 SetRouting 的分片转发能力——v2 本阶段的任务是 ack 三档协商/
+//     窗口/对账/BYE 语义（RFC §11），分片路由是另一个维度的能力，与 v1
+//     对齐是后续阶段的工作，见 DEVELOPMENT.md。
+//   - 不接入 admission.Limiter 网关准入——理由同上。
+//
+// 并发模型：HandleV2 由 bannet.Server.onFrameV2 在该连接自己的 Reader
+// goroutine 里同步调用（RFC §11.2.2"窗口内写帧严格按到达顺序处理"这条
+// 不变量的实现落点，见 bannet/server.go 的 onFrameV2 注释）——因此
+// v2ConnState 不需要加锁：同一时刻只有这一个 goroutine 会读写它，这是
+// RFC §11.2.3 实现提醒里"是否需要锁"这个开放问题在本实现下的答案。
+type RouterV2 struct {
+	store KVStore
+	// filter 可为 nil：不做 schema 校验，PUT 只要帧本身能解出 key/value
+	// 就一律 accepted（与 v1 在没有配置 ingesthook.Filter 时的行为对称）。
+	filter *ingesthook.Filter
+	// windowSafetyValveN 是 §11.2.2 的安全阀 N：ack=window 连接上，当前
+	// 窗口收满这么多写帧后无条件关闭并发 WINDOW_ACK，独立于客户端自己按
+	// corr_id/FLUSH 划分的批次边界，防止客户端一直不 FLUSH 导致服务端
+	// 无限攒积压。
+	windowSafetyValveN uint32
+}
+
+// DefaultV2WindowSafetyValveN 是生产环境的默认安全阀取值——测试可以在
+// 构造 RouterV2 时传入远小的值以在短时间内触发安全阀关窗路径，不依赖
+// config.G 全局状态（外科手术式修改：不新增全局配置字段，构造时注入即可
+// 满足"测试用 N=3 而不改全局"的需要）。
+const DefaultV2WindowSafetyValveN = 1000
+
+// NewRouterV2 构造一个 RouterV2。filter 为 nil 时跳过 schema 校验；
+// windowSafetyValveN<=0 时退化为 DefaultV2WindowSafetyValveN。
+func NewRouterV2(store KVStore, filter *ingesthook.Filter, windowSafetyValveN uint32) *RouterV2 {
+	if windowSafetyValveN == 0 {
+		windowSafetyValveN = DefaultV2WindowSafetyValveN
+	}
+	return &RouterV2{store: store, filter: filter, windowSafetyValveN: windowSafetyValveN}
+}
+
+// v2ConnStatePropertyKey 是 v2ConnState 挂在 handler.Conn 属性袋上的 key。
+const v2ConnStatePropertyKey = "banlv.v2.connState"
+
+// v2ConnState 是一条 v2 连接的窗口/累计计数状态（RFC §11.2.2/§11.2.3）。
+// 窗口态（windowXxx）只在 ack=window 时有意义；累计态（cumXxx）覆盖整条
+// 连接自建立以来的计数，供 §11.2.3 的 STAT 与 §11.4 BYE 的隐式 STAT 使用，
+// 无论 ack=window 还是 none 都会维护。
+type v2ConnState struct {
+	windowOpen           bool
+	windowCorrID         uint32
+	windowReceived       uint32
+	windowAccepted       uint32
+	windowRejected       uint32
+	windowFirstErrCode   uint16
+	windowFirstErrReason string
+
+	cumReceived       uint32
+	cumAccepted       uint32
+	cumRejected       uint32
+	cumFirstErrCode   uint16
+	cumFirstErrReason string
+}
+
+func (r *RouterV2) connState(conn bannet.Conn) *v2ConnState {
+	if s, ok := conn.Property(v2ConnStatePropertyKey).(*v2ConnState); ok {
+		return s
+	}
+	s := &v2ConnState{}
+	conn.SetProperty(v2ConnStatePropertyKey, s)
+	return s
+}
+
+func (r *RouterV2) ackTier(conn bannet.Conn) negotiate.AckTier {
+	if ack, ok := conn.Property(negotiate.ConnPropertyAckTier).(negotiate.AckTier); ok {
+		return ack
+	}
+	return negotiate.AckEvery
+}
+
+// HandleV2 实现 bannet.HandlerV2：按 opcode 分派。
+func (r *RouterV2) HandleV2(req bannet.RequestV2) {
+	switch req.Opcode() {
+	case codec.OpcodePut, codec.OpcodeDel:
+		r.handleWrite(req)
+	case codec.OpcodeGet:
+		r.maybeImplicitFlush(req)
+		r.handleGet(req)
+	case codec.OpcodeScan:
+		r.maybeImplicitFlush(req)
+		r.handleScan(req)
+	case codec.OpcodeFlush:
+		r.handleFlush(req)
+	case codec.OpcodeStat:
+		r.handleStat(req)
+	case codec.OpcodeBye:
+		r.handleBye(req)
+	default:
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "unknown opcode")
+	}
+}
+
+// maybeImplicitFlush 实现 RFC §11.5：ack=window 模式下，若当前窗口尚未
+// 关闭时收到 GET/SCAN，先按 §11.2.2 规则隐式关闭它（发 WINDOW_ACK），
+// 再正常处理这条读请求——保证同一连接上"写后立即读"不需要客户端先手动
+// FLUSH。ack=every/none 模式下没有"窗口"这个概念，不做任何事。
+func (r *RouterV2) maybeImplicitFlush(req bannet.RequestV2) {
+	if r.ackTier(req.Conn()) != negotiate.AckWindow {
+		return
+	}
+	state := r.connState(req.Conn())
+	if state.windowOpen {
+		r.closeWindow(req.Conn(), state)
+	}
+}
+
+// handleWrite 处理 PUT/DEL 两种写 opcode。三档 ack 的分支：
+//   - every：与 v1 语义等价，逐帧回一个 OK/ERR。
+//   - window：不逐帧回应，累计进当前窗口，按 corr_id 变化/安全阀 N 关窗。
+//   - none：不逐帧回应，只累计连接级计数，无窗口概念。
+func (r *RouterV2) handleWrite(req bannet.RequestV2) {
+	accepted, errCode, reason := r.applyWrite(req)
+
+	switch r.ackTier(req.Conn()) {
+	case negotiate.AckWindow:
+		r.recordIntoWindow(req, accepted, errCode, reason)
+	case negotiate.AckNone:
+		r.recordCumulative(req.Conn(), accepted, errCode, reason)
+	default: // AckEvery
+		if accepted {
+			r.sendOK(req.Conn(), req.Type(), req.CorrID(), nil)
+		} else {
+			r.sendErr(req.Conn(), req.Type(), req.CorrID(), errCode, reason)
+		}
+	}
+}
+
+// applyWrite 是 PUT/DEL 的实际业务处理：解帧 → （PUT 才做）schema 校验 →
+// 落盘。返回 accepted=false 时 errCode/reason 说明原因，供 ack=every 的
+// 即时响应与 ack=window/none 的计数复用同一套判定，不重复实现两遍。
+//
+// 一条本阶段的刻意行为差异（相对 v1 Router.handlePut，已记入交付报告的
+// 偏差清单）：v1 对畸形 PUT 帧只是 slog.Warn 后静默丢帧，不回任何响应、
+// 不计入任何计数；v2 这里把"帧解不出 key/value"算作 received 且 rejected
+// 的一次——RFC §11.2.2 对 received 的定义是"成功解出的写帧数（含被拒绝
+// 的）"，若把畸形帧排除在 received 之外，ack=none 的 STAT 对账会把"网络层
+// 确实收到了字节、但帧本身不合法"这类问题永久排除在诊断范围之外，与
+// §11.2.3 强调的诊断粒度设计意图相悖。
+func (r *RouterV2) applyWrite(req bannet.RequestV2) (accepted bool, errCode uint16, reason string) {
+	data := req.Data()
+
+	if req.Opcode() == codec.OpcodeDel {
+		key, ok := proto.DecodeKeyFrame(data)
+		if !ok {
+			// 与 v1 Router.handleDelete 对齐：畸形 DEL 帧本身也不计任何全局
+			// metrics（v1 那里同样只是 `if !ok { return }`，见 service/router.go）。
+			return false, codec.ErrCodeMalformedFrame, "malformed_frame"
+		}
+		if err := r.store.Write(Command{Type: CommandDelete, Key: key}); err != nil {
+			metrics.WriteErrors.Add(1)
+			return false, codec.ErrCodeNone, "store_error"
+		}
+		metrics.Deletes.Add(1)
+		return true, codec.ErrCodeNone, ""
+	}
+
+	key, value, ok := proto.DecodePutFrame(data)
+	if !ok {
+		// 与 v1 ingesthook.Filter.Handle 对齐：畸形 PUT 帧计入
+		// FramesDroppedMalformed——这是本仓库唯一的进程级可观测性出口
+		// （headless 部署直接 tail 日志），v2 写路径必须与 v1 共享同一套
+		// 全局计数器，不能只有本文件自己的连接级窗口/累计计数（RFC
+		// §11.2.3 实现提醒明确要求两者并存，见本文件顶部注释）。
+		metrics.FramesDroppedMalformed.Add(1)
+		return false, codec.ErrCodeMalformedFrame, "malformed_frame"
+	}
+
+	if r.filter != nil {
+		newValue, _, result, reason := r.filter.Validate(key, value)
+		if result == ingesthook.ResultDrop {
+			// Filter.Validate 内部已经按具体丢弃原因（oversized/非单调/
+			// schema）各自 .Add(1) 过对应的 FramesDroppedXxx 计数器，这里
+			// 不需要、也不应该重复计数。
+			return false, codec.ErrCodeSchemaValidation, reason
+		}
+		value = newValue
+	}
+
+	if err := r.store.Write(Command{Type: CommandPut, Key: key, Value: value}); err != nil {
+		metrics.WriteErrors.Add(1)
+		return false, codec.ErrCodeNone, "store_error"
+	}
+	metrics.Writes.Add(1)
+	return true, codec.ErrCodeNone, ""
+}
+
+// recordIntoWindow 把一次写结果计入当前窗口（ack=window 专用），实现
+// RFC §11.2.2 的窗口边界规则：corr_id 变化则先隐式关闭旧窗口再开新窗口，
+// 计数达到安全阀 N 则关闭当前窗口。同时镜像写入连接级累计计数——BYE 的
+// 隐式 STAT 摘要（§11.4）需要它，无论窗口在那一刻是开是关。
+func (r *RouterV2) recordIntoWindow(req bannet.RequestV2, accepted bool, errCode uint16, reason string) {
+	conn := req.Conn()
+	state := r.connState(conn)
+
+	if state.windowOpen && state.windowCorrID != req.CorrID() {
+		r.closeWindow(conn, state)
+	}
+	if !state.windowOpen {
+		state.windowOpen = true
+		state.windowCorrID = req.CorrID()
+		state.windowReceived, state.windowAccepted, state.windowRejected = 0, 0, 0
+		state.windowFirstErrCode, state.windowFirstErrReason = codec.ErrCodeNone, ""
+	}
+
+	state.windowReceived++
+	if accepted {
+		state.windowAccepted++
+	} else {
+		state.windowRejected++
+		if state.windowFirstErrCode == codec.ErrCodeNone && state.windowFirstErrReason == "" {
+			state.windowFirstErrCode, state.windowFirstErrReason = errCode, reason
+		}
+	}
+	r.recordCumulativeOnly(state, accepted, errCode, reason)
+
+	if state.windowReceived >= r.windowSafetyValveN {
+		r.closeWindow(conn, state)
+	}
+}
+
+// closeWindow 关闭当前打开的窗口并发出 WINDOW_ACK（RFC §11.2.2），随后把
+// 窗口态清空为"未打开"。调用前必须已确认 state.windowOpen==true。
+func (r *RouterV2) closeWindow(conn bannet.Conn, state *v2ConnState) {
+	body := proto.V2AckBody(state.windowCorrID, state.windowReceived, state.windowAccepted,
+		state.windowRejected, state.windowFirstErrCode, state.windowFirstErrReason)
+	r.sendV2(conn, codec.OpcodeWindowAck, codec.TypeUnspecified, state.windowCorrID, body)
+	state.windowOpen = false
+}
+
+// recordCumulative 把一次写结果计入连接级累计计数（ack=none 专用：没有
+// 窗口概念，每帧独立累计，不发任何响应）。
+func (r *RouterV2) recordCumulative(conn bannet.Conn, accepted bool, errCode uint16, reason string) {
+	state := r.connState(conn)
+	r.recordCumulativeOnly(state, accepted, errCode, reason)
+}
+
+func (r *RouterV2) recordCumulativeOnly(state *v2ConnState, accepted bool, errCode uint16, reason string) {
+	state.cumReceived++
+	if accepted {
+		state.cumAccepted++
+	} else {
+		state.cumRejected++
+		if state.cumFirstErrCode == codec.ErrCodeNone && state.cumFirstErrReason == "" {
+			state.cumFirstErrCode, state.cumFirstErrReason = errCode, reason
+		}
+	}
+	// 协议不变量（RFC §11.2.2）：received == accepted + rejected。由本函数
+	// 是三个计数器唯一的写入点这一事实保证成立，这里加一道防御性断言，
+	// 若被打破说明本文件自身的记账逻辑有 bug（不是外部输入能触发的）。
+	if state.cumReceived != state.cumAccepted+state.cumRejected {
+		slog.Error("banNet v2 accounting invariant violated",
+			"received", state.cumReceived, "accepted", state.cumAccepted, "rejected", state.cumRejected)
+	}
+}
+
+// handleFlush 处理 FLUSH（opcode 0x07，RFC §11.2.2）：ack=window 模式下
+// 关闭当前窗口（若有）并发 WINDOW_ACK；没有打开的窗口时发一个全零的
+// WINDOW_ACK（corr_id=0）作为"当前无待关闭窗口"的诚实回应，而不是静默
+// 忽略这次 FLUSH。非 window 模式（every/none）下 FLUSH 没有意义，同样回一个
+// 全零 WINDOW_ACK，不报错——协议未对"档位不匹配的控制帧"定义拒绝语义，
+// 静默接受空响应比断连接更符合"读多写少场景，宽容优先"的取向。
+func (r *RouterV2) handleFlush(req bannet.RequestV2) {
+	conn := req.Conn()
+	if r.ackTier(conn) == negotiate.AckWindow {
+		state := r.connState(conn)
+		if state.windowOpen {
+			r.closeWindow(conn, state)
+			return
+		}
+	}
+	body := proto.V2AckBody(0, 0, 0, 0, codec.ErrCodeNone, "")
+	r.sendV2(conn, codec.OpcodeWindowAck, codec.TypeUnspecified, 0, body)
+}
+
+// handleStat 处理 STAT（opcode 0x08，RFC §11.2.3）：回传连接自建立以来的
+// 累计「接收/接受/拒绝」计数，corr_id 取 STAT 请求帧本身的 corr_id
+// （普通请求-响应关联，不是窗口分组）。非破坏性：不清零、不影响后续计数。
+func (r *RouterV2) handleStat(req bannet.RequestV2) {
+	state := r.connState(req.Conn())
+	body := proto.V2AckBody(req.CorrID(), state.cumReceived, state.cumAccepted,
+		state.cumRejected, state.cumFirstErrCode, state.cumFirstErrReason)
+	r.sendV2(req.Conn(), codec.OpcodeStatAck, codec.TypeUnspecified, req.CorrID(), body)
+}
+
+// handleBye 处理 BYE（opcode 0x06，RFC §11.4）。every 档位语义不变（保留
+// 位，服务端不主动做任何事——礼貌关闭与否由客户端自行决定，符合
+// service.Router.OnConnStart/OnConnStop"纯请求-响应协议不主动下发消息"的
+// 既有原则）。window/none 档位第一次被赋予行为：
+//  1. window 且窗口打开：先按 §11.2.2 关闭它（发 WINDOW_ACK）。
+//  2. 再回传一次连接级累计摘要，复用 STAT_ACK 格式（RFC 原文："而不是另外
+//     定义第三种响应格式"）。corr_id 取 BYE 帧本身的 corr_id——RFC 未明确
+//     这一步的 corr_id 应该是什么（STAT_ACK 一节描述的是"STAT 请求触发"
+//     的普通场景），这里选择"触发它的那一帧"这个最自然的读法，记入交付
+//     报告的偏差清单。
+func (r *RouterV2) handleBye(req bannet.RequestV2) {
+	conn := req.Conn()
+	ack := r.ackTier(conn)
+	if ack != negotiate.AckWindow && ack != negotiate.AckNone {
+		return
+	}
+
+	state := r.connState(conn)
+	if ack == negotiate.AckWindow && state.windowOpen {
+		r.closeWindow(conn, state)
+	}
+
+	body := proto.V2AckBody(req.CorrID(), state.cumReceived, state.cumAccepted,
+		state.cumRejected, state.cumFirstErrCode, state.cumFirstErrReason)
+	r.sendV2(conn, codec.OpcodeStatAck, codec.TypeUnspecified, req.CorrID(), body)
+}
+
+// handleGet 处理 GET：与 v1 Router.handleGet 语义等价（含分片转发能力
+// 本阶段不支持这一点差异），只是响应用 v2 帧格式。OK 响应负载直接是
+// value 本身（§4 结构化响应体细节本轮不定稿，见 RFC，本阶段选择最小可用
+// 编码：value 就是负载，不额外包一层状态字段——opcode 本身已经区分了
+// 成功/失败）。
+func (r *RouterV2) handleGet(req bannet.RequestV2) {
+	key, ok := proto.DecodeKeyFrame(req.Data())
+	if !ok {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+	metrics.Reads.Add(1)
+	value, err := r.store.Get(key)
+	if errors.Is(err, storage.ErrKeyNotFound) {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "notfound")
+		return
+	}
+	if err != nil {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
+		return
+	}
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), value)
+}
+
+// handleScan 处理 SCAN：复用 proto.EncodeScanResponse 的条目编码（去掉 v1
+// 特有的 status 字符串前缀，opcode 本身已经承担这个角色）。
+func (r *RouterV2) handleScan(req bannet.RequestV2) {
+	sreq, err := proto.DecodeScanRequest(req.Data())
+	if err != nil {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+	metrics.Scans.Add(1)
+	entries := r.store.Scan(sreq.Start, sreq.End, sreq.Pred, 0)
+	// EncodeScanResponse 编码的是 v1 格式（含 status 前缀）；v2 只需要
+	// status 之后的 count+entries 部分，opcode=OK 已经表达了"成功"。
+	full := proto.EncodeScanResponse(proto.StatusOK, entries)
+	body := full[1+len(proto.StatusOK):]
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
+}
+
+func (r *RouterV2) sendOK(conn bannet.Conn, typ uint16, corrID uint32, payload []byte) {
+	r.sendV2(conn, codec.OpcodeOK, typ, corrID, payload)
+}
+
+func (r *RouterV2) sendErr(conn bannet.Conn, typ uint16, corrID uint32, errCode uint16, reason string) {
+	r.sendV2(conn, codec.OpcodeErr, typ, corrID, proto.V2ErrPayload(errCode, reason))
+}
+
+func (r *RouterV2) sendV2(conn bannet.Conn, opcode uint8, typ uint16, corrID uint32, payload []byte) {
+	msg := codec.NewMessageV2(codec.HeaderV2{Opcode: opcode, Type: typ, CorrID: corrID}, payload)
+	frame, err := codec.NewDataPackV2().Pack(msg)
+	if err != nil {
+		slog.Error("banNet v2 pack response failed", "error", err)
+		return
+	}
+	if err := conn.SendRawMsg(frame); err != nil {
+		slog.Debug("banNet v2 send response failed", "connID", conn.ID(), "error", err)
+	}
+}

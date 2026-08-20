@@ -22,6 +22,7 @@ func (c *fakeConn) TCPConn() *net.TCPConn                   { return nil }
 func (c *fakeConn) ID() uint32                              { return 1 }
 func (c *fakeConn) RemoteAddr() net.Addr                    { return nil }
 func (c *fakeConn) SendMsg(msgID string, data []byte) error { return nil }
+func (c *fakeConn) SendRawMsg(frame []byte) error           { return nil }
 func (c *fakeConn) SendBuffMsg(msgID string, data []byte) error {
 	c.lastMsgID = msgID
 	c.lastData = data

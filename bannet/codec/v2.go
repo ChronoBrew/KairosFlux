@@ -39,19 +39,40 @@ const (
 	OpcodeDel   uint8 = 0x03
 	OpcodeScan  uint8 = 0x04
 	OpcodeHello uint8 = 0x05 // v2 起第一次被赋予行为（协商，见 bannet/negotiate 包）
-	OpcodeBye   uint8 = 0x06 // 语义待定（RFC §3.1/§7），本阶段只保留常量
+	// OpcodeBye: ack=every 连接上仍是保留位（语义不变）；ack=window/none 连接上
+	// 第二阶段被赋予"收尾对账"行为，见 RFC §11.4、service.RouterV2。
+	OpcodeBye uint8 = 0x06
 
 	// OpcodeFlush/OpcodeStat: RFC §11 交互模式（ack=window/none 场景）新增
-	// opcode，第二阶段实现——本阶段只保留常量定义，不实现其行为。
+	// opcode，第二阶段实现，见 service.RouterV2。
 	OpcodeFlush uint8 = 0x07
 	OpcodeStat  uint8 = 0x08
 
 	OpcodeOK  uint8 = 0x80
 	OpcodeErr uint8 = 0x81
 
-	// OpcodeWindowAck/OpcodeStatAck: 同上，RFC §11 交互模式，第二阶段实现。
+	// OpcodeWindowAck/OpcodeStatAck: 同上，RFC §11 交互模式，第二阶段实现，
+	// 响应体格式见 RFC §11.2.2/§11.2.3，编解码在 service.RouterV2。
 	OpcodeWindowAck uint8 = 0x82
 	OpcodeStatAck   uint8 = 0x83
+)
+
+// 机读错误码（RFC §10，第二阶段最小可用子集）：§10 本身只是设计，仓库里
+// 至今没有代码实现过这套分类学——本阶段只实现 WINDOW_ACK/STAT_ACK 的
+// firstErrCode 字段真正需要的最小子集，不是 §10 全表的落地，子码分配等
+// 治理问题仍然开放（RFC §7/§10.3）。
+const (
+	// ErrCodeNone 表示"没有错误"，用于 firstErrCode 字段在窗口/连接尚未
+	// 出现任何拒绝时的零值——0 不与下面任何一个真实错误码冲突。
+	ErrCodeNone uint16 = 0x0000
+	// ErrCodeMalformedFrame 对应 §10.3 的 0x1xxx 段（帧/传输层）：PUT 负载
+	// 解不出 key/value（keyLen/valueLen 与实际字节不符）。
+	ErrCodeMalformedFrame uint16 = 0x1001
+	// ErrCodeSchemaValidation 对应 §10.3 的 0x3xxx 段（schema 校验）：value
+	// 未通过已注册类型的校验器。本阶段未实现 §9 Schema Descriptor 的按类型
+	// 子码分配，所有 schema 校验失败共用这一个码，具体原因仍由人读的
+	// reason 字段承载。
+	ErrCodeSchemaValidation uint16 = 0x3001
 )
 
 // type（RFC §3.2），与 service/ingesthook/schema 的注册表对齐。
@@ -103,6 +124,18 @@ const (
 // 取值——这保证了"magic 不对 → 明确判 v1"与"magic 对、version 不对 →
 // 明确判版本不兼容"两条路径不会互相塌缩成一条 if 语句（那样会在未来出现
 // v3 时把"确实是新版本"的帧误判成"这是 v1 帧"）。
+//
+// 已知、未解决的碰撞窗口（RFC §7"仍然开放"，本阶段不解决，只记录）：这个
+// 函数只看 2 字节，一个 v1 帧的 dataLen 低 16 位如果恰好等于 0xBA02（LE 存储
+// 后与 v2 magic+ver 完全一样），会被误判为 SniffV2。生产读循环的服务端一侧
+// 目前不受这个风险影响——RFC §5.1 约定 v2 客户端的探测帧本身就是 v1 格式
+// （见 bannet/negotiate 包），服务端识别"这是不是协商探测帧"走的是"先按 v1
+// 解出完整帧、再比对 MsgID=='HELLO'"这条路径（bannet/transport.Connection.
+// StartReader），根本不调用本函数；本函数目前只在客户端一侧
+// （negotiate.ClientNegotiate）用来判断"服务端的响应是不是 v2 格式"，那里
+// 的碰撞窗口是"v1 服务端恰好回了一个满足这个字节模式的响应"，实践中 v1
+// 服务端对 HELLO 根本不响应（见 RFC §5），窗口目前只是理论风险。真正需要
+// 治理时应该和 §7"type 号治理"一并设计。
 func SniffVersion(first2Bytes []byte) SniffResult {
 	magicVer := binary.LittleEndian.Uint16(first2Bytes[0:2])
 	magic, version := DecodeMagicVer(magicVer)

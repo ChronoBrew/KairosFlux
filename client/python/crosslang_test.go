@@ -11,11 +11,13 @@
 package python_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os/exec"
@@ -348,4 +350,173 @@ func parseFrameHexLine(t *testing.T, out string) string {
 	}
 	t.Fatalf("未能从 python3 输出解析 frame_hex，输出:\n%s", out)
 	return ""
+}
+
+// startCrosslangV2Server 起一个真实服务端：与 startCrosslangServer 一样的
+// v1 PUT/GET/DEL 路由（零影响），额外挂 service.RouterV2 处理 BANLV v2
+// 帧（RFC docs/rfc/BANLV-2.md §11）——本文件的 v2 跨语言联调测试用它验证
+// Go 服务端确实能和一个独立的 Python 客户端实现（bandb_client.BanDBClientV2）
+// 就 ack=window/none 协议说通，不只是双方各自的单元测试自洽。
+func startCrosslangV2Server(t *testing.T, windowN uint32) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	oldWAL, oldSST, oldMode := config.G.WALPath, config.G.SSTablePath, config.G.Mode
+	config.G.WALPath = filepath.Join(dir, "wal.log")
+	config.G.SSTablePath = dir
+	config.G.Mode = config.ModeStandalone
+	t.Cleanup(func() {
+		config.G.WALPath, config.G.SSTablePath, config.G.Mode = oldWAL, oldSST, oldMode
+	})
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("取空闲端口失败: %v", err)
+	}
+	addr := l.Addr().String()
+	host, portStr, _ := net.SplitHostPort(addr)
+	port, _ := strconv.Atoi(portStr)
+	l.Close()
+
+	kv := service.NewKVServer()
+	router := service.NewRouter(kv)
+	filter := ingesthook.NewFilter(nil, 0, false)
+	router.SetPreHandle(filter.Handle)
+	routerV2 := service.NewRouterV2(kv, filter, windowN)
+
+	srv := bannet.NewServer()
+	srv.IP = host
+	srv.Port = port
+	srv.AddRouter(proto.MsgPut, router)
+	srv.AddRouter(proto.MsgGet, router)
+	srv.AddRouter(proto.MsgDelete, router)
+	srv.AddRouterV2(routerV2)
+	srv.SetConnStartFunc(router.OnConnStart)
+	srv.SetConnStopFunc(router.OnConnStop)
+	srv.Start()
+	t.Cleanup(func() { srv.Stop(); kv.Close() })
+
+	waitCrosslangServerReady(t, addr)
+	return addr
+}
+
+// runV2WindowProbe 以子进程运行 v2_window_probe.py，返回按 "key=value"
+// 逐行解析出的结果集合（足以覆盖本文件两个联调测试需要读取的所有字段，
+// 不需要为每种输出行单独定义结构体）。
+func runV2WindowProbe(t *testing.T, python3 string, args ...string) map[string]string {
+	t.Helper()
+	script := filepath.Join("examples", "v2_window_probe.py")
+	cmd := exec.Command(python3, append([]string{script}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("python3 v2_window_probe.py %v 执行失败: %v\n输出:\n%s", args, err, out)
+	}
+
+	result := map[string]string{}
+	scanner := bufio.NewScanner(bytes.NewReader(out))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		prefix := ""
+		if len(fields) > 0 && strings.Contains(fields[0], ":") {
+			prefix = strings.TrimSuffix(fields[0], ":") + "."
+			fields = fields[1:]
+		}
+		for _, f := range fields {
+			kv := strings.SplitN(f, "=", 2)
+			if len(kv) == 2 {
+				result[prefix+kv[0]] = kv[1]
+			}
+		}
+	}
+	return result
+}
+
+func mustAtoi(t *testing.T, m map[string]string, key string) int {
+	t.Helper()
+	v, ok := m[key]
+	if !ok {
+		t.Fatalf("探测脚本输出缺少字段 %q，完整输出: %+v", key, m)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		t.Fatalf("字段 %q=%q 不是整数: %v", key, v, err)
+	}
+	return n
+}
+
+// TestCrosslang_V2WindowBatchAndReconcile 是 BANLV v2 ack=window（RFC §11.2.2）
+// 与 BYE 收尾（§11.4）的跨语言联调核心：Go 服务端 × Python 客户端
+// （bandb_client.BanDBClientV2），批量写入一批帧、显式 FLUSH、再 BYE，
+// 断言 Python 客户端解析出的 WINDOW_ACK/STAT_ACK 计数与实际写入条数一致。
+func TestCrosslang_V2WindowBatchAndReconcile(t *testing.T) {
+	python3 := requirePython3(t)
+	addr := startCrosslangV2Server(t, 1000)
+
+	const n = 6
+	out := runV2WindowProbe(t, python3, "window", "--addr", addr, "--count", strconv.Itoa(n), "--corrid", "77")
+
+	if got := mustAtoi(t, out, "negotiated_ack"); got != 1 { // ACK_WINDOW=1
+		t.Fatalf("negotiated_ack=%d，期望 1(ACK_WINDOW)", got)
+	}
+	if got := mustAtoi(t, out, "flush.corr_id"); got != 77 {
+		t.Fatalf("flush corr_id=%d，期望 77", got)
+	}
+	if got := mustAtoi(t, out, "flush.received"); got != n {
+		t.Fatalf("flush received=%d，期望 %d", got, n)
+	}
+	if got := mustAtoi(t, out, "flush.accepted"); got != n {
+		t.Fatalf("flush accepted=%d，期望 %d", got, n)
+	}
+	// FLUSH 已经关闭了窗口，BYE 时不应该再有一次 WINDOW_ACK——只应看到
+	// bye_stat 这一帧，探测脚本在 window_ack 为 None 时不会打印
+	// "bye_window:" 前缀的任何字段。
+	if _, ok := out["bye_window.corr_id"]; ok {
+		t.Fatalf("FLUSH 之后 BYE 不应再触发 WINDOW_ACK，但探测脚本输出了 bye_window 字段: %+v", out)
+	}
+	if got := mustAtoi(t, out, "bye_stat.received"); got != n {
+		t.Fatalf("BYE 隐式 STAT_ACK received=%d，期望 %d（连接累计）", got, n)
+	}
+	if got := mustAtoi(t, out, "bye_stat.accepted"); got != n {
+		t.Fatalf("BYE 隐式 STAT_ACK accepted=%d，期望 %d", got, n)
+	}
+}
+
+// TestCrosslang_V2NoneStatReconcile 是 BANLV v2 ack=none + STAT 对账
+// （RFC §11.2.3）的跨语言联调：Python 客户端写入一批帧（含人为注入的
+// schema 拒绝），调用 reconcile()（库内置对账，不提供绕开它的路径），
+// 断言 Go 服务端报告的 received 与 Python 本地发送计数一致、且
+// accepted/rejected 正确反映注入的拒绝。
+func TestCrosslang_V2NoneStatReconcile(t *testing.T) {
+	python3 := requirePython3(t)
+	addr := startCrosslangV2Server(t, 1000)
+
+	const total, bad = 5, 2
+	out := runV2WindowProbe(t, python3, "none", "--addr", addr, "--count", strconv.Itoa(total), "--bad-count", strconv.Itoa(bad))
+
+	if got := mustAtoi(t, out, "negotiated_ack"); got != 2 { // ACK_NONE=2
+		t.Fatalf("negotiated_ack=%d，期望 2(ACK_NONE)", got)
+	}
+	if out["reconcile_status"] != "matched" {
+		t.Fatalf("reconcile_status=%q，期望 matched（帧层面不应丢失）：%+v", out["reconcile_status"], out)
+	}
+	if got := mustAtoi(t, out, "reconcile.received"); got != total {
+		t.Fatalf("reconcile received=%d，期望 %d", got, total)
+	}
+	if got := mustAtoi(t, out, "reconcile.accepted"); got != total-bad {
+		t.Fatalf("reconcile accepted=%d，期望 %d", got, total-bad)
+	}
+	if got := mustAtoi(t, out, "reconcile.rejected"); got != bad {
+		t.Fatalf("reconcile rejected=%d，期望 %d", got, bad)
+	}
+	wantErrCode := fmt.Sprintf("%d", 0x3001)
+	if got := out["reconcile.first_err_code"]; got != wantErrCode {
+		t.Fatalf("reconcile first_err_code=%s，期望 %s（ErrCodeSchemaValidation）", got, wantErrCode)
+	}
+	if got := mustAtoi(t, out, "bye_stat.received"); got != total {
+		t.Fatalf("BYE 隐式 STAT_ACK received=%d，期望 %d", got, total)
+	}
 }

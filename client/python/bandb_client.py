@@ -353,6 +353,13 @@ OPCODE_STAT_ACK = 0x83
 TYPE_UNSPECIFIED = 0  # 未声明类型，向后兼容默认值，退化为 v1 行为（RFC §6）
 TYPE_QUOTE = 1  # 对应 "quote:" 前缀校验器
 
+# 机读错误码（RFC §10，第二阶段最小可用子集）。对应 Go:
+# bannet/codec.ErrCodeXxx——两侧数值必须一致，否则 firstErrCode 在跨语言
+# 场景下失去意义。
+ERR_CODE_NONE = 0x0000
+ERR_CODE_MALFORMED_FRAME = 0x1001
+ERR_CODE_SCHEMA_VALIDATION = 0x3001
+
 
 class UnsupportedV2VersionError(BanDBError):
     """magic 匹配但版本号不是本实现认识的 VERSION_V2——这是协议不兼容错误，
@@ -442,12 +449,18 @@ ACK_WINDOW = 1  # §11 交互模式，第二阶段实现——本阶段不发送
 ACK_NONE = 2  # 同上
 
 
-def encode_hello_probe_v2() -> bytes:
+def encode_hello_probe_v2(ack_pref: int = ACK_EVERY) -> bytes:
     """按 §5.1 编码 v2 客户端的探测帧：v1 帧格式（msgID="HELLO"），负载
     [version u8][ackPref u8]。对应 Go: negotiate.encodeHelloProbe（未导出，
     这里是 Python 侧的对应实现）。
+
+    ack_pref 默认 ACK_EVERY，保持第一阶段调用方（如
+    NegotiationVectorTests 里直接调用 encode_hello_probe_v2() 断言与
+    v2_negotiation_client_probe_v1_format 向量一致）不需要改一行代码。
+    第二阶段起 ackPref 真正生效（见 negotiate_client），调用方可显式传入
+    ACK_WINDOW/ACK_NONE 请求非 every 档位。
     """
-    payload = bytes([VERSION_V2, ACK_EVERY])
+    payload = bytes([VERSION_V2, ack_pref])
     return encode_frame(MSG_HELLO, payload)
 
 
@@ -467,9 +480,18 @@ def build_hello_response_v2() -> bytes:
 MSG_HELLO = "HELLO"
 
 
-def negotiate_client(sock: "socket.socket", timeout: float) -> Tuple[str, int]:
+def negotiate_client(sock: "socket.socket", timeout: float, ack_pref: int = ACK_EVERY) -> Tuple[str, int]:
     """v2 客户端一侧的协商入口：写入 §5.1 探测帧，在 timeout 内等待响应，
-    返回 (version, ack)，version 是 "v1"/"v2"。对应 Go: negotiate.ClientNegotiate。
+    返回 (version, ack)，version 是 "v1"/"v2"。对应 Go:
+    negotiate.ClientNegotiateWithAck（第二阶段起 Go 侧同样把原来固定请求
+    AckEvery 的 ClientNegotiate 改造成了 ClientNegotiateWithAck 的特化，
+    两侧演进方式一致）。
+
+    ack_pref 是本连接期望的 ack 档位（默认 ACK_EVERY，保持第一阶段调用方
+    不需要改代码）；返回的 ack 是服务端实际确认的档位（从响应负载
+    payload[1] 解出），第二阶段起不再恒为 ACK_EVERY——调用方应以返回值
+    为准，不应假设它等于自己请求的 ack_pref（服务端对非法档位会降级确认
+    为 ACK_EVERY，见 Go 侧 negotiate.ServerHandleProbe 的文档）。
 
     三种读取结果分别处理（不能塌缩成"读失败就当 v1"，见 Go 侧同名函数的
     文档——这里是同一套判断逻辑的 Python 实现，必须保持一致）：
@@ -479,7 +501,7 @@ def negotiate_client(sock: "socket.socket", timeout: float) -> Tuple[str, int]:
       3. 收到完整 2 字节 magic+ver：按 sniff_version 分派，非 v2 视为协议
          错误（真正的 v1 服务端根本不会发送任何字节）。
     """
-    sock.sendall(encode_hello_probe_v2())
+    sock.sendall(encode_hello_probe_v2(ack_pref))
 
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
@@ -507,8 +529,12 @@ def negotiate_client(sock: "socket.socket", timeout: float) -> Tuple[str, int]:
             server_version = payload[0]
             if server_version != VERSION_V2:
                 raise ProtocolError(f"negotiate: 服务端选定版本={server_version:#x}，本实现只认识 {VERSION_V2:#x}")
-            # payload[1] 是 ackPref；本阶段服务端恒回 ACK_EVERY，忽略取值。
-            return SNIFF_V2, ACK_EVERY
+            # payload[1] 是服务端确认的 ackPref（第二阶段起真正按请求协商，
+            # 不再恒为 ACK_EVERY，见本函数文档）。
+            confirmed_ack = payload[1]
+            if confirmed_ack not in (ACK_EVERY, ACK_WINDOW, ACK_NONE):
+                raise ProtocolError(f"negotiate: 服务端确认的 ackPref={confirmed_ack:#x} 不是本实现认识的档位")
+            return SNIFF_V2, confirmed_ack
         elif sniff == SNIFF_UNSUPPORTED_VERSION:
             raise ProtocolError("negotiate: 对端 magic 匹配但版本号不受支持")
         else:
@@ -545,3 +571,209 @@ def _recv_exact_or_none(sock: "socket.socket", n: int) -> "bytes | None":
             return None
         raise ProtocolError("negotiate: 读取过程中超时（半读，连接不可信）")
     return b"".join(chunks)
+
+
+def _recv_exact(sock: "socket.socket", n: int) -> bytes:
+    """在 sock 当前设置的超时内读满 n 字节，读不满（含对端提前关闭/超时）
+    一律抛 ProtocolError——与 _recv_exact_or_none 不同，这里没有"正常的
+    降级路径"需要区分，协商已经结束，任何不完整的读都是协议错误。
+    """
+    chunks = []
+    remaining = n
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ProtocolError("连接在读取响应时被对端关闭")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+# --- ack=window/none 交互模式 (RFC §11.2/§11.4) -------------------------------
+
+_ACK_BODY_FIXED_STRUCT = struct.Struct("<IIIIH")  # corr_id,received,accepted,rejected,firstErrCode
+_ACK_BODY_REASON_LEN_STRUCT = struct.Struct("<H")
+
+
+class AckFields:
+    """WINDOW_ACK/STAT_ACK 响应体字段（RFC §11.2.2，两者共享同一格式）。
+    对应 Go: proto.V2AckFields。
+    """
+
+    __slots__ = ("corr_id", "received", "accepted", "rejected", "first_err_code", "first_err_reason")
+
+    def __init__(self, corr_id, received, accepted, rejected, first_err_code, first_err_reason):
+        self.corr_id = corr_id
+        self.received = received
+        self.accepted = accepted
+        self.rejected = rejected
+        self.first_err_code = first_err_code
+        self.first_err_reason = first_err_reason
+
+    def __repr__(self):
+        return (
+            f"AckFields(corr_id={self.corr_id}, received={self.received}, "
+            f"accepted={self.accepted}, rejected={self.rejected}, "
+            f"first_err_code={self.first_err_code:#x}, first_err_reason={self.first_err_reason!r})"
+        )
+
+
+def encode_ack_body(corr_id: int, received: int, accepted: int, rejected: int,
+                    first_err_code: int, first_err_reason: bytes) -> bytes:
+    """编码 WINDOW_ACK/STAT_ACK 响应体：[corr_id u32 LE][received u32 LE]
+    [accepted u32 LE][rejected u32 LE][firstErrCode u16 LE]
+    [firstErrReasonLen u16 LE][firstErrReason]。对应 Go: proto.V2AckBody。
+    """
+    fixed = _ACK_BODY_FIXED_STRUCT.pack(corr_id, received, accepted, rejected, first_err_code)
+    return fixed + _ACK_BODY_REASON_LEN_STRUCT.pack(len(first_err_reason)) + first_err_reason
+
+
+def decode_ack_body(payload: bytes) -> AckFields:
+    """解析 encode_ack_body 编码的字节。对应 Go: proto.DecodeV2AckBody。"""
+    fixed_len = _ACK_BODY_FIXED_STRUCT.size + _ACK_BODY_REASON_LEN_STRUCT.size
+    if len(payload) < fixed_len:
+        raise ProtocolError(f"ack body 长度={len(payload)}，期望至少 {fixed_len} 字节")
+    corr_id, received, accepted, rejected, err_code = _ACK_BODY_FIXED_STRUCT.unpack_from(payload, 0)
+    off = _ACK_BODY_FIXED_STRUCT.size
+    (n,) = _ACK_BODY_REASON_LEN_STRUCT.unpack_from(payload, off)
+    off += _ACK_BODY_REASON_LEN_STRUCT.size
+    if len(payload) < off + n:
+        raise ProtocolError(f"ack body reason 长度声明={n}，超出剩余负载")
+    reason = payload[off : off + n].decode("utf-8", errors="replace")
+    return AckFields(corr_id, received, accepted, rejected, err_code, reason)
+
+
+class ReconciliationError(BanDBError):
+    """ack=none 对账失败：本地发送计数与服务端 STAT_ACK 的 received 对不上
+    （RFC §11.2.3："本地发送数 != received：网络/成帧层面出了问题...不能
+    差不多就算了"）。这不是"accepted 少于 sent"（那是正常的拒绝反馈，见
+    AckFields.rejected），而是帧层面确实丢失/未到达的信号。
+    """
+
+    def __init__(self, local_sent: int, server_received: int):
+        super().__init__(f"local_sent={local_sent} server_received={server_received}")
+        self.local_sent = local_sent
+        self.server_received = server_received
+
+
+class BanDBClientV2:
+    """BANLV v2 客户端：ack=window/none 两档批量写入 API（RFC §11.2.2/
+    §11.2.3/§11.4）。ack=every 不需要专门的批量 API——每帧都有即时响应，
+    与 v1 BanDBClient 心智模型相同，直接用 send_every_put()/recv_frame()
+    即可。
+
+    刻意的设计约束（RFC §11.2.3 原文："没有对账的 ack=none 不该存在"）：
+    本类的 ack=none 写入路径（put_none）会自动维护本地发送计数，
+    reconcile() 是唯一"读出服务端计数并比对"的入口，不提供绕开它、只
+    发送不对账的独立公开方法。
+    """
+
+    def __init__(self, addr: str, timeout: float = 5.0):
+        self._addr = addr
+        self._timeout = timeout
+        self._sock: "socket.socket | None" = None
+        self.ack: int = ACK_EVERY
+        self._sent = 0
+
+    def connect(self, ack_pref: int) -> int:
+        """建连并协商 ack 档位，返回服务端确认的档位（见 negotiate_client
+        文档：不保证等于 ack_pref，但本实现的服务端总是原样确认合法档位）。
+        """
+        host, port_str = self._addr.rsplit(":", 1)
+        self._sock = socket.create_connection((host, int(port_str)), timeout=self._timeout)
+        version, ack = negotiate_client(self._sock, self._timeout, ack_pref)
+        if version != SNIFF_V2:
+            self.close()
+            raise ProtocolError(f"服务端未确认 BANLV v2（判定为 {version!r}）")
+        self.ack = ack
+        return ack
+
+    def close(self) -> None:
+        if self._sock is not None:
+            self._sock.close()
+            self._sock = None
+
+    def __enter__(self) -> "BanDBClientV2":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    def _send(self, opcode: int, type_: int, corr_id: int, payload: bytes = b"") -> None:
+        assert self._sock is not None
+        self._sock.sendall(encode_frame_v2(0, opcode, type_, corr_id, payload))
+
+    def _recv_frame(self):
+        assert self._sock is not None
+        head = _recv_exact(self._sock, HEADER_V2_LEN)
+        header = decode_header_v2(head)
+        payload = _recv_exact(self._sock, header.data_len) if header.data_len else b""
+        return header, payload
+
+    def put_window(self, corr_id: int, key: bytes, value: bytes, type_: int = TYPE_UNSPECIFIED) -> None:
+        """ack=window 批量写入：发送一条 PUT，不等响应。调用方用同一个
+        corr_id 标记同一窗口内的所有帧（RFC §11.2.2）；corr_id 变化会让
+        服务端隐式关闭上一个窗口。
+        """
+        self._send(OPCODE_PUT, type_, corr_id, encode_put_payload(key, value))
+        self._sent += 1
+
+    def flush(self) -> AckFields:
+        """发送 FLUSH（RFC §11.2.2），阻塞等待并解析 WINDOW_ACK。"""
+        self._send(OPCODE_FLUSH, TYPE_UNSPECIFIED, 0)
+        header, payload = self._recv_frame()
+        if header.opcode != OPCODE_WINDOW_ACK:
+            raise ProtocolError(f"FLUSH 响应 opcode={header.opcode:#x}，期望 WINDOW_ACK({OPCODE_WINDOW_ACK:#x})")
+        return decode_ack_body(payload)
+
+    def put_none(self, key: bytes, value: bytes, type_: int = TYPE_UNSPECIFIED) -> None:
+        """ack=none 完全 fire-and-forget 写入：发送一条 PUT，不等任何响应。
+        本地发送计数自动 +1（RFC §11.2.3 强制缓解措施的一半），另一半是
+        reconcile()。
+        """
+        self._send(OPCODE_PUT, type_, 0, encode_put_payload(key, value))
+        self._sent += 1
+
+    def stat(self, corr_id: int = 0) -> AckFields:
+        """发送 STAT（RFC §11.2.3），返回连接自建立以来的累计计数——非
+        破坏性，不清零，可以多次调用（如周期性检查点，见 RFC 关于"残余
+        风险"一节的缓解建议）。
+        """
+        self._send(OPCODE_STAT, TYPE_UNSPECIFIED, corr_id)
+        header, payload = self._recv_frame()
+        if header.opcode != OPCODE_STAT_ACK:
+            raise ProtocolError(f"STAT 响应 opcode={header.opcode:#x}，期望 STAT_ACK({OPCODE_STAT_ACK:#x})")
+        return decode_ack_body(payload)
+
+    def reconcile(self, corr_id: int = 0) -> AckFields:
+        """ack=none 强制对账（RFC §11.2.3）：发 STAT，比对服务端 received
+        与本地发送计数（put_none 累计的 self._sent），对不上抛
+        ReconciliationError——这是"没有对账的 none 不该存在"这条设计约束
+        在 API 层面的落实：库里没有第二条"发送但不对账"的路径。
+
+        对账成功不代表全部写入都被接受——返回的 AckFields 里
+        accepted/rejected 的差值与 first_err_code/first_err_reason 是正常
+        的诊断信息（"帧层面没有丢失，rejected 数告诉你具体是什么原因"，
+        RFC 原文），调用方仍应检查这两个字段。
+        """
+        fields = self.stat(corr_id)
+        if fields.received != self._sent:
+            raise ReconciliationError(self._sent, fields.received)
+        return fields
+
+    def bye(self, corr_id: int = 0):
+        """发送 BYE（RFC §11.4），阻塞读取收尾响应直至 STAT_ACK 到达。
+        ack=window 且有未关闭窗口时，服务端先发一次 WINDOW_ACK（本方法
+        自动消费并返回）、再发最终的 STAT_ACK；ack=none 下只有 STAT_ACK
+        这一帧。返回 (window_ack_or_none, stat_ack) 二元组，调用方按自己
+        的 ack 档位决定是否关心第一个元素。
+        """
+        self._send(OPCODE_BYE, TYPE_UNSPECIFIED, corr_id)
+        header, payload = self._recv_frame()
+        window_ack = None
+        if header.opcode == OPCODE_WINDOW_ACK:
+            window_ack = decode_ack_body(payload)
+            header, payload = self._recv_frame()
+        if header.opcode != OPCODE_STAT_ACK:
+            raise ProtocolError(f"BYE 收尾响应 opcode={header.opcode:#x}，期望 STAT_ACK({OPCODE_STAT_ACK:#x})")
+        return window_ack, decode_ack_body(payload)

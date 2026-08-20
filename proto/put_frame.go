@@ -43,6 +43,19 @@ func EncodePutFrame(key, value []byte) []byte {
 	return buf
 }
 
+// EncodeKeyOnlyFrame 按 GET/DELETE 负载格式编帧：keyLen(u32 LE)+key。与
+// DecodeKeyFrame 互为逆操作——此前只有 EncodePutFrame 一个方向的编码
+// 被提到公共函数里，GET/DELETE 这一侧的编码此前只在 client/client.go 内
+// 联手写了一份（v1 生产路径不需要独立调用它，故没有被提出来）；BANLV v2
+// 的测试/工具需要复用同一段编码而不是再手写一遍，遂提出为公共函数，与
+// EncodePutFrame 对称。
+func EncodeKeyOnlyFrame(key []byte) []byte {
+	buf := make([]byte, 4+len(key))
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(key)))
+	copy(buf[4:], key)
+	return buf
+}
+
 // DecodeKeyFrame 解析 GET/DELETE 负载 keyLen(u32 LE)+key。长度字段与实际数据
 // 不符时返回 ok=false。
 func DecodeKeyFrame(data []byte) (key []byte, ok bool) {

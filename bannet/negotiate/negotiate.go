@@ -61,30 +61,75 @@ const (
 // 响应但既不是合法的 v2 帧、也不匹配预期的 magic。
 var ErrProtocol = errors.New("negotiate: protocol error")
 
+// ConnPropertyAckTier 是协商成功后，服务端把连接的确认 ack 档位挂在
+// handler.Conn 属性袋（SetProperty/Property）上使用的 key——RouterV2
+// （service 包）据此读出当前连接应该按 every/window/none 哪一档处理写帧。
+// 放在本包（AckTier 类型的权威定义处）而不是 service 包，避免两处各自
+// 定义这个字符串常量而漂移。
+const ConnPropertyAckTier = "banlv.v2.ackTier"
+
 // encodeHelloProbe 按 §5.1 编码 v2 客户端的探测帧：v1 帧格式
 // （msgID="HELLO"），负载 [version u8][ackPref u8]。
-func encodeHelloProbe() ([]byte, error) {
-	payload := []byte{codec.VersionV2, byte(AckEvery)}
+func encodeHelloProbe(want AckTier) ([]byte, error) {
+	payload := []byte{codec.VersionV2, byte(want)}
 	return codec.NewDataPack().Pack(codec.NewMessage(proto.MsgHello, payload))
 }
 
 // BuildHelloResponseV2 按 §5.1 构造 v2 服务端对探测帧的响应：v2 帧格式，
 // opcode=OK、type=0、corr_id=0，负载 [version u8][ackPref u8]（服务端选定
-// 版本 + 确认的 ack 档位，本阶段恒为 VersionV2/AckEvery）。
-//
-// 导出这个函数是因为"识别探测帧、回复 v2 格式响应"是服务端侧协商能力的
-// 核心，其余部分（判断一个刚读到的 v1 帧是不是 HELLO 探测）只是
-// `msg.MsgID() == proto.MsgHello` 这一行判断，不需要额外包装——调用方
-// （未来接入 bannet.Server 读循环时）直接比较 MsgID 即可，见
-// negotiate_test.go 里最小 v2 服务端的写法。
+// 版本 + 确认的 ack 档位）。保留本阶段之前的签名（恒确认 AckEvery）不变，
+// 只是转发到 BuildHelloResponseV2WithAck——第一阶段的调用方
+// （negotiate_test.go 的最小 v2 服务端）与本函数的行为不受第二阶段新增的
+// "ackPref 真正生效"影响。
 func BuildHelloResponseV2() ([]byte, error) {
-	payload := []byte{codec.VersionV2, byte(AckEvery)}
+	return BuildHelloResponseV2WithAck(AckEvery)
+}
+
+// BuildHelloResponseV2WithAck 按 §5.1 构造 v2 服务端响应，确认档位为 ack
+// （第二阶段：真正按客户端请求的 ackPref 协商，见 ServerHandleProbe）。
+func BuildHelloResponseV2WithAck(ack AckTier) ([]byte, error) {
+	payload := []byte{codec.VersionV2, byte(ack)}
 	msg := codec.NewMessageV2(codec.HeaderV2{
 		Opcode: codec.OpcodeOK,
 		Type:   codec.TypeUnspecified,
 		CorrID: 0,
 	}, payload)
 	return codec.NewDataPackV2().Pack(msg)
+}
+
+// isValidAckTier 判断 ackPref 字节是否是本实现认识的三档之一（§11.2）。
+func isValidAckTier(v uint8) bool {
+	return v == uint8(AckEvery) || v == uint8(AckWindow) || v == uint8(AckNone)
+}
+
+// ServerHandleProbe 是服务端侧协商能力的核心（第二阶段生产接线用）：给定
+// 一个刚用 v1 codec 解出的帧，判断它是不是 §5.1 描述的 HELLO 探测帧；若是，
+// 解析客户端请求的 ackPref 并按其协商（§11.2/§5.1"ackPref 生效"，与本阶段
+// 之前"恒回 AckEvery、忽略请求值"的行为不同），构造 v2 格式响应返回。
+//
+// 返回 respond 是要写回连接的完整帧字节（isProbe=true 时才有意义）；ack
+// 是协商确定的档位，调用方应把它挂到该连接的 ConnPropertyAckTier 属性上。
+// isProbe=false 表示这不是 HELLO 探测帧，调用方应该把 msg 交给正常的 v1
+// 分派路径处理，不消耗它。
+//
+// 未定义/非法的 ackPref 字节按 AckEvery 处理并原样回声这一决定（不是拒绝
+// 连接）——协议对"客户端发了个协商阶段还不认识的档位"这类情况选择宽容
+// 降级而非报错，与 RFC §5.1 本阶段之前"服务端忽略非 0x00 取值"的精神一致，
+// 只是现在"忽略"变成了"按 AckEvery 确认"而不是硬编码为 AckEvery。
+func ServerHandleProbe(msg *codec.Message) (respond []byte, ack AckTier, isProbe bool, err error) {
+	if msg.MsgID() != proto.MsgHello {
+		return nil, AckEvery, false, nil
+	}
+	payload := msg.Payload()
+	requested := AckEvery
+	if len(payload) >= 2 && isValidAckTier(payload[1]) {
+		requested = AckTier(payload[1])
+	}
+	respond, err = BuildHelloResponseV2WithAck(requested)
+	if err != nil {
+		return nil, AckEvery, true, fmt.Errorf("negotiate: 构造 v2 HELLO 响应失败: %w", err)
+	}
+	return respond, requested, true, nil
 }
 
 // ClientNegotiate 是 v2 客户端一侧的协商入口：向 conn 写入 §5.1 的探测帧，
@@ -107,7 +152,16 @@ func BuildHelloResponseV2() ([]byte, error) {
 // 调用方需自行处理 conn 的关闭；ClientNegotiate 只负责协商这一步的读写与
 // 期间的读超时设置/清除。
 func ClientNegotiate(conn net.Conn, timeout time.Duration) (Version, AckTier, error) {
-	probe, err := encodeHelloProbe()
+	return ClientNegotiateWithAck(conn, timeout, AckEvery)
+}
+
+// ClientNegotiateWithAck 与 ClientNegotiate 相同，额外让调用方指定 §11.2
+// 期望的 ack 档位（第二阶段：ackPref 真正生效，见 ServerHandleProbe）。
+// ClientNegotiate 保留旧签名不变、恒请求 AckEvery，是这个函数在
+// want=AckEvery 时的特化——第一阶段遗留的四个协商测试因此不需要改一行就
+// 继续验证 every 路径不变。
+func ClientNegotiateWithAck(conn net.Conn, timeout time.Duration, want AckTier) (Version, AckTier, error) {
+	probe, err := encodeHelloProbe(want)
 	if err != nil {
 		return VersionUnknown, AckEvery, fmt.Errorf("negotiate: 编码探测帧失败: %w", err)
 	}
@@ -177,9 +231,15 @@ func finishReadV2Response(conn net.Conn, magicVer2Bytes []byte) (Version, AckTie
 	if serverVersion != codec.VersionV2 {
 		return VersionUnknown, AckEvery, fmt.Errorf("%w: 服务端选定版本=%#x，本实现只认识 %#x", ErrProtocol, serverVersion, codec.VersionV2)
 	}
-	// ackPref (payload[1])：本阶段服务端恒回 AckEvery，忽略具体取值——
-	// 真正遵守 window/none 是后续阶段的工作（见 §5.1）。
-	return VersionV2, AckEvery, nil
+	// ackPref (payload[1])：第二阶段服务端按客户端请求的档位协商并回声确认
+	// 值（见 ServerHandleProbe），不再恒为 AckEvery——客户端应以服务端回声
+	// 的这个值为准（而不是自己请求的值），两者理论上应该相等（本实现的
+	// 服务端总是原样确认合法档位），但协议层面客户端不应假设这一点。
+	ack := AckTier(payload[1])
+	if !isValidAckTier(payload[1]) {
+		return VersionUnknown, AckEvery, fmt.Errorf("%w: 服务端确认的 ackPref=%#x 不是本实现认识的档位", ErrProtocol, payload[1])
+	}
+	return VersionV2, ack, nil
 }
 
 func isTimeout(err error) bool {
