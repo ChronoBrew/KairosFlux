@@ -63,6 +63,26 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 写入被拒绝（清洗/schema 校验未通过）: dropped
 ```
 
+## Deployment Notes
+
+For the current production shape — single machine, a single writer
+(QuantScout), daily batch writes — leave `AdmissionEnabled` and
+`ShardRoutingEnabled` off in `config/config.json` (both already default to
+`false`, see `config/global.go`):
+
+- `AdmissionEnabled` guards against concurrent-write overload with adaptive
+  shedding. A daily batch job from one writer never produces the concurrent
+  burst this exists to shed — there's no overload problem domain to defend
+  against here, only the added latency-probing overhead.
+- `ShardRoutingEnabled` forwards keys that don't belong to the local node to
+  their owner across a multi-node placement. A single node owns 100% of the
+  keyspace, so there is no routing decision to make.
+
+Flip either on only when the deployment actually grows into the shape they're
+for (concurrent multi-writer load, or a real multi-node placement) — leaving
+them on by default in this shape adds overhead and a probing/forwarding
+surface with nothing behind it to protect or route to.
+
 ## Data Cleaning
 
 Every write passes through a cleaning hook before it's buffered: frame and

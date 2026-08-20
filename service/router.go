@@ -189,22 +189,17 @@ func sendDropped(req bannet.Request, reason string) {
 
 // handlePut 处理 PUT 操作
 func (r *Router) handlePut(data []byte, request bannet.Request) {
-	// 解析数据格式：key_len + key + value_len + value
-	if len(data) < 8 {
-		slog.Warn("put frame too short", "len", len(data))
+	// 帧解析委托给 proto.DecodePutFrame（与 ingesthook.Filter 的 parsePut 共用
+	// 同一实现，见该函数注释）；此前这里与那边各自实现过一遍同一段二进制解析。
+	key, value, ok := proto.DecodePutFrame(data)
+	if !ok {
+		// 此前「长度头不足 8 字节」与「声明长度超出实际数据」是两条不同措辞、
+		// 不同字段的 slog.Warn；解析逻辑合一后无法再区分这两种子情形，合并为
+		// 一条通用日志。无测试断言过原日志文本，且不影响客户端可见行为
+		// （两种情形下都是丢帧不回应，行为不变），仅日志可观测性上的收敛。
+		slog.Warn("put frame malformed", "len", len(data))
 		return
 	}
-
-	keyLen := int(binary.LittleEndian.Uint32(data[0:4]))
-	valueLen := int(binary.LittleEndian.Uint32(data[4:8]))
-
-	if len(data) < 8+keyLen+valueLen {
-		slog.Warn("put frame incomplete", "expected", 8+keyLen+valueLen, "got", len(data))
-		return
-	}
-
-	key := data[8 : 8+keyLen]
-	value := data[8+keyLen : 8+keyLen+valueLen]
 
 	// 分片路由：不属本节点则转发到 owner。
 	if owner, fwd := r.forwardTarget(key); fwd {
@@ -238,17 +233,10 @@ func (r *Router) handlePut(data []byte, request bannet.Request) {
 
 // handleGet 处理 GET 操作
 func (r *Router) handleGet(data []byte, request bannet.Request) {
-	if len(data) < 4 {
+	key, ok := proto.DecodeKeyFrame(data)
+	if !ok {
 		return
 	}
-
-	keyLen := int(binary.LittleEndian.Uint32(data[0:4]))
-
-	if len(data) < 4+keyLen {
-		return
-	}
-
-	key := data[4 : 4+keyLen]
 
 	metrics.Reads.Add(1)
 
@@ -291,17 +279,10 @@ func (r *Router) handleGet(data []byte, request bannet.Request) {
 
 // handleDelete 处理 DELETE 操作
 func (r *Router) handleDelete(data []byte, request bannet.Request) {
-	if len(data) < 4 {
+	key, ok := proto.DecodeKeyFrame(data)
+	if !ok {
 		return
 	}
-
-	keyLen := int(binary.LittleEndian.Uint32(data[0:4]))
-
-	if len(data) < 4+keyLen {
-		return
-	}
-
-	key := data[4 : 4+keyLen]
 
 	// 分片路由：不属本节点则转发到 owner。
 	if owner, fwd := r.forwardTarget(key); fwd {

@@ -11,7 +11,7 @@
 package ingesthook
 
 import (
-	"encoding/binary"
+	"bytes"
 	"encoding/json"
 	"strconv"
 	"strings"
@@ -156,29 +156,17 @@ func (f *Filter) Validate(key, value []byte) (newValue []byte, changed bool, res
 	return value, false, ResultPass, ""
 }
 
-// parsePut 解析 PUT 负载 keyLen(u32 LE)+valueLen(u32 LE)+key+value。
+// parsePut 解析 PUT 负载 keyLen(u32 LE)+valueLen(u32 LE)+key+value。委托给
+// proto.DecodePutFrame——service.Router 的 handlePut 走的是同一个实现，此前
+// 两处各自维护过一份相同的二进制解析（见 proto/put_frame.go 的注释）。保留
+// 这个包内私有名字只是为了不动本包既有测试/调用点。
 func parsePut(data []byte) (key, value []byte, ok bool) {
-	if len(data) < 8 {
-		return nil, nil, false
-	}
-	keyLen := int(binary.LittleEndian.Uint32(data[0:4]))
-	valueLen := int(binary.LittleEndian.Uint32(data[4:8]))
-	if keyLen < 0 || valueLen < 0 || 8+keyLen+valueLen > len(data) {
-		return nil, nil, false
-	}
-	key = data[8 : 8+keyLen]
-	value = data[8+keyLen : 8+keyLen+valueLen]
-	return key, value, true
+	return proto.DecodePutFrame(data)
 }
 
-// encodePut 按 PUT 负载格式重建一帧。
+// encodePut 按 PUT 负载格式重建一帧，委托给 proto.EncodePutFrame。
 func encodePut(key, value []byte) []byte {
-	buf := make([]byte, 8+len(key)+len(value))
-	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(key)))
-	binary.LittleEndian.PutUint32(buf[4:8], uint32(len(value)))
-	copy(buf[8:], key)
-	copy(buf[8+len(key):], value)
-	return buf
+	return proto.EncodePutFrame(key, value)
 }
 
 // parseKey 从形如 "imu:dev0:<ts>" 的 key 中切出设备标识（末段之前的全部）
@@ -198,8 +186,18 @@ func parseKey(key []byte) (device string, ts int64, ok bool) {
 
 // redact 把 value（JSON 对象）中命中 fields 的字段替换为脱敏占位符；
 // 非 JSON 或未命中任何字段时原样返回 changed=false。其余字段保留原始字节。
+//
+// mayContainAnyField 前置过滤：hasSchema 的记录（如 quote:）此前对同一个
+// value 已经在 Validate 里做过一次 json.Unmarshal（校验器自己的类型化解析），
+// redact 又独立做第二次——生产配置的 redactFields=["gps","user_id"] 对
+// 不含这两个字段的行情记录而言，这第二次解析每条都白付出。mayContainAnyField
+// 是安全的必要条件前置检查（细节见其注释），不命中时可以确定性地跳过这次
+// Unmarshal，命中时仍回落到精确解析，语义不变。
 func redact(value []byte, fields []string) (newValue []byte, changed bool) {
 	if len(fields) == 0 {
+		return value, false
+	}
+	if !mayContainAnyField(value, fields) {
 		return value, false
 	}
 	var m map[string]json.RawMessage
@@ -220,4 +218,34 @@ func redact(value []byte, fields []string) (newValue []byte, changed bool) {
 		return value, false
 	}
 	return out, true
+}
+
+// mayContainAnyField 判断 value 是否「可能」包含 fields 中任一字段名作为
+// JSON key。一个 key 若以未转义的形式书写，它的带引号字面量（如 `"gps"`）
+// 必然原样出现在 value 的字节里；反之，若这个带引号字面量完全不出现，且
+// value 里也不含任何反斜杠（即不存在任何转义写法的可能），value 就一定不
+// 含该 key——这一半的判断是精确的必要条件，可以安全地跳过后面的
+// json.Unmarshal。
+//
+// 含反斜杠时不下这个结论：JSON 允许用 unicode 转义写字段名（如 "gps"
+// 解出来的 key 就是普通字符串 "gps"），此时字面量 `"gps"` 不会原样出现在
+// 字节流里，纯 bytes.Contains 会误判为「一定不含」而漏掉本该脱敏的字段——
+// 遇到反斜杠一律回落到精确解析，不冒这个险。
+//
+// 命中带引号字面量也不代表一定存在该 key：字面量也可能出现在某个字符串值
+// 内部（如 `{"note":"see gps log"}` 命中 `"gps"` 但字段名其实是 note），
+// 命中时仍会回落到 redact 里精确的 map 查找，只是不再无条件解析——它把
+// 「一定没有任何目标字段」这个常见情况从一次完整 json.Unmarshal 降到几次
+// bytes.Contains，「可能有」的少数情况才继续走精确解析，整体行为（changed
+// 的取值）不变。
+func mayContainAnyField(value []byte, fields []string) bool {
+	if bytes.IndexByte(value, '\\') >= 0 {
+		return true
+	}
+	for _, f := range fields {
+		if bytes.Contains(value, []byte(`"`+f+`"`)) {
+			return true
+		}
+	}
+	return false
 }

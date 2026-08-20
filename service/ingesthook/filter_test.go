@@ -7,6 +7,7 @@ import (
 
 	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/proto"
+	"github.com/NeverENG/BanDB/service/ingesthook/schema"
 )
 
 // fakeReq 是 bannet.Request 的测试替身。钩子不触碰连接，Conn 返回 nil。
@@ -184,5 +185,94 @@ func TestHandle_SchemaDropCarriesReason(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(reason), []byte("quote")) {
 		t.Fatalf("reason 应来自 quote schema 校验器，得到: %q", reason)
+	}
+}
+
+// alwaysPassValidator 是测试专用的 schema.Validator：无条件通过，只用于让某个
+// key 前缀"命中 schema"而不引入真实校验规则的干扰。
+type alwaysPassValidator struct{}
+
+func (alwaysPassValidator) Validate(value []byte) error { return nil }
+
+// TestHandle_SchemaAndRedactBothApplyToSameRecord 锁定 redact 的
+// mayContainAnyField 前置过滤（合并/减少双重反序列化的优化点）不会误伤
+// "hasSchema 且确实命中脱敏字段"这一组合场景：schema 校验先跑（且必须通过），
+// 脱敏改写也必须照常发生——二者互不影响、顺序不变。此前没有测试同时覆盖
+// 这两条路径都被触发的情形。
+func TestHandle_SchemaAndRedactBothApplyToSameRecord(t *testing.T) {
+	schema.Register("hasschema:", alwaysPassValidator{})
+	t.Cleanup(func() { schema.Unregister("hasschema:") })
+
+	f := NewFilter([]string{"gps"}, 0, false)
+	req := putReq("hasschema:1", `{"ax":0.01,"gps":"39.9,116.4"}`)
+
+	got, reason := f.Handle(req)
+	if got != bannet.HookPass {
+		t.Fatalf("已注册 schema 且校验通过的记录不应被丢弃，得到 %v，reason=%q", got, reason)
+	}
+
+	key, value, ok := parsePut(req.MsgData())
+	if !ok {
+		t.Fatal("改写后的帧无法解析")
+	}
+	if !bytes.Equal(key, []byte("hasschema:1")) {
+		t.Fatalf("key 不应被改动，得到 %q", key)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(value, &m); err != nil {
+		t.Fatalf("改写后的 value 不是合法 JSON: %v", err)
+	}
+	if m["gps"] != "[REDACTED]" {
+		t.Fatalf("命中 schema 的记录仍应正常脱敏，得到: %v", m)
+	}
+	if m["ax"] != 0.01 {
+		t.Fatalf("非敏感字段应保留: %v", m)
+	}
+}
+
+// TestHandle_SchemaNonJSONValueReasonComesFromValidator 锁定：hasSchema 的
+// key 若 value 根本不是合法 JSON，丢弃 reason 必须来自 schema 校验器自身的
+// "invalid json" 错误（而不是某个脱敏侧/通用解析产生的另一种措辞）——
+// redact 的 mayContainAnyField 优化只影响 redact 是否解析，不改变 Validate
+// 里 schema 校验先行、且用校验器自己的错误信息这条既有顺序/契约。
+func TestHandle_SchemaNonJSONValueReasonComesFromValidator(t *testing.T) {
+	f := NewFilter([]string{"gps"}, 0, false)
+	req := putReq("quote:2026-08-17:600000", "not json at all")
+	got, reason := f.Handle(req)
+	if got != bannet.HookDrop {
+		t.Fatalf("非 JSON 的行情记录应被 schema 校验拒绝，得到 %v", got)
+	}
+	if !bytes.Contains([]byte(reason), []byte("quote: invalid json")) {
+		t.Fatalf("reason 应来自 quote 校验器的 invalid json 错误，得到: %q", reason)
+	}
+}
+
+// TestHandle_RedactCatchesEscapedFieldName 锁定 redact 的 mayContainAnyField
+// 前置过滤（合并/减少双重反序列化的优化点）不会漏判 JSON 转义写法的字段名：
+// `"gps"` 是 "gps" 的合法转义形式，json.Unmarshal 解出来的 key 就是
+// "gps"，但它的带引号字面量不会以 `"gps"` 原样出现在字节流里。若前置过滤
+// 只做字面量 bytes.Contains，会把这类记录误判为"一定不含目标字段"而跳过
+// 脱敏，造成 PII 从网络输入方一路不脱敏地流入下游——这正是"保留 redact
+// 现有语义"要守住的边界。
+func TestHandle_RedactCatchesEscapedFieldName(t *testing.T) {
+	f := NewFilter([]string{"gps"}, 0, false)
+	// 用 unicode 转义写字段名首字符（g = 'g'）：json.Unmarshal 解出来的
+	// key 是普通字符串 "gps"，但字节流里不含 `"gps"` 这个带引号字面量——这正是
+	// mayContainAnyField 的字面量匹配会漏判的情形。
+	req := putReq("imu:dev0:1", `{"\u0067ps":"39.9,116.4","ax":0.01}`)
+	got, _ := f.Handle(req)
+	if got != bannet.HookPass {
+		t.Fatalf("合法 JSON 应放行，得到 %v", got)
+	}
+	_, value, ok := parsePut(req.MsgData())
+	if !ok {
+		t.Fatal("改写后的帧无法解析")
+	}
+	var m map[string]any
+	if err := json.Unmarshal(value, &m); err != nil {
+		t.Fatalf("改写后的 value 不是合法 JSON: %v", err)
+	}
+	if m["gps"] != "[REDACTED]" {
+		t.Fatalf("转义写法的 gps 字段也应被脱敏，得到: %v", m)
 	}
 }

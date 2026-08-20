@@ -61,6 +61,22 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 写入被拒绝（清洗/schema 校验未通过）: dropped
 ```
 
+## 部署须知
+
+在当前的生产形态下——单机、单一写入方（QuantScout）、每日批量写入——
+`config/config.json` 里的 `AdmissionEnabled` 与 `ShardRoutingEnabled` 应保持
+关闭（二者默认即为 `false`，见 `config/global.go`）：
+
+- `AdmissionEnabled` 是网关自适应准入，用延迟反馈防并发写过载、过载 shed。
+  单一写入方的每日批量写不会产生它要防的那种并发突发，这里不存在它要
+  防护的过载问题域，开启只会带来额外的延迟探测开销。
+- `ShardRoutingEnabled` 是把不属本节点的 key 经 BanNet 转发到多节点分片
+  集群里的属主节点。单节点拥有 100% 的 key 空间，没有需要转发的路由决策。
+
+只有当部署形态真的长成这两项功能所对应的样子（真实的多写入方并发负载，
+或真实的多节点分片集群）时再打开——在当前形态下默认打开，只会带来开销
+和一套没有实际防护/路由对象的探测/转发面。
+
 ## 数据清洗
 
 每条写入落盘前都要过一道清洗钩子：帧与长度校验、可选的时间戳单调性校验、
