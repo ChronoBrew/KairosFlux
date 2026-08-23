@@ -43,11 +43,17 @@ func main() {
 	filter := ingesthook.NewFilter([]string{"gps", "user_id"}, 0, true)
 	router.SetPreHandle(filter.Handle)
 
+	// v2 业务处理器（BANLV v2：ack 三档协商、窗口写入、STAT/BYE 对账）。
+	// 与 v1 Router 共用同一个 store 与 filter——同一份数据、同一套 schema
+	// 校验，只是传输语义不同（RFC docs/rfc/BANLV-2.md）。
+	routerV2 := service.NewRouterV2(KVServer, filter, 0)
+
 	// 注册路由
 	server.AddRouter(proto.MsgPut, router)
 	server.AddRouter(proto.MsgGet, router)
 	server.AddRouter(proto.MsgDelete, router)
 	server.AddRouter(proto.MsgScan, router)
+	server.AddRouterV2(routerV2)
 
 	// 注册连接生命周期回调
 	server.SetConnStartFunc(router.OnConnStart)
