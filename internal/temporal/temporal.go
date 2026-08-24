@@ -39,6 +39,18 @@ type Version struct {
 	Seq        uint64 // 写入序号，同一 logical key 内严格递增（总序）
 	WriteNanos int64  // 写入时刻（unix nanos），as-of 判定用
 	Payload    []byte // 该版本的内容
+
+	// 以下三个字段是 M2 操作元数据信封新增的字段（EncodeVersionRecord/
+	// DecodeVersionRecord，见下）。经旧版（M0）EncodeVersionValue 编码、
+	// 从未被信封化重写过的存量版本键，解码时这三个字段取零值——不是
+	// "未知"与"确实为空"的歧义：M0 时期的写入本来就没有这些元数据，零值
+	// 就是历史真相，不是伪造出来的默认值。
+	Source        string // 写入方标识（客户端名/Job 名），M0 存量记录为空字符串
+	SchemaVer     uint32 // 写入时刻的 schema 契约版本号，未注册类型/M0 存量记录为 0
+	PersistedHash string // 写入时刻持久化的 payload sha256（十六进制），M0 存量记录为空字符串——
+	// 与 Version.PayloadHash() 的关键区别：那是"现在重新算一遍"，这个是
+	// "写入那一刻记下来的"，两者不相等即发生过静默数据漂移（LIST_WRITES
+	// 审计导出用它做逐条完整性自检，见 service.WriteEnvelope.HashOK）。
 }
 
 // VersionStorageKey 返回某版本在存储层的键。
@@ -98,10 +110,12 @@ type CurrentValue struct {
 	PayloadHash string
 }
 
-// PayloadHash 返回负载的 sha256 十六进制摘要。
+// PayloadHash 返回负载的 sha256 十六进制摘要——现算现比，即便 v.PersistedHash
+// 非空也不会直接返回它（那是写入时刻记录的历史值，见 Version 字段文档），
+// 否则"重新算一遍"与"写入时记的"永远相等，LIST_WRITES 的逐条完整性自检就
+// 失去了意义。
 func (v Version) PayloadHash() string {
-	sum := sha256.Sum256(v.Payload)
-	return hex.EncodeToString(sum[:])
+	return HashPayload(v.Payload)
 }
 
 // Latest 返回 seq 最大的版本（当前版本）。空集合返回 false。
@@ -182,6 +196,118 @@ func DecodeVersionValue(raw []byte) (writeNanos int64, payload []byte, ok bool) 
 	}
 	writeNanos = int64(binary.LittleEndian.Uint64(raw[0:8]))
 	return writeNanos, raw[8:], true
+}
+
+// envelopeMarkerBit/envelopeVersion1：M2 操作元数据信封（EncodeVersionRecord/
+// DecodeVersionRecord）与 M0 EncodeVersionValue 共用同一个版本存储键格式
+// （见包文档），二者的 value 编码必须能从裸字节里无歧义地互相区分，且不能
+// 改动版本存储键本身的布局（M2 任务书："存储底层只动版本记录编码，不动
+// WAL/LSM 结构"）。
+//
+// 判据：EncodeVersionValue 的头 8 字节是 writeNanos——time.Now().UnixNano()
+// 产生的值，作为有符号 int64 直到公元 2262 年之前恒为正数，即这 8 字节按
+// LE 解释成 u64 时最高位（bit 63）恒为 0。EncodeVersionRecord 把这一位显式
+// 置 1 作为格式标记：两种编码在这一位上永不冲突——这是基于系统时钟真实取值
+// 范围推出的确定性判据，不是"看起来大概率不会撞"的启发式（对照 QuantBrew
+// 侧"禁止字符串匹配承载语义"的教训：判据必须是可证明穷尽的类型/位运算，
+// 不能是碰运气的内容匹配）。
+//
+// 旧版本记录读路径按此判据自动分流到 DecodeVersionValue 的兼容解析
+// （"懒迁移，不重写存量"）：从未被本次改动之后的代码重写过的版本键，解出的
+// Version.Source/SchemaVer/PersistedHash 为零值——这是历史真相（M0 时期
+// 确实没有这些元数据），不是伪造的默认值。
+const (
+	envelopeMarkerBit = uint64(1) << 63
+	envelopeVersion1  = uint64(1)
+)
+
+// HashPayload 返回 payload 的 sha256 十六进制摘要。Version.PayloadHash()
+// （现算现比）与 EncodeVersionRecord 写入时持久化的 PersistedHash 共用这一份
+// 实现，避免同一个哈希算法在两处各写一遍、将来悄悄分叉出两种摘要。
+func HashPayload(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+// EncodeVersionRecord 编码 M2 操作元数据信封：
+// [marker u64 LE][writeNanos i64 LE][sourceLen u32 LE][source]
+// [schemaVer u32 LE][hashLen u16 LE][payloadHash][payload]。
+// 只使用 v.WriteNanos/Source/SchemaVer/PersistedHash/Payload——LogicalKey/Seq
+// 已经是版本存储键本身的组成部分（VersionStorageKey），信封值内部不重复
+// 存储，避免同一个事实存在两个可能不一致的来源（调用方从
+// ParseVersionStorageKey 拿到的 seq 与 logical 之外，其余字段来自本函数）。
+func EncodeVersionRecord(v Version) []byte {
+	source := []byte(v.Source)
+	hash := []byte(v.PersistedHash)
+	buf := make([]byte, 8+8+4+len(source)+4+2+len(hash)+len(v.Payload))
+	off := 0
+	binary.LittleEndian.PutUint64(buf[off:off+8], envelopeMarkerBit|envelopeVersion1)
+	off += 8
+	binary.LittleEndian.PutUint64(buf[off:off+8], uint64(v.WriteNanos))
+	off += 8
+	binary.LittleEndian.PutUint32(buf[off:off+4], uint32(len(source)))
+	off += 4
+	copy(buf[off:], source)
+	off += len(source)
+	binary.LittleEndian.PutUint32(buf[off:off+4], v.SchemaVer)
+	off += 4
+	binary.LittleEndian.PutUint16(buf[off:off+2], uint16(len(hash)))
+	off += 2
+	copy(buf[off:], hash)
+	off += len(hash)
+	copy(buf[off:], v.Payload)
+	return buf
+}
+
+// DecodeVersionRecord 是版本键 value 的唯一读入口：按 envelopeMarkerBit 判据
+// 自动分流到信封解码或 EncodeVersionValue 的兼容解码，调用方（服务层的
+// GET 透明回退路径、LIST_VERSIONS/GET_AS_OF/LIST_WRITES/REPLAY_FINGERPRINT）
+// 永远不需要、也不应该自己判断某个版本键是旧格式还是新格式——判断逻辑只在
+// 这一处实现，其余地方统一按 Version 结构体取字段。返回的 Version 只填
+// WriteNanos/Source/SchemaVer/PersistedHash/Payload，LogicalKey/Seq 留给
+// 调用方从存储键回填。
+func DecodeVersionRecord(raw []byte) (Version, bool) {
+	if len(raw) < 8 {
+		return Version{}, false
+	}
+	marker := binary.LittleEndian.Uint64(raw[0:8])
+	if marker&envelopeMarkerBit == 0 {
+		writeNanos, payload, ok := DecodeVersionValue(raw)
+		if !ok {
+			return Version{}, false
+		}
+		return Version{WriteNanos: writeNanos, Payload: payload}, true
+	}
+
+	if len(raw) < 16+4 {
+		return Version{}, false
+	}
+	off := 8
+	writeNanos := int64(binary.LittleEndian.Uint64(raw[off : off+8]))
+	off += 8
+	sourceLen := int(binary.LittleEndian.Uint32(raw[off : off+4]))
+	off += 4
+	if sourceLen < 0 || off+sourceLen+4+2 > len(raw) {
+		return Version{}, false
+	}
+	source := string(raw[off : off+sourceLen])
+	off += sourceLen
+	schemaVer := binary.LittleEndian.Uint32(raw[off : off+4])
+	off += 4
+	hashLen := int(binary.LittleEndian.Uint16(raw[off : off+2]))
+	off += 2
+	if hashLen < 0 || off+hashLen > len(raw) {
+		return Version{}, false
+	}
+	hash := string(raw[off : off+hashLen])
+	off += hashLen
+	return Version{
+		WriteNanos:    writeNanos,
+		Source:        source,
+		SchemaVer:     schemaVer,
+		PersistedHash: hash,
+		Payload:       raw[off:],
+	}, true
 }
 
 // EncodeCurrentValue 编码 :current 指针落盘的 value：

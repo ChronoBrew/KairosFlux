@@ -60,6 +60,12 @@ const (
 	OpcodeListVersions      uint8 = 0x0B
 	OpcodeReplayFingerprint uint8 = 0x0C
 
+	// OpcodeListWrites：时态内核 M2 新增的审计查询 opcode（docs/方案-BanDB-
+	// 时态内核与AI数据平面.md §M2 第 2 项），紧接在上面四个 M0 opcode 之后
+	// 顺延分配。与它们同类：不参与 ack 三档窗口/累计记账，按"请求-即时响应"
+	// 处理，响应用既有 OpcodeOK/OpcodeErr。
+	OpcodeListWrites uint8 = 0x0D
+
 	OpcodeOK  uint8 = 0x80
 	OpcodeErr uint8 = 0x81
 
@@ -80,6 +86,13 @@ const (
 	// ErrCodeMalformedFrame 对应 §10.3 的 0x1xxx 段（帧/传输层）：PUT 负载
 	// 解不出 key/value（keyLen/valueLen 与实际字节不符）。
 	ErrCodeMalformedFrame uint16 = 0x1001
+	// ErrCodeResultTooLarge 同属 §10.3 的 0x1xxx 段（帧/传输层，不是内容
+	// 校验失败）：服务端算出的响应体超过帧长上限（EffectiveMaxSize），无法
+	// 安全打包成一帧发送——时态内核 M2 的 LIST_WRITES 在无过滤/大数据集场景
+	// 下可能命中这条（一个前缀下的写入历史可以任意长），见
+	// service.RouterV2.handleListWrites 的文档：结构化拒绝比"服务端直接发送
+	// 一个客户端解码时会因超限而拒绝的巨帧、让调用方对着超时干等"更诚实。
+	ErrCodeResultTooLarge uint16 = 0x1002
 	// ErrCodeSchemaValidation 对应 §10.3 的 0x3xxx 段（schema 校验）：value
 	// 未通过已注册类型的校验器。本阶段未实现 §9 Schema Descriptor 的按类型
 	// 子码分配，所有 schema 校验失败共用这一个码，具体原因仍由人读的

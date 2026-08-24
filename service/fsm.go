@@ -311,11 +311,15 @@ func (k *KVServer) getViaCurrentPointer(key []byte) ([]byte, error) {
 	if err != nil {
 		return nil, storage.ErrKeyNotFound
 	}
-	_, payload, ok := temporal.DecodeVersionValue(verRaw)
+	// DecodeVersionRecord（不是 DecodeVersionValue）：这个版本键可能是 M0
+	// 旧格式，也可能是 M2 起带操作元数据信封的新格式（见 internal/temporal
+	// 包关于 envelopeMarkerBit 的判据文档），GET 的透明回退路径必须两种都
+	// 认得，否则新格式记录的 payload 会被误读成信封内部字节。
+	rec, ok := temporal.DecodeVersionRecord(verRaw)
 	if !ok {
 		return nil, storage.ErrKeyNotFound
 	}
-	return payload, nil
+	return rec.Payload, nil
 }
 
 // maxScanResults 限制单次扫描返回条目数，防止无谓词大范围扫描撑爆内存。

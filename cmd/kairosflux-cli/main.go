@@ -43,7 +43,7 @@ func runCommand(addr string, args []string) int {
 	// 等 opcode 对它不存在）。提前分派，避免为这几个命令白建一条不会用到的 v1
 	// 连接。
 	switch args[0] {
-	case "put-versioned", "get-as-of", "list-versions", "fingerprint":
+	case "put-versioned", "get-as-of", "list-versions", "fingerprint", "list-writes", "export-writes":
 		return runTemporalCommand(addr, args)
 	}
 
@@ -123,10 +123,17 @@ func usage() {
   kairosflux-cli [-addr <host:port>] delete <key>    删除
 
 时态内核 M0（版本化写入/as-of 读取/指纹重放对账，v2 协议，另开连接）:
-  kairosflux-cli [-addr <host:port>] put-versioned <key> <val>       版本化写入（不覆盖），打印分配到的 seq
-  kairosflux-cli [-addr <host:port>] get-as-of <key> <as_of_nanos>   读取该时刻可见的版本（找不到时退出码 3）
-  kairosflux-cli [-addr <host:port>] list-versions <key>             列出该逻辑键全部版本
-  kairosflux-cli [-addr <host:port>] fingerprint <prefix>             对前缀下的逻辑键重放指纹并与 :current 对账
+  kairosflux-cli [-addr <host:port>] put-versioned <key> <val> [source]     版本化写入（不覆盖），打印分配到的 seq；
+                                                                            source 可选，写入方标识（M2）
+  kairosflux-cli [-addr <host:port>] get-as-of <key> <as_of_nanos>          读取该时刻可见的版本（找不到时退出码 3）
+  kairosflux-cli [-addr <host:port>] list-versions <key>                   列出该逻辑键全部版本
+  kairosflux-cli [-addr <host:port>] fingerprint <prefix> [as_of_nanos]    对前缀下的逻辑键重放指纹；不带 as_of_nanos
+                                                                            时与 :current 对账，带则为区间查询（不核对）
+
+时态内核 M2（操作元数据信封审计查询/导出）:
+  kairosflux-cli [-addr <host:port>] list-writes <prefix> [from] [to] [source]     列出命中的写入记录 + 按来源计数
+                                                                                    （from/to 为 write_ts 纳秒范围，<=0 表示无界）
+  kairosflux-cli [-addr <host:port>] export-writes <prefix> <outfile> [from] [to] [source]  同上，导出为 append-only JSONL
 
 示例:
   kairosflux-cli

@@ -17,10 +17,10 @@ func TestKVServer_GetTransparentlyResolvesVersionedKey(t *testing.T) {
 	ts := NewTemporalStore(kv)
 
 	logical := "quote:2026-08-17:600000"
-	if _, err := ts.PutVersioned(logical, []byte("v1"), 100); err != nil {
+	if _, err := ts.PutVersioned(logical, []byte("v1"), 100, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.PutVersioned(logical, []byte("v2"), 200); err != nil {
+	if _, err := ts.PutVersioned(logical, []byte("v2"), 200, "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -72,10 +72,10 @@ func TestKVServer_ScanHidesInternalTemporalKeysButKeepsPlainKeys(t *testing.T) {
 	}
 	// 版本化写入：产生 "quote:2026-08-17:600000:v...0001"/"...0002" 与
 	// "quote:2026-08-17:600000:current" 三个内部存储键。
-	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte(`{"versioned":true}`), 100); err != nil {
+	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte(`{"versioned":true}`), 100, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte(`{"versioned":true}`), 200); err != nil {
+	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte(`{"versioned":true}`), 200, "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -95,7 +95,7 @@ func TestKVServer_ScanHidesInternalTemporalKeysButKeepsPlainKeys(t *testing.T) {
 func TestKVServer_ScanRawSeesInternalKeys(t *testing.T) {
 	kv := setupTemporalTest(t)
 	ts := NewTemporalStore(kv)
-	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v1"), 100); err != nil {
+	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v1"), 100, "", 0); err != nil {
 		t.Fatal(err)
 	}
 

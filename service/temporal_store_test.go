@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/internal/temporal"
 )
 
 // setupTemporalTest 起一个真实的 standalone KVServer（临时 WAL/SSTable 目录），
@@ -34,15 +35,15 @@ func TestTemporalStore_PutVersionedAssignsMonotonicSeqStartingAt1(t *testing.T) 
 	kv := setupTemporalTest(t)
 	ts := NewTemporalStore(kv)
 
-	seq1, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v1"), 100)
+	seq1, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v1"), 100, "", 0)
 	if err != nil || seq1 != 1 {
 		t.Fatalf("第一次写应得 seq=1: seq=%d err=%v", seq1, err)
 	}
-	seq2, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v2"), 200)
+	seq2, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v2"), 200, "", 0)
 	if err != nil || seq2 != 2 {
 		t.Fatalf("第二次写应得 seq=2: seq=%d err=%v", seq2, err)
 	}
-	seq3, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v3"), 300)
+	seq3, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("v3"), 300, "", 0)
 	if err != nil || seq3 != 3 {
 		t.Fatalf("第三次写应得 seq=3: seq=%d err=%v", seq3, err)
 	}
@@ -54,7 +55,7 @@ func TestTemporalStore_ListVersionsReturnsAllInSeqOrder(t *testing.T) {
 
 	logical := "quote:2026-08-17:600000"
 	for i, payload := range []string{"v1", "v2", "v3"} {
-		if _, err := ts.PutVersioned(logical, []byte(payload), int64(100*(i+1))); err != nil {
+		if _, err := ts.PutVersioned(logical, []byte(payload), int64(100*(i+1)), "", 0); err != nil {
 			t.Fatalf("写入失败: %v", err)
 		}
 	}
@@ -90,10 +91,10 @@ func TestTemporalStore_ListVersionsDoesNotLeakOtherLogicalKeys(t *testing.T) {
 	// "quote:2026-08-17:60000" 是 "quote:2026-08-17:600000" 的严格前缀（少一个
 	// 数字位），验证按数值续接不会互相"渗漏"进对方的版本列表——见
 	// temporal.VersionStorageKeyLowerBound/UpperBound 的字典序论证。
-	if _, err := ts.PutVersioned("quote:2026-08-17:60000", []byte("short"), 100); err != nil {
+	if _, err := ts.PutVersioned("quote:2026-08-17:60000", []byte("short"), 100, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("long"), 200); err != nil {
+	if _, err := ts.PutVersioned("quote:2026-08-17:600000", []byte("long"), 200, "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -113,7 +114,7 @@ func TestTemporalStore_GetAsOfSeesOnlyPastWrites(t *testing.T) {
 
 	logical := "quote:2026-08-17:600000"
 	mustPutAt := func(payload string, nanos int64) {
-		if _, err := ts.PutVersioned(logical, []byte(payload), nanos); err != nil {
+		if _, err := ts.PutVersioned(logical, []byte(payload), nanos, "", 0); err != nil {
 			t.Fatalf("写入失败: %v", err)
 		}
 	}
@@ -143,13 +144,13 @@ func TestTemporalStore_ReplayFingerprintNoMismatchAfterNormalWrites(t *testing.T
 
 	for _, logical := range []string{"quote:2026-08-17:600000", "quote:2026-08-17:600001"} {
 		for i := 0; i < 3; i++ {
-			if _, err := ts.PutVersioned(logical, []byte{byte('a' + i)}, int64(100*(i+1))); err != nil {
+			if _, err := ts.PutVersioned(logical, []byte{byte('a' + i)}, int64(100*(i+1)), "", 0); err != nil {
 				t.Fatalf("写入失败: %v", err)
 			}
 		}
 	}
 
-	result, err := ts.ReplayFingerprint("quote:2026-08-17:")
+	result, err := ts.ReplayFingerprint("quote:2026-08-17:", 0)
 	if err != nil {
 		t.Fatalf("ReplayFingerprint 失败: %v", err)
 	}
@@ -164,7 +165,7 @@ func TestTemporalStore_ReplayFingerprintNoMismatchAfterNormalWrites(t *testing.T
 	}
 
 	// 同一份账本重放两次指纹必须一致（跨调用确定性）。
-	result2, err := ts.ReplayFingerprint("quote:2026-08-17:")
+	result2, err := ts.ReplayFingerprint("quote:2026-08-17:", 0)
 	if err != nil {
 		t.Fatalf("第二次 ReplayFingerprint 失败: %v", err)
 	}
@@ -190,7 +191,7 @@ func TestTemporalStore_ConcurrentPutVersionedSameLogicalKeyAssignsDistinctSeq(t 
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			seq, err := ts.PutVersioned(logical, []byte(fmt.Sprintf("v%d", i)), int64(i))
+			seq, err := ts.PutVersioned(logical, []byte(fmt.Sprintf("v%d", i)), int64(i), "", 0)
 			if err != nil {
 				t.Errorf("goroutine %d: PutVersioned 失败: %v", i, err)
 				return
@@ -230,10 +231,10 @@ func TestTemporalStore_ReplayFingerprintDetectsCorruptedCurrentPointer(t *testin
 	ts := NewTemporalStore(kv)
 
 	logical := "quote:2026-08-17:600000"
-	if _, err := ts.PutVersioned(logical, []byte("v1"), 100); err != nil {
+	if _, err := ts.PutVersioned(logical, []byte("v1"), 100, "", 0); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.PutVersioned(logical, []byte("v2"), 200); err != nil {
+	if _, err := ts.PutVersioned(logical, []byte("v2"), 200, "", 0); err != nil {
 		t.Fatal(err)
 	}
 
@@ -248,11 +249,243 @@ func TestTemporalStore_ReplayFingerprintDetectsCorruptedCurrentPointer(t *testin
 		t.Fatalf("构造损坏指针失败: %v", err)
 	}
 
-	result, err := ts.ReplayFingerprint("quote:2026-08-17:")
+	result, err := ts.ReplayFingerprint("quote:2026-08-17:", 0)
 	if err != nil {
 		t.Fatalf("ReplayFingerprint 失败: %v", err)
 	}
 	if len(result.Mismatches) != 1 || result.Mismatches[0] != logical {
 		t.Fatalf("应检出 1 条不一致: %+v", result.Mismatches)
+	}
+}
+
+// TestTemporalStore_ListWritesFiltersByTimeRangeSourceAndAggregatesBySource
+// 验证 LIST_WRITES 的三个过滤维度（前缀/时间范围/来源）与按来源聚合计数
+// （M2 任务书第 2 项："某键某时段被写了几次、来自谁"）。
+func TestTemporalStore_ListWritesFiltersByTimeRangeSourceAndAggregatesBySource(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	logical := "quote:2026-08-17:600000"
+	if _, err := ts.PutVersioned(logical, []byte("v1"), 100, "job-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PutVersioned(logical, []byte("v2"), 200, "job-b", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PutVersioned(logical, []byte("v3"), 300, "job-a", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// 无过滤：应看到全部 3 条，来源聚合 job-a=2 job-b=1（按来源升序）。
+	all, err := ts.ListWrites("quote:2026-08-17:", 0, 0, "")
+	if err != nil {
+		t.Fatalf("ListWrites 失败: %v", err)
+	}
+	if len(all.Entries) != 3 {
+		t.Fatalf("无过滤应看到 3 条: %+v", all.Entries)
+	}
+	if len(all.BySource) != 2 || all.BySource[0] != (SourceCount{Source: "job-a", Count: 2}) ||
+		all.BySource[1] != (SourceCount{Source: "job-b", Count: 1}) {
+		t.Fatalf("来源聚合不符: %+v", all.BySource)
+	}
+
+	// 时间范围 [150,250] 只应命中第 2 条（write_ts=200）。
+	byTime, err := ts.ListWrites("quote:2026-08-17:", 150, 250, "")
+	if err != nil {
+		t.Fatalf("ListWrites 失败: %v", err)
+	}
+	if len(byTime.Entries) != 1 || byTime.Entries[0].Seq != 2 {
+		t.Fatalf("时间范围过滤不符: %+v", byTime.Entries)
+	}
+
+	// 按来源过滤 job-a：应命中 seq 1 与 3。
+	bySrc, err := ts.ListWrites("quote:2026-08-17:", 0, 0, "job-a")
+	if err != nil {
+		t.Fatalf("ListWrites 失败: %v", err)
+	}
+	if len(bySrc.Entries) != 2 || bySrc.Entries[0].Seq != 1 || bySrc.Entries[1].Seq != 3 {
+		t.Fatalf("来源过滤不符: %+v", bySrc.Entries)
+	}
+	for _, e := range bySrc.Entries {
+		if !e.HashOK {
+			t.Fatalf("未被篡改的记录 HashOK 应为 true: %+v", e)
+		}
+	}
+}
+
+// TestTemporalStore_ListWritesDetectsCorruptedHistoricalVersion 是"注入单字节
+// 漂移→报警"验收标准在历史版本（非最新版本）上的实现——REPLAY_FINGERPRINT
+// 只重放+对账"每个逻辑键的最新版本"，一条被静默改写的历史版本（:current
+// 仍指向未被动过的最新版本）对它完全不可见；这正是 M2 操作元数据信封里
+// 持久化 payload_hash 存在的意义：LIST_WRITES 对每条历史记录独立做
+// "写入时刻记的哈希 vs 现在重新算的哈希"自检，与 :current 对账是两条互不
+// 覆盖的检测路径。
+func TestTemporalStore_ListWritesDetectsCorruptedHistoricalVersion(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	logical := "quote:2026-08-17:600000"
+	if _, err := ts.PutVersioned(logical, []byte("v1"), 100, "job-a", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PutVersioned(logical, []byte("v2-latest"), 200, "job-a", 1); err != nil {
+		t.Fatal(err)
+	}
+
+	// 直接在存储层篡改第 1 条（非最新）版本键的 payload 最后一个字节
+	// （单字节漂移），不经过 PutVersioned——模拟磁盘位翻转/存储层 bug，而不是
+	// "业务逻辑写错了"。
+	versionKey := temporal.VersionStorageKey(logical, 1)
+	raw, err := kv.Get([]byte(versionKey))
+	if err != nil {
+		t.Fatalf("读取版本键失败: %v", err)
+	}
+	corrupted := append([]byte(nil), raw...)
+	corrupted[len(corrupted)-1] ^= 0xFF // 翻转 payload 最后一个字节
+	if err := kv.Write(Command{Type: CommandPut, Key: []byte(versionKey), Value: corrupted}); err != nil {
+		t.Fatalf("注入单字节漂移失败: %v", err)
+	}
+
+	// REPLAY_FINGERPRINT（无界）看不到这条漂移：:current 仍指向 seq=2，
+	// 与它自己的最新版本一致，零不一致——这正是本测试要证明的"覆盖不到"。
+	replay, err := ts.ReplayFingerprint("quote:2026-08-17:", 0)
+	if err != nil {
+		t.Fatalf("ReplayFingerprint 失败: %v", err)
+	}
+	if len(replay.Mismatches) != 0 {
+		t.Fatalf("REPLAY_FINGERPRINT 不应检出历史版本漂移（设计上覆盖不到）: %+v", replay.Mismatches)
+	}
+
+	// LIST_WRITES 必须检出：seq=1 的 HashOK 应为 false，seq=2 不受影响。
+	writes, err := ts.ListWrites("quote:2026-08-17:", 0, 0, "")
+	if err != nil {
+		t.Fatalf("ListWrites 失败: %v", err)
+	}
+	if len(writes.Entries) != 2 {
+		t.Fatalf("应看到 2 条: %+v", writes.Entries)
+	}
+	if writes.Entries[0].Seq != 1 || writes.Entries[0].HashOK {
+		t.Fatalf("seq=1 应被检出 HashOK=false: %+v", writes.Entries[0])
+	}
+	if writes.Entries[1].Seq != 2 || !writes.Entries[1].HashOK {
+		t.Fatalf("seq=2 未被篡改，HashOK 应为 true: %+v", writes.Entries[1])
+	}
+}
+
+// TestTemporalStore_ReplayFingerprintBoundedSkipsCurrentReconciliation 验证
+// M2 REPLAY_FINGERPRINT 服务化升级的时间上界语义：asOfNanos>0 时按该时刻
+// 重放（temporal.AsOf），且不与 :current 对账（Mismatches 恒为空、
+// Bounded=true）——:current 永远指向全局最新版本，与历史时间点的重放结果
+// 比较没有意义（见 ReplayResult.Bounded 的文档）。
+func TestTemporalStore_ReplayFingerprintBoundedSkipsCurrentReconciliation(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	logical := "quote:2026-08-17:600000"
+	if _, err := ts.PutVersioned(logical, []byte("v1"), 100, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ts.PutVersioned(logical, []byte("v2"), 200, "", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	bounded, err := ts.ReplayFingerprint("quote:2026-08-17:", 150)
+	if err != nil {
+		t.Fatalf("ReplayFingerprint 失败: %v", err)
+	}
+	if !bounded.Bounded {
+		t.Fatal("带 asOfNanos 的调用应标记 Bounded=true")
+	}
+	if len(bounded.Mismatches) != 0 {
+		t.Fatalf("区间查询不应产生任何 mismatch（未做对账，不是核对通过）: %+v", bounded.Mismatches)
+	}
+
+	// asOf=150 时只看到 v1（v2 写于 200，晚于 150），指纹应与"只有 v1"时的
+	// 无界重放指纹一致——验证 AsOf 语义确实生效，不是恒等于无界结果。
+	onlyV1 := setupTemporalTest(t)
+	ts2 := NewTemporalStore(onlyV1)
+	if _, err := ts2.PutVersioned(logical, []byte("v1"), 100, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	unbounded, err := ts2.ReplayFingerprint("quote:2026-08-17:", 0)
+	if err != nil {
+		t.Fatalf("ReplayFingerprint 失败: %v", err)
+	}
+	if bounded.Fingerprint != unbounded.Fingerprint {
+		t.Fatalf("asOf=150 的指纹应等于只写过 v1 时的指纹: bounded=%s unbounded=%s",
+			bounded.Fingerprint, unbounded.Fingerprint)
+	}
+
+	// asOf 早于任何写入：该逻辑键在这次重放里不存在，keyCount 反映"发现的
+	// :current 数"（不因 asOf 收窄），指纹应等于空集合的指纹。
+	tooEarly, err := ts.ReplayFingerprint("quote:2026-08-17:", 1)
+	if err != nil {
+		t.Fatalf("ReplayFingerprint 失败: %v", err)
+	}
+	if tooEarly.Fingerprint != temporal.Fingerprint(nil) {
+		t.Fatalf("asOf 早于全部写入应得空集合指纹: %s", tooEarly.Fingerprint)
+	}
+}
+
+// TestTemporalStore_ReplayResultConsistentAcrossProcessRestart 是 M0/M2 共同
+// 验收标准"重启后重放结果与崩溃前一致"的直接实现：对同一个 WAL/SSTable
+// 目录先用一个 KVServer 写入若干版本化记录并关闭（模拟进程退出/崩溃后的
+// 落盘状态），再用一个全新的 KVServer 重新打开同一目录（模拟重启，
+// NewKVServer 在 standalone 模式下会重放 WAL 到 memtable，见 service/fsm.go
+// 的 replayWAL），重放指纹必须逐字节相同。
+func TestTemporalStore_ReplayResultConsistentAcrossProcessRestart(t *testing.T) {
+	dir := t.TempDir()
+	oldWAL, oldSST, oldMode := config.G.WALPath, config.G.SSTablePath, config.G.Mode
+	config.G.WALPath = filepath.Join(dir, "wal.log")
+	config.G.SSTablePath = dir
+	config.G.Mode = config.ModeStandalone
+	t.Cleanup(func() {
+		config.G.WALPath, config.G.SSTablePath, config.G.Mode = oldWAL, oldSST, oldMode
+	})
+
+	logical := "quote:2026-08-17:600000"
+	kv1 := NewKVServer()
+	ts1 := NewTemporalStore(kv1)
+	for i, payload := range []string{"v1", "v2", "v3"} {
+		if _, err := ts1.PutVersioned(logical, []byte(payload), int64(100*(i+1)), "job-a", 1); err != nil {
+			t.Fatalf("写入失败: %v", err)
+		}
+	}
+	before, err := ts1.ReplayFingerprint("quote:2026-08-17:", 0)
+	if err != nil {
+		t.Fatalf("重启前 ReplayFingerprint 失败: %v", err)
+	}
+	if err := kv1.Close(); err != nil {
+		t.Fatalf("关闭失败（模拟进程退出）: %v", err)
+	}
+
+	kv2 := NewKVServer() // 同一目录重新打开，模拟重启
+	t.Cleanup(func() { kv2.Close() })
+	ts2 := NewTemporalStore(kv2)
+	after, err := ts2.ReplayFingerprint("quote:2026-08-17:", 0)
+	if err != nil {
+		t.Fatalf("重启后 ReplayFingerprint 失败: %v", err)
+	}
+
+	if after.Fingerprint != before.Fingerprint {
+		t.Fatalf("重启后重放指纹应与崩溃前逐字节一致: before=%s after=%s", before.Fingerprint, after.Fingerprint)
+	}
+	if after.KeyCount != before.KeyCount || len(after.Mismatches) != 0 {
+		t.Fatalf("重启后应零不一致且逻辑键数不变: before=%+v after=%+v", before, after)
+	}
+
+	// 重启后 LIST_WRITES 也应看到全部历史记录，操作元数据（source/schema_ver）
+	// 同样重放正确——不只是指纹这一个聚合数字碰巧一致。
+	writes, err := ts2.ListWrites("quote:2026-08-17:", 0, 0, "")
+	if err != nil {
+		t.Fatalf("重启后 ListWrites 失败: %v", err)
+	}
+	if len(writes.Entries) != 3 {
+		t.Fatalf("重启后应看到 3 条历史写入: %+v", writes.Entries)
+	}
+	for _, e := range writes.Entries {
+		if e.Source != "job-a" || e.SchemaVer != 1 || !e.HashOK {
+			t.Fatalf("重启后操作元数据应完整保留: %+v", e)
+		}
 	}
 }

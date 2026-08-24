@@ -39,10 +39,13 @@ from bandb_client import (
     decode_ack_body,
     decode_frame_header,
     decode_header_v2,
+    decode_list_writes_request,
+    decode_list_writes_response,
     encode_ack_body,
     encode_frame,
     encode_frame_v2,
     encode_hello_probe_v2,
+    encode_list_writes_request,
     negotiate_client,
     sniff_version,
 )
@@ -118,6 +121,24 @@ class FrameVectorTests(unittest.TestCase):
         v = self._frame("v2_corr_id_max")
         self.assertEqual(v["corr_id"], 0xFFFFFFFF)
         self._assert_frame_matches("v2_corr_id_max")
+
+    # 时态内核 M2 新增向量（PUT_VERSIONED 带 source/REPLAY_FINGERPRINT 带
+    # asOfNanos/LIST_WRITES 新 opcode）：先验证帧 envelope 本身（与其它
+    # opcode 用同一条通用断言），payload 语义解码见下方
+    # TemporalM2VectorTests（Python 侧目前只实现了 LIST_WRITES 的编解码，
+    # PUT_VERSIONED/REPLAY_FINGERPRINT 请求体解码留给 Go 服务端，Python 客户端
+    # 本就没有这两个 M0 opcode 的既有实现，见 bandb_client.py 顶部注释）。
+    def test_put_versioned_request_with_source(self):
+        self._assert_frame_matches("v2_put_versioned_request_with_source")
+
+    def test_replay_fingerprint_request_bounded(self):
+        self._assert_frame_matches("v2_replay_fingerprint_request_bounded")
+
+    def test_list_writes_request(self):
+        self._assert_frame_matches("v2_list_writes_request")
+
+    def test_list_writes_response_one_entry_no_source_breakdown(self):
+        self._assert_frame_matches("v2_list_writes_response_one_entry_no_source_breakdown")
 
     def test_magic_byte_order_lock(self):
         """锁定 wire 上第 0 字节是 version、第 1 字节才是 magic——不通过
@@ -273,6 +294,51 @@ class WindowStatByeVectorTests(unittest.TestCase):
 
     def test_window_ack_empty_flush(self):
         self._assert_ack_matches("v2_window_ack_empty_flush", OPCODE_WINDOW_ACK)
+
+
+class TemporalM2VectorTests(unittest.TestCase):
+    """时态内核 M2 新增 opcode（LIST_WRITES 0x0D）payload 语义解码测试——
+    frames 分区的通用帧 envelope 检查见 FrameVectorTests，这里额外验证
+    encode_list_writes_request/decode_list_writes_response 对同一批向量的
+    字段级解码，与 Go 侧 proto.EncodeListWritesRequest/DecodeListWritesResponse
+    对同一份手工推导字节做同样的双向验证（对应 Go:
+    proto/temporal_frame_test.go 的 TestListWritesRequestRoundTrip 等）。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        doc = _load_vectors()
+        cls.frames = {v["name"]: v for v in doc["frames"]}
+
+    def test_list_writes_request_payload_decodes_to_documented_fields(self):
+        v = self.frames["v2_list_writes_request"]
+        data = bytes.fromhex(v["data_hex"])
+        prefix, t_from, t_to, source = decode_list_writes_request(data)
+        self.assertEqual(prefix, b"p")
+        self.assertEqual(t_from, 1)
+        self.assertEqual(t_to, 2)
+        self.assertEqual(source, b"s")
+
+        # 反向：encode_list_writes_request 用同样的字段应重新生成一致的
+        # data_hex——双向验证，不止是"能解析"。
+        got = encode_list_writes_request(b"p", 1, 2, b"s")
+        self.assertEqual(got.hex(), v["data_hex"])
+
+    def test_list_writes_response_payload_decodes_to_documented_fields(self):
+        v = self.frames["v2_list_writes_response_one_entry_no_source_breakdown"]
+        data = bytes.fromhex(v["data_hex"])
+        entries, source_counts = decode_list_writes_response(data)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(source_counts, [])
+        entry = entries[0]
+        self.assertEqual(entry.logical_key, "lk")
+        self.assertEqual(entry.seq, 7)
+        self.assertEqual(entry.write_nanos, 100)
+        self.assertEqual(entry.source, "j")
+        self.assertEqual(entry.schema_ver, 2)
+        self.assertEqual(entry.payload_hash, "ab")
+        self.assertEqual(entry.payload, b"pl")
+        self.assertTrue(entry.hash_ok)
 
 
 class NegotiateClientTests(unittest.TestCase):

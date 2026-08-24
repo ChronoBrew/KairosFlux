@@ -342,6 +342,20 @@ OPCODE_BYE = 0x06  # 语义待定（RFC §3.1/§7），本阶段只保留常量
 OPCODE_FLUSH = 0x07
 OPCODE_STAT = 0x08
 
+# OPCODE_PUT_VERSIONED(0x09)/OPCODE_GET_AS_OF(0x0A)/OPCODE_LIST_VERSIONS(0x0B)/
+# OPCODE_REPLAY_FINGERPRINT(0x0C)：时态内核 M0 新增的四个 opcode（对应 Go:
+# kairnet/codec.OpcodePutVersioned 等），Python 客户端此前从未实现——只有
+# Go 侧的 kairosflux-cli 瘦客户端在用。这是本次 M2 改动之前就存在的缺口，
+# 不在本次改动范围内补齐（M2 任务书只要求"新 opcode 同步实现"，M0 的四个
+# opcode 不是本次新增的）。
+
+# OPCODE_LIST_WRITES：时态内核 M2 新增的审计查询 opcode（对应 Go:
+# kairnet/codec.OpcodeListWrites），docs/方案-BanDB-时态内核与AI数据平面.md
+# §M2 第 2 项。与上面四个 M0 opcode 不同，这是本次改动新引入的能力，Python
+# 客户端同步实现编解码，向量对齐 docs/kair/vectors-v2.json 的
+# v2_list_writes_request/v2_list_writes_response_one_entry_no_source_breakdown。
+OPCODE_LIST_WRITES = 0x0D
+
 OPCODE_OK = 0x80
 OPCODE_ERR = 0x81
 
@@ -777,3 +791,177 @@ class BanDBClientV2:
         if header.opcode != OPCODE_STAT_ACK:
             raise ProtocolError(f"BYE 收尾响应 opcode={header.opcode:#x}，期望 STAT_ACK({OPCODE_STAT_ACK:#x})")
         return window_ack, decode_ack_body(payload)
+
+
+# ---------------------------------------------------------------------------
+# LIST_WRITES（时态内核 M2 新增 opcode 0x0D）请求/响应负载编解码。对应 Go：
+# proto/temporal_frame.go 的 Encode/DecodeListWritesRequest、
+# EncodeWriteEnvelopeEntry/DecodeWriteEnvelopeEntry、Encode/DecodeListWritesResponse
+# ——字段布局与命名对齐，向量对齐 docs/kair/vectors-v2.json 的
+# v2_list_writes_request/v2_list_writes_response_one_entry_no_source_breakdown。
+# ---------------------------------------------------------------------------
+
+
+def encode_list_writes_request(prefix: bytes, t_from_nanos: int, t_to_nanos: int, source: bytes) -> bytes:
+    """LIST_WRITES 请求负载：
+    [prefixLen u32 LE][prefix][tFromNanos i64 LE][tToNanos i64 LE][sourceLen u32 LE][source]。
+    t_from_nanos<=0 表示无下界，t_to_nanos<=0 表示无上界，source=b"" 表示不
+    按来源过滤——与 Go 侧同一套"真实 write_ts 恒为正数，非正数做无界哨兵"
+    约定，对应 Go: proto.EncodeListWritesRequest。
+    """
+    return (
+        struct.pack("<I", len(prefix))
+        + prefix
+        + struct.pack("<qq", t_from_nanos, t_to_nanos)
+        + struct.pack("<I", len(source))
+        + source
+    )
+
+
+def decode_list_writes_request(data: bytes) -> Tuple[bytes, int, int, bytes]:
+    """decode_list_writes_request 是 encode_list_writes_request 的逆操作。
+
+    对应 Go: proto.DecodeListWritesRequest。
+    """
+    if len(data) < 4:
+        raise ProtocolError("LIST_WRITES request too short")
+    (prefix_len,) = struct.unpack_from("<I", data, 0)
+    off = 4
+    if off + prefix_len + 8 + 8 + 4 > len(data):
+        raise ProtocolError("LIST_WRITES request truncated")
+    prefix = data[off : off + prefix_len]
+    off += prefix_len
+    t_from, t_to = struct.unpack_from("<qq", data, off)
+    off += 16
+    (source_len,) = struct.unpack_from("<I", data, off)
+    off += 4
+    if off + source_len != len(data):
+        raise ProtocolError("LIST_WRITES request source length mismatch")
+    return prefix, t_from, t_to, data[off : off + source_len]
+
+
+class WriteEnvelope:
+    """LIST_WRITES 一条命中记录，对应 Go: service.WriteEnvelope /
+    proto.WriteEnvelopeView。"""
+
+    __slots__ = ("logical_key", "seq", "write_nanos", "source", "schema_ver", "payload_hash", "payload", "hash_ok")
+
+    def __init__(self, logical_key, seq, write_nanos, source, schema_ver, payload_hash, payload, hash_ok):
+        self.logical_key = logical_key
+        self.seq = seq
+        self.write_nanos = write_nanos
+        self.source = source
+        self.schema_ver = schema_ver
+        self.payload_hash = payload_hash
+        self.payload = payload
+        self.hash_ok = hash_ok
+
+    def __eq__(self, other):
+        if not isinstance(other, WriteEnvelope):
+            return NotImplemented
+        return (
+            self.logical_key,
+            self.seq,
+            self.write_nanos,
+            self.source,
+            self.schema_ver,
+            self.payload_hash,
+            self.payload,
+            self.hash_ok,
+        ) == (
+            other.logical_key,
+            other.seq,
+            other.write_nanos,
+            other.source,
+            other.schema_ver,
+            other.payload_hash,
+            other.payload,
+            other.hash_ok,
+        )
+
+    def __repr__(self):
+        return (
+            f"WriteEnvelope(logical_key={self.logical_key!r}, seq={self.seq}, "
+            f"write_nanos={self.write_nanos}, source={self.source!r}, schema_ver={self.schema_ver}, "
+            f"payload_hash={self.payload_hash!r}, payload={self.payload!r}, hash_ok={self.hash_ok})"
+        )
+
+
+def decode_write_envelope_entry(data: bytes) -> Tuple[WriteEnvelope, int]:
+    """解析一条 EncodeWriteEnvelopeEntry 编码的记录，返回 (entry, consumed)。
+
+    布局：[logicalKeyLen u32 LE][logicalKey][seq u64 LE][writeNanos i64 LE]
+    [sourceLen u32 LE][source][schemaVer u32 LE][hashLen u16 LE][payloadHash]
+    [payloadLen u32 LE][payload][hashOK u8]。对应 Go: proto.DecodeWriteEnvelopeEntry。
+    """
+    if len(data) < 4:
+        raise ProtocolError("write envelope entry too short")
+    (logical_key_len,) = struct.unpack_from("<I", data, 0)
+    off = 4
+    if off + logical_key_len + 8 + 8 + 4 > len(data):
+        raise ProtocolError("write envelope entry truncated (logical key/seq/write_nanos/source_len)")
+    logical_key = data[off : off + logical_key_len].decode("utf-8")
+    off += logical_key_len
+    seq, write_nanos = struct.unpack_from("<Qq", data, off)
+    off += 16
+    (source_len,) = struct.unpack_from("<I", data, off)
+    off += 4
+    if off + source_len + 4 + 2 > len(data):
+        raise ProtocolError("write envelope entry truncated (source/schema_ver/hash_len)")
+    source = data[off : off + source_len].decode("utf-8")
+    off += source_len
+    (schema_ver,) = struct.unpack_from("<I", data, off)
+    off += 4
+    (hash_len,) = struct.unpack_from("<H", data, off)
+    off += 2
+    if off + hash_len + 4 > len(data):
+        raise ProtocolError("write envelope entry truncated (payload_hash/payload_len)")
+    payload_hash = data[off : off + hash_len].decode("ascii")
+    off += hash_len
+    (payload_len,) = struct.unpack_from("<I", data, off)
+    off += 4
+    if off + payload_len + 1 > len(data):
+        raise ProtocolError("write envelope entry truncated (payload/hash_ok)")
+    payload = data[off : off + payload_len]
+    off += payload_len
+    hash_ok = data[off] != 0
+    off += 1
+    return (
+        WriteEnvelope(logical_key, seq, write_nanos, source, schema_ver, payload_hash, payload, hash_ok),
+        off,
+    )
+
+
+def decode_list_writes_response(body: bytes) -> Tuple[list, list]:
+    """LIST_WRITES 的 OK 响应体：
+    [matchCount u32 LE][entry...][sourceCountN u32 LE]([sourceLen u32 LE][source][count u32 LE])...。
+    返回 (entries, source_counts)，source_counts 是 (source: str, count: int)
+    元组列表。对应 Go: proto.DecodeListWritesResponse。
+    """
+    if len(body) < 4:
+        raise ProtocolError("LIST_WRITES response too short")
+    (match_count,) = struct.unpack_from("<I", body, 0)
+    off = 4
+    entries = []
+    for _ in range(match_count):
+        entry, consumed = decode_write_envelope_entry(body[off:])
+        entries.append(entry)
+        off += consumed
+    if off + 4 > len(body):
+        raise ProtocolError("LIST_WRITES response missing source count section")
+    (source_count_n,) = struct.unpack_from("<I", body, off)
+    off += 4
+    source_counts = []
+    for _ in range(source_count_n):
+        if off + 4 > len(body):
+            raise ProtocolError("LIST_WRITES response source breakdown truncated")
+        (src_len,) = struct.unpack_from("<I", body, off)
+        off += 4
+        if off + src_len + 4 > len(body):
+            raise ProtocolError("LIST_WRITES response source breakdown truncated")
+        src = body[off : off + src_len].decode("utf-8")
+        off += src_len
+        (count,) = struct.unpack_from("<I", body, off)
+        off += 4
+        source_counts.append((src, count))
+    return entries, source_counts

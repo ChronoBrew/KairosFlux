@@ -6,12 +6,14 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
 	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
 	"github.com/ChronoBrew/KairosFlux/kairnet/negotiate"
 	"github.com/ChronoBrew/KairosFlux/proto"
 	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook/schema"
 	"github.com/ChronoBrew/KairosFlux/storage"
 )
 
@@ -133,6 +135,8 @@ func (r *RouterV2) HandleV2(req kairnet.RequestV2) {
 		r.handleListVersions(req)
 	case codec.OpcodeReplayFingerprint:
 		r.handleReplayFingerprint(req)
+	case codec.OpcodeListWrites:
+		r.handleListWrites(req)
 	default:
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "unknown opcode")
 	}
@@ -422,7 +426,7 @@ func (r *RouterV2) handleScan(req kairnet.RequestV2) {
 // 总是立即响应：OK 负载 = 分配到的 seq（[u64 LE] 8 字节），供调用方确认/
 // 记录这次写对应的版本号；ERR 负载沿用既有 V2ErrPayload 结构。
 func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
-	key, value, ok := proto.DecodePutFrame(req.Data())
+	key, value, source, ok := proto.DecodePutVersionedFrame(req.Data())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
@@ -446,7 +450,7 @@ func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
 		value = newValue
 	}
 
-	seq, err := r.temporal.PutVersioned(string(key), value, time.Now().UnixNano())
+	seq, err := r.temporal.PutVersioned(string(key), value, time.Now().UnixNano(), source, schemaVersionFor(req.Type(), key))
 	if err != nil {
 		metrics.WriteErrors.Add(1)
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "store_error")
@@ -457,6 +461,25 @@ func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
 	payload := make([]byte, 8)
 	binary.LittleEndian.PutUint64(payload, seq)
 	r.sendOK(req.Conn(), req.Type(), req.CorrID(), payload)
+}
+
+// schemaVersionFor 返回 typeID/key 对应的 schema 契约版本号（M2 操作元数据
+// 信封新增字段，见 TemporalStore.PutVersioned 的文档），来源与 Filter 的
+// schema 分派规则完全一致（Kair-2 RFC §9.3：typeID!=0 时按 TypeID 精确查表，
+// 否则按 key 前缀最长匹配）——但不经过 Filter，直接查 schema 包的全局
+// 注册表：schema_ver 是纯元数据采集，与"是否要做 schema 校验/是否配置了
+// Filter"是两件独立的事，未注册类型返回 0（"未纳管"，不是错误）。
+func schemaVersionFor(typeID uint16, key []byte) uint32 {
+	if typeID != 0 {
+		if d, ok := schema.LookupByType(typeID); ok {
+			return uint32(d.SchemaVersion)
+		}
+		return 0
+	}
+	if d, ok := schema.LookupDescriptor(key); ok {
+		return uint32(d.SchemaVersion)
+	}
+	return 0
 }
 
 // handleGetAsOf 处理 GET_AS_OF：请求帧 proto.DecodeAsOfFrame（key + as_of
@@ -511,18 +534,73 @@ func (r *RouterV2) handleListVersions(req kairnet.RequestV2) {
 // TemporalStore.ReplayFingerprint 的文档）。对前缀下每个逻辑键做重放对账，
 // 返回一致性摘要——这是验收三问第 2 问"账本可重放指纹一致"的可执行入口。
 func (r *RouterV2) handleReplayFingerprint(req kairnet.RequestV2) {
-	prefix, ok := proto.DecodeKeyFrame(req.Data())
+	prefix, asOfNanos, ok := proto.DecodeReplayFingerprintRequest(req.Data())
 	if !ok {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
 		return
 	}
-	result, err := r.temporal.ReplayFingerprint(string(prefix))
+	result, err := r.temporal.ReplayFingerprint(string(prefix), asOfNanos)
 	if err != nil {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
 		return
 	}
-	body := proto.EncodeReplayFingerprintResponse(
-		result.KeyCount, uint32(len(result.Mismatches)), result.Fingerprint, result.Mismatches)
+	body := proto.EncodeReplayFingerprintResponseV2(
+		result.KeyCount, uint32(len(result.Mismatches)), result.Fingerprint, result.Mismatches, result.Bounded)
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
+}
+
+// handleListWrites 处理 LIST_WRITES（时态内核 M2 审计查询，方案 §M2 第 2
+// 项）：请求帧 proto.DecodeListWritesRequest（prefix + 时间范围 + 来源过滤），
+// 返回命中的操作元数据信封列表 + 按来源聚合计数——这就是"定点分析查询"的
+// 最小完备形态（as_of(t) 定点取值 + LIST_WRITES(key,t1..t2) 定点审计）。
+//
+// 结果体量防护：一个前缀下的写入历史长度没有上界（不像 REPLAY_FINGERPRINT
+// 只返回"每个逻辑键的最新版本"，LIST_WRITES 把每条历史记录连同 payload 一起
+// 编进响应体），soak 测试（service/temporal_soak_bench_test.go，10 万键×10
+// 版本=100 万条）证实这不是假设性风险——单帧体量可以逼近甚至超过
+// codec.EffectiveMaxSize 的帧长上限。若不在这里检查，服务端会把一个客户端
+// 解码时终将因超限而拒绝（或收发耗时远超连接超时）的巨帧硬发出去，调用方
+// 只会看到连接超时/解码失败，看不出原因；这里改为结构化拒绝
+// （ErrCodeResultTooLarge），诚实地把"查询范围太大"这件事暴露给调用方，
+// 分页不在本次任务范围内（M2 任务书未要求，属于后续如果真的需要再做的
+// 范围收窄）。
+func (r *RouterV2) handleListWrites(req kairnet.RequestV2) {
+	prefix, tFrom, tTo, source, ok := proto.DecodeListWritesRequest(req.Data())
+	if !ok {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+	result, err := r.temporal.ListWrites(string(prefix), tFrom, tTo, string(source))
+	if err != nil {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
+		return
+	}
+
+	entries := make([][]byte, len(result.Entries))
+	for i, e := range result.Entries {
+		entries[i] = proto.EncodeWriteEnvelopeEntry(
+			e.LogicalKey, e.Seq, e.WriteNanos, e.Source, e.SchemaVer, e.PersistedHash, e.Payload, e.HashOK)
+	}
+	sourceNames := make([]string, len(result.BySource))
+	sourceCounts := make([]uint32, len(result.BySource))
+	for i, sc := range result.BySource {
+		sourceNames[i] = sc.Source
+		sourceCounts[i] = sc.Count
+	}
+	body := proto.EncodeListWritesResponse(entries, sourceNames, sourceCounts)
+
+	// EffectiveMaxSize(config.G.MaxPackageSize)：与 kairnet/transport 解码
+	// 入站帧用的同一个生效上限（见 kairnet/transport/connection.go 的
+	// maxPackageSize 字段），不是 codec 包自己那个"未配置时兜底 256MiB"的
+	// 独立默认值——响应体如果按这个上限打包发出去，客户端解码时用的是
+	// 同一个配置项，两边判断必须一致，否则会出现"服务端认为能发、客户端
+	// 认为超限"的分歧。
+	if effMax := codec.EffectiveMaxSize(config.G.MaxPackageSize); uint32(len(body)) > effMax {
+		slog.Warn("kairnet LIST_WRITES result exceeds frame size limit, rejecting",
+			"bodyBytes", len(body), "effectiveMax", effMax, "matchCount", len(result.Entries))
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeResultTooLarge, "result_too_large")
+		return
+	}
 	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
 }
 

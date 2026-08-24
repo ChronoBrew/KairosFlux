@@ -111,6 +111,46 @@
       "corr_id": 9,
       "data_hex": "78",
       "frame_hex": "02ba00020000090000000100000078"
+    },
+    {
+      "name": "v2_put_versioned_request_with_source",
+      "description": "时态内核 M2 新增：PUT_VERSIONED(opcode=0x09) 请求，带可选的 source 尾部字段（proto.EncodePutVersionedFrame）。payload 布局 [keyLen u32 LE][valueLen u32 LE][key][value][sourceLen u32 LE][source]：keyLen=2,key=\"k1\"; valueLen=2,value=\"v1\"; sourceLen=3,source=\"src\"。corr_id=1，type=0x0000（未声明类型）。省略 source 尾部字段即 M0 时期的旧格式请求（与 v2_put_request_quote 同构，不单独立向量）。",
+      "flags": 0,
+      "opcode": 9,
+      "type": 0,
+      "corr_id": 1,
+      "data_hex": "02000000020000006b31763103000000737263",
+      "frame_hex": "02ba00090000010000001300000002000000020000006b31763103000000737263"
+    },
+    {
+      "name": "v2_replay_fingerprint_request_bounded",
+      "description": "时态内核 M2 新增：REPLAY_FINGERPRINT(opcode=0x0C) 请求，带可选的 asOfNanos 尾部字段（proto.EncodeReplayFingerprintRequest）。payload 布局 [prefixLen u32 LE][prefix]([asOfNanos i64 LE])?：prefixLen=1,prefix=\"p\"; asOfNanos=100。corr_id=2，type=0x0000。省略尾部 8 字节即 M0 时期的旧格式请求（与 proto.EncodeKeyOnlyFrame 逐字节相同，不单独立向量）。",
+      "flags": 0,
+      "opcode": 12,
+      "type": 0,
+      "corr_id": 2,
+      "data_hex": "01000000706400000000000000",
+      "frame_hex": "02ba000c0000020000000d00000001000000706400000000000000"
+    },
+    {
+      "name": "v2_list_writes_request",
+      "description": "时态内核 M2 新增 opcode：LIST_WRITES(0x0D) 请求（proto.EncodeListWritesRequest）。payload 布局 [prefixLen u32 LE][prefix][tFromNanos i64 LE][tToNanos i64 LE][sourceLen u32 LE][source]：prefixLen=1,prefix=\"p\"; tFromNanos=1; tToNanos=2; sourceLen=1,source=\"s\"。corr_id=3，type=0x0000。",
+      "flags": 0,
+      "opcode": 13,
+      "type": 0,
+      "corr_id": 3,
+      "data_hex": "0100000070010000000000000002000000000000000100000073",
+      "frame_hex": "02ba000d0000030000001a0000000100000070010000000000000002000000000000000100000073"
+    },
+    {
+      "name": "v2_list_writes_response_one_entry_no_source_breakdown",
+      "description": "时态内核 M2 新增：LIST_WRITES 的 OK(0x80) 响应体（proto.EncodeListWritesResponse），命中 1 条信封、无来源聚合。payload 布局 [matchCount u32 LE][entry][sourceCountN u32 LE]，entry（proto.EncodeWriteEnvelopeEntry）布局 [logicalKeyLen u32 LE][logicalKey][seq u64 LE][writeNanos i64 LE][sourceLen u32 LE][source][schemaVer u32 LE][hashLen u16 LE][payloadHash][payloadLen u32 LE][payload][hashOK u8]：matchCount=1; logicalKey=\"lk\"(len2); seq=7; writeNanos=100; source=\"j\"(len1); schemaVer=2; payloadHash=\"ab\"(len2); payload=\"pl\"(len2); hashOK=1; sourceCountN=0。corr_id=4，type=0x0000。",
+      "flags": 0,
+      "opcode": 128,
+      "type": 0,
+      "corr_id": 4,
+      "data_hex": "01000000020000006c6b07000000000000006400000000000000010000006a020000000200616202000000706c0100000000",
+      "frame_hex": "02ba00800000040000003200000001000000020000006c6b07000000000000006400000000000000010000006a020000000200616202000000706c0100000000"
     }
   ],
 

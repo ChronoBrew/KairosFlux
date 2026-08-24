@@ -80,3 +80,153 @@ func TestReplayFingerprintResponseNoMismatch(t *testing.T) {
 		t.Fatalf("零不一致应解析为空列表: %+v ok=%v", got, ok)
 	}
 }
+
+// TestDecodeReplayFingerprintResponse_LegacyWithoutBoundedByteDefaultsFalse
+// 验证 M0 时期没有尾部 bounded 字节的旧响应体（EncodeReplayFingerprintResponse，
+// 不是 V2 版本）解析后 Bounded=false——这是"这次调用没有 asOf 上界，mismatch
+// 就是核对过的结果"这一 M0 既有语义的直接体现，零回归。
+func TestDecodeReplayFingerprintResponse_LegacyWithoutBoundedByteDefaultsFalse(t *testing.T) {
+	body := EncodeReplayFingerprintResponse(1, 0, "fp", nil)
+	got, ok := DecodeReplayFingerprintResponse(body)
+	if !ok || got.Bounded {
+		t.Fatalf("旧格式响应体应解出 Bounded=false: %+v ok=%v", got, ok)
+	}
+}
+
+func TestReplayFingerprintResponseV2RoundTripBoundedTrue(t *testing.T) {
+	body := EncodeReplayFingerprintResponseV2(1, 0, "fp", nil, true)
+	got, ok := DecodeReplayFingerprintResponse(body)
+	if !ok || !got.Bounded || got.KeyCount != 1 || got.Fingerprint != "fp" {
+		t.Fatalf("round trip 失败: %+v ok=%v", got, ok)
+	}
+}
+
+func TestReplayFingerprintResponseV2RoundTripBoundedFalse(t *testing.T) {
+	body := EncodeReplayFingerprintResponseV2(2, 1, "fp2", []string{"a"}, false)
+	got, ok := DecodeReplayFingerprintResponse(body)
+	if !ok || got.Bounded || got.KeyCount != 2 || got.MismatchCount != 1 || len(got.MismatchKeys) != 1 {
+		t.Fatalf("round trip 失败: %+v ok=%v", got, ok)
+	}
+}
+
+// TestDecodeReplayFingerprintRequest_LegacyBareKeyOnlyFrameIsUnbounded 验证
+// M0 时期的裸 EncodeKeyOnlyFrame 请求（没有尾部 asOfNanos）解出 asOfNanos=0
+// （无界），与 DecodeKeyFrame 直接解出的 prefix 一致——这是 REPLAY_FINGERPRINT
+// M2 服务化升级对既有调用方零回归的直接证据。
+func TestDecodeReplayFingerprintRequest_LegacyBareKeyOnlyFrameIsUnbounded(t *testing.T) {
+	legacy := EncodeKeyOnlyFrame([]byte("prefix:"))
+	prefix, asOf, ok := DecodeReplayFingerprintRequest(legacy)
+	if !ok || string(prefix) != "prefix:" || asOf != 0 {
+		t.Fatalf("旧格式请求应解出 asOf=0（无界）: prefix=%q asOf=%d ok=%v", prefix, asOf, ok)
+	}
+}
+
+func TestReplayFingerprintRequestRoundTripBounded(t *testing.T) {
+	frame := EncodeReplayFingerprintRequest([]byte("prefix:"), 123456)
+	prefix, asOf, ok := DecodeReplayFingerprintRequest(frame)
+	if !ok || string(prefix) != "prefix:" || asOf != 123456 {
+		t.Fatalf("round trip 失败: prefix=%q asOf=%d ok=%v", prefix, asOf, ok)
+	}
+}
+
+func TestReplayFingerprintRequestUnboundedMatchesLegacyKeyOnlyFrameByteForByte(t *testing.T) {
+	got := EncodeReplayFingerprintRequest([]byte("prefix:"), 0)
+	want := EncodeKeyOnlyFrame([]byte("prefix:"))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("asOfNanos<=0 时应生成与 EncodeKeyOnlyFrame 逐字节相同的请求: got=%x want=%x", got, want)
+	}
+}
+
+// TestDecodePutVersionedFrame_LegacyPutFrameHasEmptySource 验证 M0 时期只有
+// key/value 的老调用（proto.EncodePutFrame）解出 source=""（未声明，不是
+// 错误），这是 PUT_VERSIONED 请求帧向后兼容的直接证据。
+func TestDecodePutVersionedFrame_LegacyPutFrameHasEmptySource(t *testing.T) {
+	legacy := EncodePutFrame([]byte("k1"), []byte("v1"))
+	key, value, source, ok := DecodePutVersionedFrame(legacy)
+	if !ok || string(key) != "k1" || string(value) != "v1" || source != "" {
+		t.Fatalf("旧格式请求应解出 source=\"\": key=%q value=%q source=%q ok=%v", key, value, source, ok)
+	}
+}
+
+func TestPutVersionedFrameRoundTripWithSource(t *testing.T) {
+	frame := EncodePutVersionedFrame([]byte("k1"), []byte("v1"), "quantbrew-job")
+	key, value, source, ok := DecodePutVersionedFrame(frame)
+	if !ok || string(key) != "k1" || string(value) != "v1" || source != "quantbrew-job" {
+		t.Fatalf("round trip 失败: key=%q value=%q source=%q ok=%v", key, value, source, ok)
+	}
+}
+
+func TestPutVersionedFrameEmptySourceMatchesLegacyPutFrameByteForByte(t *testing.T) {
+	got := EncodePutVersionedFrame([]byte("k1"), []byte("v1"), "")
+	want := EncodePutFrame([]byte("k1"), []byte("v1"))
+	if !bytes.Equal(got, want) {
+		t.Fatalf("source==\"\" 时应生成与 EncodePutFrame 逐字节相同的请求: got=%x want=%x", got, want)
+	}
+}
+
+func TestListWritesRequestRoundTrip(t *testing.T) {
+	frame := EncodeListWritesRequest([]byte("quote:2026-08-17:"), 100, 200, []byte("job-a"))
+	prefix, tFrom, tTo, source, ok := DecodeListWritesRequest(frame)
+	if !ok || string(prefix) != "quote:2026-08-17:" || tFrom != 100 || tTo != 200 || string(source) != "job-a" {
+		t.Fatalf("round trip 失败: prefix=%q tFrom=%d tTo=%d source=%q ok=%v", prefix, tFrom, tTo, source, ok)
+	}
+}
+
+func TestListWritesRequestUnboundedNoSourceFilter(t *testing.T) {
+	frame := EncodeListWritesRequest([]byte("p:"), 0, 0, nil)
+	prefix, tFrom, tTo, source, ok := DecodeListWritesRequest(frame)
+	if !ok || string(prefix) != "p:" || tFrom != 0 || tTo != 0 || len(source) != 0 {
+		t.Fatalf("round trip 失败: prefix=%q tFrom=%d tTo=%d source=%q ok=%v", prefix, tFrom, tTo, source, ok)
+	}
+}
+
+func TestWriteEnvelopeEntryRoundTrip(t *testing.T) {
+	entry := EncodeWriteEnvelopeEntry("quote:2026-08-17:600000", 3, 999, "job-a", 2, "deadbeef", []byte("payload"), true)
+	got, consumed, ok := DecodeWriteEnvelopeEntry(entry)
+	if !ok || consumed != len(entry) {
+		t.Fatalf("解析失败或未消费全部字节: consumed=%d len=%d ok=%v", consumed, len(entry), ok)
+	}
+	if got.LogicalKey != "quote:2026-08-17:600000" || got.Seq != 3 || got.WriteNanos != 999 ||
+		got.Source != "job-a" || got.SchemaVer != 2 || got.PayloadHash != "deadbeef" ||
+		string(got.Payload) != "payload" || !got.HashOK {
+		t.Fatalf("字段不符: %+v", got)
+	}
+}
+
+func TestWriteEnvelopeEntryHashOKFalseRoundTrips(t *testing.T) {
+	entry := EncodeWriteEnvelopeEntry("k", 1, 1, "", 0, "abc", []byte("p"), false)
+	got, _, ok := DecodeWriteEnvelopeEntry(entry)
+	if !ok || got.HashOK {
+		t.Fatalf("hashOK=false 应原样解出: %+v ok=%v", got, ok)
+	}
+}
+
+func TestListWritesResponseRoundTripWithSourceBreakdown(t *testing.T) {
+	entries := [][]byte{
+		EncodeWriteEnvelopeEntry("k1", 1, 100, "job-a", 1, "h1", []byte("v1"), true),
+		EncodeWriteEnvelopeEntry("k2", 1, 200, "job-b", 1, "h2", []byte("v2"), false),
+	}
+	body := EncodeListWritesResponse(entries, []string{"job-a", "job-b"}, []uint32{1, 1})
+	gotEntries, gotCounts, ok := DecodeListWritesResponse(body)
+	if !ok || len(gotEntries) != 2 {
+		t.Fatalf("解析失败或数量不符: entries=%+v ok=%v", gotEntries, ok)
+	}
+	if gotEntries[0].LogicalKey != "k1" || gotEntries[0].Source != "job-a" || !gotEntries[0].HashOK {
+		t.Fatalf("第 0 条不符: %+v", gotEntries[0])
+	}
+	if gotEntries[1].LogicalKey != "k2" || gotEntries[1].Source != "job-b" || gotEntries[1].HashOK {
+		t.Fatalf("第 1 条不符: %+v", gotEntries[1])
+	}
+	if len(gotCounts) != 2 || gotCounts[0] != (SourceCountView{Source: "job-a", Count: 1}) ||
+		gotCounts[1] != (SourceCountView{Source: "job-b", Count: 1}) {
+		t.Fatalf("来源聚合不符: %+v", gotCounts)
+	}
+}
+
+func TestListWritesResponseEmptyIsValid(t *testing.T) {
+	body := EncodeListWritesResponse(nil, nil, nil)
+	entries, counts, ok := DecodeListWritesResponse(body)
+	if !ok || len(entries) != 0 || len(counts) != 0 {
+		t.Fatalf("空结果应解析为合法的零条记录: entries=%+v counts=%+v ok=%v", entries, counts, ok)
+	}
+}
