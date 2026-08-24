@@ -8,11 +8,25 @@
 ![Performance](https://img.shields.io/badge/BANLV%20vs%20gRPC-2.7x%20faster%20(GET)-brightgreen)
 <!-- CI 徽章：接入 GitHub Actions 后再补 -->
 
-高频写入要进数仓，上游突发、下游怕打爆——BanDB 坐在中间：吸收突发流量、
-校验并清洗每条记录、稳定落盘缓冲，再以下游扛得住的节奏投递出去。
+KairosFlux（原名 BanDB）是 **ChronoBrew** 组织下的时态数据流引擎，围绕一个
+定位展开：AI 原生时序数据引擎——所有数据版本化写入、可按"当时知道什么"做
+时点查询、任何状态都能从账本重放出来并跟自己的历史指纹核对。时序是内核，
+确定性是独特性，AI 是方向。QuantBrew（确定性 A 股回测内核）与 ChronoScout
+（全市场侦察爬虫）是它的头两个真实租户——三件套如何咬合见 QuantBrew 仓库的
+[架构总览](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/架构总览-ChronoBrew.md)。
+
+今天在生产环境里，它先把一个更窄但已经有用的问题解决了：高频写入要进数仓，
+上游突发、下游怕打爆——KairosFlux 坐在中间：吸收突发流量、校验并清洗每条
+记录、稳定落盘缓冲，再以下游扛得住的节奏投递出去。
 
 单二进制，除 gRPC/Protobuf 外零第三方依赖（gRPC 仅用于一个可选的基准测试
 入口，见下文）。
+
+> 本仓库与协议正在改名过程中：产品名 `BanDB` → `KairosFlux`，协议品牌
+> `BANLV` → `Kair`。改名只发生在品牌/文档层——帧格式、opcode、跨语言测试
+> 向量字节全部不变，今天已部署的任何东西不会因此破坏。代码层路径
+> （`cmd/ban-server`、`bandb_client.py`、`BANDB_ADDR`）尚未迁移，下面每条
+> 命令都是今天能直接跑通的真实命令。
 
 ## 特性
 
@@ -87,13 +101,35 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 
 ## 架构
 
-`摄入(BANLV) → 清洗(schema) → 缓冲(LSM) → 投递(Sink)`
+`摄入(BANLV，即将改名为 Kair) → 清洗(schema) → 缓冲(LSM) → 投递(Sink)`
 
 当前生产投递目标是本地文件；配置项 `DeliverySinkType` 也支持一个带健康感知
 故障切换的 ClickHouse sink。另有两个子系统——Multi-Raft 分片 KV 与借鉴
 dubbo-go 的投递治理层——已完整实现且测试齐全，但默认不参与编译
 （`//go:build experimental`），需要时用 `-tags experimental` 构建。详见
 [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md)。
+
+## 时态内核（已实现，尚未接入写入路径）
+
+`internal/temporal` 实现了一个"AI 原生"时序引擎需要的语义：写入永不覆盖
+（每次写产生一个不可变新版本）、`as_of(t)` 返回写入时间 ≤ t 的最新版本、
+绝不返回未来写入，`Fingerprint(entries)` 对 `(LogicalKey, Seq, Payload)`
+做确定性 sha256，让任何重放出来的状态都能跟自己的历史核对指纹。这部分
+今天是**已单测覆盖的纯语义，还没有接入 router 或存储引擎**——生产写入路径
+仍是上面说的"同 key 覆盖"。把它接线进去（连同下面的版本化 opcode）是下一个
+路线图里程碑，不是已交付的能力，完整的四里程碑方案见 QuantBrew 仓库的
+[`方案-BanDB-时态内核与AI数据平面.md`](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/方案-BanDB-时态内核与AI数据平面.md)。
+
+协议这一侧（RFC 阶段，零代码落地——见
+[`docs/rfc/BANLV-2.md`](docs/rfc/BANLV-2.md)，文档开头原话就是"纯设计文档，
+零代码改动"）梳理了生产场景真正需要的形状：**写多读少**。真实负载是
+QuantScout 每日批量导出约 5000 行，不是双向交互式请求-响应，所以 v2 设计了
+按连接可选的三档 ack——`every`（现状，逐条写都等一个响应）、`window`（每 N
+条或收到 `FLUSH` 才批量确认一次）、`none`（完全 fire-and-forget）。
+`none` 档拿掉了逐条 ack，也就拿掉了"连接断了能知道丢了什么"这个保证——
+所以设计上把**对账做成强制项**：选 `ack=none` 的客户端必须有能力把自己
+发送过的内容跟服务端实际落盘的内容做重放/比对，做不到就不该用这一档。
+这些目前都还没有代码落地，v1 的 `ack=every` 仍是唯一已上线的行为。
 
 ## 性能
 
@@ -102,10 +138,23 @@ dubbo-go 的投递治理层——已完整实现且测试齐全，但默认不�
 持久化路径。复现：`bash scripts/bench.sh`，具体命令见
 [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md)。
 
+## 健壮性（Fuzz 测试）
+
+`go test -fuzz` 对 4 个帧解析入口合计跑了 300 秒（5 分钟），**约 3770 万次
+执行、零崩溃**（`bannet.FuzzUnPack` 369,985 次 / `proto.FuzzDecodeScanRequest`
+15,108,651 次 / `proto.FuzzDecodeScanResponse` 12,065,019 次 /
+`ingesthook.FuzzParsePut` 10,203,443 次）。完整记录（包括它脱胎于的畸形帧
+测试矩阵：截断帧、超长声明、非法 msgID、慢客户端半帧沉默等场景）见
+[`docs/iteration-2026-08-20-bannet-robustness-audit.md`](docs/iteration-2026-08-20-bannet-robustness-audit.md)。
+
 ## 真实使用者
 
-QuantScout（一个 Python 行情爬虫）把全市场日线快照写入 BanDB，是第一个真实
-生产租户——用法见上方 Python 客户端示例。
+QuantScout（即将改名 ChronoScout，一个 Python 行情爬虫）把全市场日线快照
+写入 KairosFlux，是第一个真实生产租户——用法见上方 Python 客户端示例。一次
+真实的 5241 行全市场导出：5222 行写入成功、19 行被服务端拒绝（拒因 100%
+可解释：17 行是停牌/退市/风险警示当日无成交，2 行是合规的创业板涨停被通用
+±20% 合理性阈值误伤）——用 Go 客户端逐字段读回核对，跟 Python 侧源数据完全
+一致。
 
 ## 文档
 

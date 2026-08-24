@@ -8,13 +8,31 @@
 ![Performance](https://img.shields.io/badge/BANLV%20vs%20gRPC-2.7x%20faster%20(GET)-brightgreen)
 <!-- CI badge: add once a GitHub Actions workflow is wired up -->
 
-High-frequency writes headed for a data warehouse are bursty upstream and
-easy to overwhelm downstream. BanDB sits in between: it absorbs the burst,
-validates and cleans each record, buffers it durably, and delivers it
+KairosFlux (formerly BanDB) is the temporal data-flow engine of **ChronoBrew**,
+an org built around one idea: an AI-native time-series engine where every
+write is versioned, every query can be asked "as of when", and every state
+can be replayed from the ledger and re-checked against its own fingerprint.
+Time-series is the substance; determinism is the differentiator; AI is the
+direction. QuantBrew (a deterministic A-share backtesting kernel) and
+ChronoScout (a full-market recon crawler) are its first two tenants — see
+[ChronoBrew's architecture overview](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/架构总览-ChronoBrew.md)
+for how the three pieces fit together.
+
+Today, in production, it does something narrower and already useful:
+high-frequency writes headed for a data warehouse are bursty upstream and
+easy to overwhelm downstream. KairosFlux sits in between: it absorbs the
+burst, validates and cleans each record, buffers it durably, and delivers it
 downstream at a pace the sink can handle.
 
 Single binary. No third-party dependencies beyond gRPC/Protobuf, which is
 only used for an optional benchmarking endpoint (see below).
+
+> This repository and its wire protocol are mid-rename: product name
+> `BanDB` → `KairosFlux`, protocol brand `BANLV` → `Kair`. The rename is
+> brand/doc only — frame format, opcodes, and cross-language test vector
+> bytes are unchanged, so nothing deployed today breaks. Code-layer paths
+> (`cmd/ban-server`, `bandb_client.py`, `BANDB_ADDR`) haven't moved yet;
+> every command below is real and runnable as written.
 
 ## Features
 
@@ -95,7 +113,7 @@ sanity bound on daily price change. Adding a new record type is one
 
 ## Architecture
 
-`Ingest (BANLV) → Clean (schema) → Buffer (LSM) → Deliver (Sink)`
+`Ingest (BANLV / soon Kair) → Clean (schema) → Buffer (LSM) → Deliver (Sink)`
 
 The current production sink writes to a local file; a ClickHouse sink with
 health-aware failover is available behind config (`DeliverySinkType`). Two
@@ -103,6 +121,36 @@ subsystems — a Multi-Raft sharded KV and a dubbo-go-inspired delivery
 governance layer — are fully implemented and tested but excluded from the
 default build (`//go:build experimental`); build with `-tags experimental`
 to include them. Details: [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md).
+
+## Temporal Core (built, not yet wired into the write path)
+
+`internal/temporal` implements the semantics an "AI-native" time-series
+engine needs: writes never overwrite (each write produces a new immutable
+version), `as_of(t)` returns the latest version whose write time is ≤ t and
+never a future write, and `Fingerprint(entries)` gives a deterministic
+sha256 over `(LogicalKey, Seq, Payload)` so any replayed state can be
+checked against its own history. This is unit-tested pure logic today —
+**it is not yet connected to the router or storage engine**, so production
+writes still go through the plain overwrite path described above. Wiring
+it in (plus the versioned opcodes below) is the next roadmap milestone, not
+a shipped capability; see
+[`方案-BanDB-时态内核与AI数据平面.md`](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/方案-BanDB-时态内核与AI数据平面.md)
+in the QuantBrew repo for the full four-milestone plan.
+
+The protocol side of this (RFC stage, zero code shipped — see
+[`docs/rfc/BANLV-2.md`](docs/rfc/BANLV-2.md), whose header literally says
+"design document, no code changes yet") sketches what production usage
+actually needs: **write-heavy, read-light**. The real load is QuantScout's
+daily batch export of ~5000 rows, not interactive request/response, so v2
+designs three ack tiers selectable per connection — `every` (today's
+behavior, one response per write), `window` (batched acknowledgment every
+N writes or on `FLUSH`), and `none` (fully fire-and-forget). Dropping
+per-write ack on `none` also drops the guarantee that a lost connection
+tells you what got lost — so the design makes **reconciliation mandatory**
+for that tier: a client on `ack=none` must be able to replay/diff what it
+sent against what the server actually has, or it must not use that tier.
+None of this exists in code yet; v1's `ack=every` remains the only shipped
+behavior.
 
 ## Performance
 
@@ -112,11 +160,27 @@ clients; writes are roughly on par since both share the same fsync-bound
 persistence path). Reproduce with `bash scripts/bench.sh` and the commands
 in [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md).
 
+## Robustness
+
+`go test -fuzz` against the 4 frame-parsing entry points ran for a combined
+300 seconds (5 minutes) and logged **~37.7 million executions with zero
+crashes** (`bannet.FuzzUnPack` 369,985 / `proto.FuzzDecodeScanRequest`
+15,108,651 / `proto.FuzzDecodeScanResponse` 12,065,019 /
+`ingesthook.FuzzParsePut` 10,203,443). Full write-up, including the
+malformed-frame test matrix (truncated frames, oversized length claims,
+non-UTF8 msgIDs, slow-client half-writes) it grew out of:
+[`docs/iteration-2026-08-20-bannet-robustness-audit.md`](docs/iteration-2026-08-20-bannet-robustness-audit.md).
+
 ## Who's using this
 
-QuantScout, a Python market-data crawler, writes full-market daily
-snapshots into BanDB as its first production tenant — see the Python
-client example above.
+QuantScout (soon ChronoScout), a Python market-data crawler, writes
+full-market daily snapshots into KairosFlux as its first production
+tenant — see the Python client example above. A real 5241-row full-market
+export: 5222 rows accepted, 19 rejected (all explainable: 17 halted/
+delisted/warning-flag stocks with no trade that day, 2 legitimate ChiNext
+limit-up prints tripping the generic ±20% sanity bound) — cross-checked by
+reading every row back with the Go client and diffing field-by-field
+against the Python-side source.
 
 ## Documentation
 
