@@ -94,6 +94,43 @@ func TestAdmitFactorEvidence_RejectsFactorWithCorrelationAboveThreshold(t *testi
 	}
 }
 
+// TestAdmitFactorEvidence_DoesNotRetroactivelyBlockIncumbent 证明相似度门禁
+// 只拒绝"后进入证据关的一方"：factorA 先入证据关，之后才记录 A~B 高相关
+// 的相似度边（顺序与上一条测试相反）；factorA 对一个新的实验再次调用
+// AdmitFactorEvidence 时不应该被自己涉及的这条可疑边追溯拒绝——它是先手，
+// 不是后来者。
+func TestAdmitFactorEvidence_DoesNotRetroactivelyBlockIncumbent(t *testing.T) {
+	store := newFakeReadWriter()
+	const asOf = int64(1000)
+
+	if err := AdmitFactorEvidence(store, asOf, "factorA", "expA1"); err != nil {
+		t.Fatalf("factorA 首次进证据关不应失败: %v", err)
+	}
+
+	returnsA := []float64{0.01, 0.02, -0.01, 0.03, 0.015, -0.02, 0.04}
+	returnsB := []float64{0.011, 0.021, -0.009, 0.031, 0.014, -0.019, 0.041}
+	edge, err := RecordSimilarity(store, "factorA", "factorB", returnsA, returnsB)
+	if err != nil {
+		t.Fatalf("记录相似度失败: %v", err)
+	}
+	if !edge.SuspectDuplicate {
+		t.Fatalf("测试前提不成立：构造的收益序列应触发 SuspectDuplicate，实际相关性 %v", edge.Correlation)
+	}
+
+	// factorA 是先手（已经在 evidence:factor: 里），对新实验再次准入不应
+	// 被自己涉及的这条可疑边追溯拒绝。
+	if err := AdmitFactorEvidence(store, asOf, "factorA", "expA2"); err != nil {
+		t.Fatalf("先手因子不应被追溯拒绝: %v", err)
+	}
+
+	// factorB 是后来者，仍应被拒绝——证明门禁本身没有失效，只是不再对称
+	// 拒绝先手。
+	err = AdmitFactorEvidence(store, asOf, "factorB", "expB")
+	if _, ok := err.(*SuspectDuplicateError); !ok {
+		t.Fatalf("后来者 factorB 仍应被拒绝，实际: %v", err)
+	}
+}
+
 func TestAdmitFactorEvidence_AllowsUnrelatedFactor(t *testing.T) {
 	store := newFakeReadWriter()
 	const asOf = int64(1000)

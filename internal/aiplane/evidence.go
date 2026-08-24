@@ -79,10 +79,12 @@ func putEdgeIfChanged(rw ReadWriter, kind ObjectKind, key string, payload []byte
 // SearchExperimentsByMention 的文档，那是查询/展示用途，与本函数的准入
 // 判定职责严格分开。
 //
-// 判定依据：factor 是否存在任何已记录且 SuspectDuplicate==true 的相似度边
-// （FindSuspectDuplicate，见 similarity.go）。命中则返回结构化
-// *SuspectDuplicateError，不写入 evidence:factor: 边。未命中则以引擎身份
-// 幂等写入 evidence:factor:{factor}:{experimentFingerprint}。
+// 判定依据：factor 是否与某个"已经先进了证据关"的因子存在
+// SuspectDuplicate==true 的相似度边（FindSuspectDuplicate，见
+// similarity.go；只拒绝后进入的一方，不追溯拒绝已经先入证据关的一方，见该
+// 函数文档与 riskredlines/redlines.json 的 factor_similarity_gate）。命中
+// 则返回结构化 *SuspectDuplicateError，不写入 evidence:factor: 边。未命中
+// 则以引擎身份幂等写入 evidence:factor:{factor}:{experimentFingerprint}。
 func AdmitFactorEvidence(rw ReadWriter, asOfNanos int64, factor, experimentFingerprint string) error {
 	if factor == "" {
 		return fmt.Errorf("factor 不能为空")

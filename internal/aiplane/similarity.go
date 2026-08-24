@@ -141,11 +141,23 @@ func LookupSimilarity(reader AsOfReader, factorA, factorB string, asOfNanos int6
 	return e, true, nil
 }
 
-// FindSuspectDuplicate 扫描 factor:similarity: 前缀下所有已记录的边，找出
-// 任何一条涉及 factor 且 SuspectDuplicate==true 的边（不要求另一端此前已
-// "入证据关"——方案原文只说"相关性>0.7 自动打 suspect_duplicate 标记并
-// 拒绝进证据关"，判定依据是相关性边本身的标记，不是"对方是否已经进了证据
-// 关"这个额外条件，避免"先手因子怎么定义"这种时序竞争带来的歧义）。
+// FindSuspectDuplicate 扫描 factor:similarity: 前缀下所有已记录的边，判断
+// factor 是否应该被"进证据关"拒绝。
+//
+// 判定规则（与 riskredlines/redlines.json 的 factor_similarity_gate 一致）：
+// 只拒绝"后进入证据关的一方"——即 factor 与某个已标记 SuspectDuplicate 的
+// 因子 other 相关性超阈值，且 other 此前已经有 AdmitFactorEvidence 成功
+// 落下的 evidence:factor:{other}: 边（isFactorAdmitted）。这不是"任何一条
+// 涉及 factor 的可疑边都拒绝"（早期实现是这样，存在一个自相矛盾：那种规则
+// 会连"已经先进了证据关的一方"也一并拒绝——如果之后才补录相似度边，或者
+// 之后才对同一个 factor 的另一个实验重新调用 AdmitFactorEvidence，会把
+// 本该被放行的先入者也挡在外面，与"拒绝的是后来者"这个直觉/文档描述矛盾）。
+//
+// 时序结果：谁先把自己的 evidence:factor: 边落下，谁就是"先手"，之后任何
+// 与它高相关的因子（不论相似度边是在先手落地之前还是之后记录的）都会被
+// 挡住；先手因子本身即使在之后对新的 experimentFingerprint 重复调用
+// AdmitFactorEvidence，也不会因为自己"涉及一条可疑边"而被追溯拒绝。
+//
 // 按逻辑键升序检查，多条命中时返回字典序最小的那条边对应的冲突因子——
 // 确定性：同样的边集合两次调用返回同一个冲突因子，不依赖 map 迭代序。
 func FindSuspectDuplicate(lister PrefixLister, factor string, asOfNanos int64) (found bool, edge SimilarityEdge, err error) {
@@ -162,11 +174,32 @@ func FindSuspectDuplicate(lister PrefixLister, factor string, asOfNanos int64) (
 		if !edge.SuspectDuplicate {
 			continue
 		}
-		if edge.FactorA == factor || edge.FactorB == factor {
+		if edge.FactorA != factor && edge.FactorB != factor {
+			continue
+		}
+		other := edge.FactorA
+		if other == factor {
+			other = edge.FactorB
+		}
+		admitted, err := isFactorAdmitted(lister, other, asOfNanos)
+		if err != nil {
+			return false, SimilarityEdge{}, fmt.Errorf("检查因子 %q 是否已入证据关失败: %w", other, err)
+		}
+		if admitted {
 			return true, edge, nil
 		}
 	}
 	return false, SimilarityEdge{}, nil
+}
+
+// isFactorAdmitted 报告 factor 是否已经有至少一条 evidence:factor:{factor}:
+// 边（即此前 AdmitFactorEvidence 对它成功过）。
+func isFactorAdmitted(lister PrefixLister, factor string, asOfNanos int64) (bool, error) {
+	entries, err := lister.ListPrefix(evidenceFactorPrefix(factor), asOfNanos)
+	if err != nil {
+		return false, fmt.Errorf("扫描 evidence:factor 边失败: %w", err)
+	}
+	return len(LatestPerLogicalKey(entries)) > 0, nil
 }
 
 func encodeSimilarityEdge(e SimilarityEdge) []byte {
