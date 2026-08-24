@@ -167,12 +167,9 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 |---|---|
 | **已实现 —— M0** | 写永不覆盖；`PUT_VERSIONED`/`GET_AS_OF`/`LIST_VERSIONS`/`REPLAY_FINGERPRINT` 四个 opcode 已在服务端与 CLI 全链路接线（2026-08-24 交付）。 |
 | **已实现 —— M1** | 按记录类型的机器可读契约（`contracts/*.schema.json`：键布局、PIT 语义、幂等键、校验规则）、契约加载 fail-fast、结构化校验子码（`0x3001`–`0x3004`）、时间戳单调性校验按声明的 time-kind 分派（而不是猜 key 字符串里冒号的位置）。 |
-| **已实现，待合并 —— M2** | `LIST_WRITES` 审计查询 + 每条版本记录的操作元数据信封（`seq`、`write_ts`、`source`、`schema_ver`、`payload_hash`），带信封版本标记与对 M2 之前旧记录的懒迁移读兼容；按来源的 `COUNT` 聚合；确定性排序、append-only 的 JSONL 审计导出。撰写本文档时这部分代码存在于一个并行 work-tree 里（已对照任务书核实差异内容），但尚未提交、未合并，本文档不对其测试套件是否全绿做任何断言。 |
-| **已定义，未开工 —— M3** | 声明式 Job 控制面（`job:spec:{name}`/`job:status:{name}`/`job:events:{name}:v{seq}`）、单进程 reconcile 循环、显式的策略生命周期状态机（Hypothesis → Gate → Candidate → Paper → Live/Retired）。任务书已写好，前置条件是 M2 落账,撰写本文档时尚无任何代码。 |
+| **已合并 —— M2** | `LIST_WRITES` 审计查询（opcode 0x0D）+ 每条版本记录的操作元数据信封（`seq`、`write_ts`、`source`、`schema_ver`、`payload_hash`），带信封版本标记与对 M2 之前旧记录的懒迁移读兼容；按来源的 `COUNT` 聚合；确定性排序、append-only 的 JSONL 审计导出；`REPLAY_FINGERPRINT` 升级为按数据集/as-of 上界的可调用服务。全套测试与 race 全绿（2026-08-25 合并）。 |
+| **已合并 —— M3** | 声明式 Job 控制面（`job:spec:{name}`/`job:status:{name}`/`job:events:{name}:v{seq}`，全部走既有版本化 opcode）、单进程 reconcile 循环（`internal/jobctl` + `cmd/kairosflux-jobctl`）、显式策略生命周期状态机（Hypothesis → Gate → Candidate → Paper → Live/Retired）。一万次重跑幂等对真实服务端验证通过。 |
 | **Roadmap —— M4** | AI 原生数据平面：给 Agent 用的 `Context`（时点读）与 `Proposal`（走同一条版本化/可审计路径的写）接口。目前只有方向，未详细设计，无代码。 |
-
-*"已实现，待合并"与"已定义，未开工"是两码事，特意分成两行——见上面的
-说明。*
 
 ## 部署须知
 
@@ -226,7 +223,7 @@ QuantScout 每日批量导出约 5000 行，不是双向交互式请求-响应�
 完整的四里程碑方案（M0–M4）在 QuantBrew 仓库的
 [`方案-BanDB-时态内核与AI数据平面.md`](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/方案-BanDB-时态内核与AI数据平面.md)。
 简述：M0/M1 已交付（见[特性](#特性)）；M2（重放服务化、操作审计信封、
-`LIST_WRITES`）已实现待合并；M3（声明式 Job 控制面）已定义范围但未开工；
+`LIST_WRITES`）与 M3（声明式 Job 控制面）均已合并；
 M4（`Context`/`Proposal` AI 数据平面）是方向，还不是设计。
 
 ## 性能

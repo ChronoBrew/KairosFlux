@@ -163,7 +163,7 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
                                           LIST_VERSIONS ───┤──▶ full version history
                                           REPLAY_FINGERPRINT┤──▶ deterministic sha256 vs :current   (M0)
                                           LIST_WRITES /    ─┤──▶ audit: who wrote what, when          (M2,
-                                          export-writes     │                                    pending merge)
+                                          export-writes     │                                    merged)
                                                            │
                                     ┌──────────────────────┴───────────────────────┐
                                     ▼                                              ▼
@@ -184,12 +184,9 @@ Temporal key-space and semantics: [docs/架构与语义总览.md](docs/架构与
 |---|---|
 | **Implemented — M0** | Versioned writes never overwrite; `PUT_VERSIONED` / `GET_AS_OF` / `LIST_VERSIONS` / `REPLAY_FINGERPRINT` opcodes wired end-to-end through server and CLI (shipped 2026-08-24). |
 | **Implemented — M1** | Machine-readable per-record-type contracts (`contracts/*.schema.json`: key layout, PIT semantics, idempotency key, validation rules), fail-fast contract loading, structured validation sub-codes (`0x3001`–`0x3004`), timestamp-monotonicity checks dispatched by a declared time-kind instead of a colon-position heuristic on the key string. |
-| **Delivered, pending merge — M2** | `LIST_WRITES` audit query and a per-version operation envelope (`seq`, `write_ts`, `source`, `schema_ver`, `payload_hash`) with an envelope version tag and lazily-migrated reads for pre-M2 records; `COUNT`-by-source aggregation; append-only, deterministically-ordered JSONL export of an audit query. Code for this exists in a parallel work-tree as of this writing (verified by reading the diff against the task brief) but is uncommitted, not yet merged, and this document does not claim its test suite is green. |
-| **Defined, not started — M3** | A declarative Job control plane (`job:spec:{name}` / `job:status:{name}` / `job:events:{name}:v{seq}`), a single-process reconcile loop, and an explicit strategy lifecycle state machine (Hypothesis → Gate → Candidate → Paper → Live/Retired). The task brief exists and is gated on M2 landing first; no code has been written for it yet. |
+| **Merged — M2** | `LIST_WRITES` audit query (opcode 0x0D) and a per-version operation envelope (`seq`, `write_ts`, `source`, `schema_ver`, `payload_hash`) with an envelope version tag and lazily-migrated reads for pre-M2 records; `COUNT`-by-source aggregation; append-only, deterministically-ordered JSONL export; `REPLAY_FINGERPRINT` upgraded to a dataset/as-of-scoped callable service. Full test suite and race detector green (merged 2026-08-25). |
+| **Merged — M3** | A declarative Job control plane (`job:spec:{name}` / `job:status:{name}` / `job:events:{name}:v{seq}`) built on the existing versioned opcodes, a single-process reconcile loop (`internal/jobctl` + `cmd/kairosflux-jobctl`), and an explicit strategy lifecycle state machine (Hypothesis → Gate → Candidate → Paper → Live/Retired). Verified by a 10,000-rerun idempotency test against a live server. |
 | **Roadmap — M4** | An AI-native data plane: a `Context` surface for agents to *read* point-in-time state and a `Proposal` surface to *write* through the same versioned/audited path. Not designed in detail yet, no code. |
-
-*"Delivered, pending merge" and "defined, not started" are two different
-things, kept in two different rows on purpose — see the note above.*
 
 ## Deployment Notes
 
@@ -257,7 +254,7 @@ behavior.
 The full four-milestone plan (M0–M4) lives in QuantBrew's
 [`方案-BanDB-时态内核与AI数据平面.md`](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/方案-BanDB-时态内核与AI数据平面.md).
 In short: M0/M1 are shipped (see [Features](#features)); M2 (replay-as-a-
-service, the audit envelope, `LIST_WRITES`) is implemented pending merge; M3
+service, the audit envelope, `LIST_WRITES`) and M3 (declarative Job control plane) are merged; M4
 (the declarative Job control plane) is scoped but not started; M4 (the
 `Context`/`Proposal` AI data plane) is a direction, not a design yet.
 
