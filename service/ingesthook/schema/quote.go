@@ -24,8 +24,29 @@ const quotePrefix = "quote:"
 // docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的 D1 记录。
 const maxPctChange = 0.21
 
+// quoteTypeID 是 quote 类型的 v2 协议 TypeID，数值上必须与
+// bannet/codec.TypeQuote 一致——两个包不能互相导入（schema 是内容校验层，
+// codec 是协议层，schema 反向依赖 codec 会把层次搭反），所以这个数值在两处
+// 各自声明，用 TestQuoteTypeIDMatchesCodecConstant（registry_test.go）做
+// 一致性锁定，防止其中一处改动时忘了同步另一处。
+const quoteTypeID uint16 = 1
+
 func init() {
-	Register(quotePrefix, QuoteSnapshot{})
+	// 直接用 RegisterDescriptor 而不是 Register(prefix, validator)：quote 是
+	// 本仓库唯一在生产路径上真实使用 v2 `type` 字段分派的类型（BANLV-2 RFC
+	// §3.2/§9），它的 TypeID 映射从进程启动就该生效，不应该依赖
+	// schema.LoadContracts 有没有被调用——服务端在没有 contracts/ 目录（如
+	// 测试环境、历史部署）时，quote 的 key 前缀校验与 TypeID 分派都必须继续
+	// 工作，这是 M1 之前就存在的行为，不能因为引入契约文件而出现依赖。
+	// LoadContracts 之后会用同一个 KeyPrefix/TypeID 注册一份更完整的
+	// Descriptor（含 SchemaVersion/Units/PITSemantics 等），覆盖这里的最小版本。
+	RegisterDescriptor(Descriptor{
+		TypeID:        quoteTypeID,
+		Name:          "quote",
+		KeyPrefix:     quotePrefix,
+		TimeSemantics: TimeSemantics{Kind: TimeKindNone},
+		Validation:    QuoteSnapshot{},
+	})
 }
 
 // QuoteSnapshot 是全市场股票日线快照的校验规则：
@@ -61,17 +82,22 @@ type quoteRecord struct {
 	PrevClose *float64 `json:"prev_close"`
 }
 
+// M1 起，每个拒绝分支返回 *ValidationError 而不是裸 fmt.Errorf：Reason 字段的
+// 文案与之前逐字节一致（下游 quote_test.go 的 strings.Contains 断言零改动），
+// 新增的 Code 字段是 RFC §10.3 分配给 quote 类型的机读子码，客户端从此可以不解析
+// 字符串就分辨"缺字段"和"非正价格"这两类不同的拒绝原因（方案 §2.4 风险 1 的
+// 具体解法）。
 func (QuoteSnapshot) Validate(value []byte) error {
 	var r quoteRecord
 	if err := json.Unmarshal(value, &r); err != nil {
-		return fmt.Errorf("quote: invalid json: %w", err)
+		return &ValidationError{Code: ErrCodeMissingField, Reason: fmt.Sprintf("quote: invalid json: %v", err), Wrapped: err}
 	}
 
 	if r.Code == "" {
-		return fmt.Errorf("quote: missing required field %q", "code")
+		return &ValidationError{Code: ErrCodeMissingField, Reason: fmt.Sprintf("quote: missing required field %q", "code")}
 	}
 	if r.Date == "" {
-		return fmt.Errorf("quote: missing required field %q", "date")
+		return &ValidationError{Code: ErrCodeMissingField, Reason: fmt.Sprintf("quote: missing required field %q", "date")}
 	}
 	for _, p := range []struct {
 		name string
@@ -80,7 +106,7 @@ func (QuoteSnapshot) Validate(value []byte) error {
 		{"open", r.Open}, {"high", r.High}, {"low", r.Low}, {"close", r.Close}, {"volume", r.Volume},
 	} {
 		if p.v == nil {
-			return fmt.Errorf("quote: missing required field %q", p.name)
+			return &ValidationError{Code: ErrCodeMissingField, Reason: fmt.Sprintf("quote: missing required field %q", p.name)}
 		}
 	}
 
@@ -91,19 +117,19 @@ func (QuoteSnapshot) Validate(value []byte) error {
 		{"open", *r.Open}, {"high", *r.High}, {"low", *r.Low}, {"close", *r.Close},
 	} {
 		if p.v <= 0 {
-			return fmt.Errorf("quote: non-positive price: %s=%v", p.name, p.v)
+			return &ValidationError{Code: ErrCodeNonPositivePrice, Reason: fmt.Sprintf("quote: non-positive price: %s=%v", p.name, p.v)}
 		}
 	}
 	if *r.Volume < 0 {
-		return fmt.Errorf("quote: negative volume: %v", *r.Volume)
+		return &ValidationError{Code: ErrCodeNonPositivePrice, Reason: fmt.Sprintf("quote: negative volume: %v", *r.Volume)}
 	}
 
 	low, open, high, cls := *r.Low, *r.Open, *r.High, *r.Close
 	if low > open || open > high {
-		return fmt.Errorf("quote: OHLC inconsistent: low=%v open=%v high=%v", low, open, high)
+		return &ValidationError{Code: ErrCodeOHLCInconsistent, Reason: fmt.Sprintf("quote: OHLC inconsistent: low=%v open=%v high=%v", low, open, high)}
 	}
 	if low > cls || cls > high {
-		return fmt.Errorf("quote: OHLC inconsistent: low=%v close=%v high=%v", low, cls, high)
+		return &ValidationError{Code: ErrCodeOHLCInconsistent, Reason: fmt.Sprintf("quote: OHLC inconsistent: low=%v close=%v high=%v", low, cls, high)}
 	}
 
 	if r.PrevClose == nil || *r.PrevClose == 0 {
@@ -112,7 +138,7 @@ func (QuoteSnapshot) Validate(value []byte) error {
 	}
 	pct := (cls - *r.PrevClose) / *r.PrevClose
 	if pct > maxPctChange || pct < -maxPctChange {
-		return fmt.Errorf("quote: pct change %.4f exceeds physical limit ±%.0f%%", pct, maxPctChange*100)
+		return &ValidationError{Code: ErrCodePctChangeExceeded, Reason: fmt.Sprintf("quote: pct change %.4f exceeds physical limit ±%.0f%%", pct, maxPctChange*100)}
 	}
 	return nil
 }

@@ -214,12 +214,26 @@ func (r *RouterV2) applyWrite(req bannet.RequestV2) (accepted bool, errCode uint
 	}
 
 	if r.filter != nil {
-		newValue, _, result, reason := r.filter.Validate(key, value)
+		// ValidateForType（M1）：req.Type()==0（未声明类型）与此前的 Validate 完全
+		// 等价，覆盖今天全部生产流量；非零时按声明的 TypeID 精确分派（BANLV-2 RFC
+		// §9.3），见 Filter.ValidateForType 的文档。
+		newValue, _, result, code, reason := r.filter.ValidateForType(req.Type(), key, value)
 		if result == ingesthook.ResultDrop {
-			// Filter.Validate 内部已经按具体丢弃原因（oversized/非单调/
+			// Filter.ValidateForType 内部已经按具体丢弃原因（oversized/非单调/
 			// schema）各自 .Add(1) 过对应的 FramesDroppedXxx 计数器，这里
 			// 不需要、也不应该重复计数。
-			return false, codec.ErrCodeSchemaValidation, reason
+			//
+			// code==0 的丢弃原因（oversized_value/non_monotonic_timestamp/
+			// unknown_declared_type）沿用 M1 之前的行为：统一归入
+			// ErrCodeSchemaValidation 这个通用桶——细分这些原因各自的错误码是
+			// §10 错误码分类学整体的范围（0x1xxx/0x2xxx 段），不是本次 M1 契约层
+			// 任务的目标（"缺列/单位错误结构化拒绝"，见方案 M1 验收标准）。
+			// code!=0 时是 schema 校验器返回的具体子码（0x3001-0x3004，见
+			// service/ingesthook/schema/error.go），比这个通用桶精确。
+			if code == 0 {
+				code = codec.ErrCodeSchemaValidation
+			}
+			return false, code, reason
 		}
 		value = newValue
 	}
@@ -416,13 +430,17 @@ func (r *RouterV2) handlePutVersioned(req bannet.RequestV2) {
 	}
 
 	if r.filter != nil {
-		// ValidateVersioned，不是 Validate：跳过时间戳单调性启发式，见其文档——
-		// 那条启发式假设"同一 key 被反复写入=时钟异常"，与 PUT_VERSIONED 的
-		// 正常工作方式（反复对同一逻辑键写新版本）直接冲突，冲突在写这段代码
-		// 时就用真实服务端 smoke test 复现过。
-		newValue, _, result, reason := r.filter.ValidateVersioned(key, value)
+		// ValidateVersionedForType，不是 ValidateVersioned：跳过时间戳单调性
+		// 启发式，见其文档——那条启发式假设"同一 key 被反复写入=时钟异常"，与
+		// PUT_VERSIONED 的正常工作方式（反复对同一逻辑键写新版本）直接冲突，
+		// 冲突在写这段代码时就用真实服务端 smoke test 复现过。req.Type()==0 时
+		// 与此前的 ValidateVersioned 完全等价（M1，见 Filter.ValidateForType）。
+		newValue, _, result, code, reason := r.filter.ValidateVersionedForType(req.Type(), key, value)
 		if result == ingesthook.ResultDrop {
-			r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeSchemaValidation, reason)
+			if code == 0 {
+				code = codec.ErrCodeSchemaValidation
+			}
+			r.sendErr(req.Conn(), req.Type(), req.CorrID(), code, reason)
 			return
 		}
 		value = newValue

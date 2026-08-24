@@ -52,7 +52,9 @@ func NewGRPCServer(kv *service.KVServer, filter *ingesthook.Filter) *GRPCServer 
 func (s *GRPCServer) Put(ctx context.Context, req *PutRequest) (*PutResponse, error) {
 	key, value := req.Key, req.Value
 	if s.filter != nil {
-		newValue, changed, result, _ := s.filter.Validate(key, value)
+		// gRPC 没有 v2 帧那样的 type 字段，走 Validate 的 key 前缀路径——与
+		// req.Type()==0 时的 ValidateForType 完全等价（M1，见其文档）。
+		newValue, changed, result, _, _ := s.filter.Validate(key, value)
 		if result == ingesthook.ResultDrop {
 			return &PutResponse{Success: false}, nil
 		}

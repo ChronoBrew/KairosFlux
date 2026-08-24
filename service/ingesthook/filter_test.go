@@ -101,14 +101,14 @@ func TestValidateVersioned_SkipsMonotonicCheckForRepeatedKey(t *testing.T) {
 	f := NewFilter(nil, 0, true)
 	key := []byte("reading:2026-08-17:600000")
 
-	if _, _, result, _ := f.ValidateVersioned(key, []byte("v1")); result != ResultPass {
+	if _, _, result, _, _ := f.ValidateVersioned(key, []byte("v1")); result != ResultPass {
 		t.Fatalf("第一次版本化写入应放行, got %v", result)
 	}
 	// 同一个 key 再写两次——若走 Validate 第二次起会被判"非单调"丢弃（见
 	// TestHandle_MonotonicDrop），ValidateVersioned 必须每次都放行，这正是它
 	// 存在的理由。
 	for i, val := range []string{"v2", "v3", "v4"} {
-		if _, _, result, reason := f.ValidateVersioned(key, []byte(val)); result != ResultPass {
+		if _, _, result, _, reason := f.ValidateVersioned(key, []byte(val)); result != ResultPass {
 			t.Fatalf("第 %d 次版本化写入到同一逻辑键应放行, got %v reason=%q", i+2, result, reason)
 		}
 	}
@@ -116,10 +116,10 @@ func TestValidateVersioned_SkipsMonotonicCheckForRepeatedKey(t *testing.T) {
 	// ValidateVersioned 完全不touch lastTS 水位（不只是跳过判定，也不记录）：
 	// 换一条从未经过 ValidateVersioned 的普通 key，Validate 的单调性判定不受
 	// 上面这些版本化写入的干扰，行为与 TestHandle_MonotonicDrop 完全一致。
-	if _, _, result, _ := f.Validate([]byte("imu:dev0:100"), []byte("{}")); result != ResultPass {
+	if _, _, result, _, _ := f.Validate([]byte("imu:dev0:100"), []byte("{}")); result != ResultPass {
 		t.Fatal("独立 key 首次 Validate 应放行")
 	}
-	if _, _, result, reason := f.Validate([]byte("imu:dev0:99"), []byte("{}")); result != ResultDrop || reason != "non_monotonic_timestamp" {
+	if _, _, result, _, reason := f.Validate([]byte("imu:dev0:99"), []byte("{}")); result != ResultDrop || reason != "non_monotonic_timestamp" {
 		t.Fatalf("Validate 自身的单调性判定应不受 ValidateVersioned 调用影响: result=%v reason=%q", result, reason)
 	}
 }
@@ -129,8 +129,38 @@ func TestValidateVersioned_SkipsMonotonicCheckForRepeatedKey(t *testing.T) {
 // （不是"版本化写入绕过一切校验"）。
 func TestValidateVersioned_StillEnforcesSchemaAndLength(t *testing.T) {
 	f := NewFilter(nil, 3, true) // maxValueLen=3
-	if _, _, result, reason := f.ValidateVersioned([]byte("k"), []byte("toolong")); result != ResultDrop || reason != "oversized_value" {
+	if _, _, result, _, reason := f.ValidateVersioned([]byte("k"), []byte("toolong")); result != ResultDrop || reason != "oversized_value" {
 		t.Fatalf("超长 value 应仍被拒绝, got result=%v reason=%q", result, reason)
+	}
+}
+
+// TestValidateForType_UnknownDeclaredTypeIsRejectedNotFallenBackToPrefix 是 M1
+// "类型号与契约一一映射"这条验收标准的唯一直接测试：typeID=4242 从未被任何
+// Descriptor 注册过，但 key 前缀 "quote:" 本来会命中 quote 的 Descriptor——
+// 这个组合是刻意选的，用来证明声明了不存在的类型号会被结构化拒绝
+// （reason="unknown_declared_type"），而不是悄悄退回按 key 前缀猜测（那样会让
+// "类型号"这个字段变得可有可无，白白声明错了也蒙混过关）。没有这条测试，未来
+// 有人把 validateForType 里的 `if !ok { ... }` 反过来写，不会有任何测试失败。
+func TestValidateForType_UnknownDeclaredTypeIsRejectedNotFallenBackToPrefix(t *testing.T) {
+	f := NewFilter(nil, 0, false)
+	validQuote := []byte(`{"code":"600000","date":"2026-08-20","open":10.0,"high":10.5,"low":9.8,"close":10.2,"volume":1000000}`)
+
+	const unknownTypeID = 4242
+	_, _, result, code, reason := f.ValidateForType(unknownTypeID, []byte("quote:2026-08-20:600000"), validQuote)
+	if result != ResultDrop {
+		t.Fatalf("未注册的 TypeID 应被拒绝，得到 result=%v", result)
+	}
+	if reason != "unknown_declared_type" {
+		t.Fatalf(`reason=%q，期望 "unknown_declared_type"（不应退回前缀匹配后报出 quote 校验器自己的错误）`, reason)
+	}
+	if code != 0 {
+		t.Fatalf("code=%#x，期望 0（未分配子码，调用方应退回自己的默认族码）", code)
+	}
+
+	// 对照组：同一条合法记录，typeID=0（未声明）时必须走 key 前缀路径正常放行——
+	// 证明上面的拒绝确实来自"类型号未知"，不是这条记录本身有问题。
+	if _, _, result, _, reason := f.ValidateForType(0, []byte("quote:2026-08-20:600000"), validQuote); result != ResultPass {
+		t.Fatalf("typeID=0 时同一条合法记录应按前缀匹配放行，得到 result=%v reason=%q", result, reason)
 	}
 }
 

@@ -512,9 +512,14 @@ func TestCrosslang_V2NoneStatReconcile(t *testing.T) {
 	if got := mustAtoi(t, out, "reconcile.rejected"); got != bad {
 		t.Fatalf("reconcile rejected=%d，期望 %d", got, bad)
 	}
-	wantErrCode := fmt.Sprintf("%d", 0x3001)
+	// v2_window_probe.py 的注入拒绝用 type_=1（TYPE_QUOTE）+ 非正价格（open=-1），
+	// M1 起按声明的 TypeID 精确分派到 quote 校验器，schema 拒绝按 RFC §10.3 的
+	// 子码细分为 0x3002（非正价格），不再是笼统的 0x3001（ErrCodeSchemaValidation，
+	// 那是"没有更精确子码可用"场景的默认桶，见 service/router_v2.go 的
+	// applyWrite；quote 类型的完整子码表见 service/ingesthook/schema/error.go）。
+	wantErrCode := fmt.Sprintf("%d", 0x3002)
 	if got := out["reconcile.first_err_code"]; got != wantErrCode {
-		t.Fatalf("reconcile first_err_code=%s，期望 %s（ErrCodeSchemaValidation）", got, wantErrCode)
+		t.Fatalf("reconcile first_err_code=%s，期望 %s（非正价格）", got, wantErrCode)
 	}
 	if got := mustAtoi(t, out, "bye_stat.received"); got != total {
 		t.Fatalf("BYE 隐式 STAT_ACK received=%d，期望 %d", got, total)

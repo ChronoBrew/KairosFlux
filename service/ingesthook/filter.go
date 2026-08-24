@@ -73,7 +73,9 @@ func (f *Filter) Handle(req bannet.Request) (bannet.HookAction, string) {
 		return bannet.HookDrop, "malformed_frame" // 畸形帧：长度字段与实际数据不符
 	}
 
-	newValue, changed, result, reason := f.Validate(key, value)
+	// v1 帧没有 type 字段，code 在这条路径上没有出口（v1 dropped 响应只有 reason
+	// 字符串，见 docs/BANLV-协议规范.md §3.4），故丢弃。
+	newValue, changed, result, _, reason := f.Validate(key, value)
 	if result == ResultDrop {
 		return bannet.HookDrop, reason
 	}
@@ -99,11 +101,14 @@ const (
 // 不解析帧、不触碰连接，bannet.Request 与 gRPC 的 PutRequest 均可直接复用。
 //
 // 返回 newValue 是（可能经脱敏改写的）value；changed 标出是否真的被改写，未改写
-// 时等于输入、调用方可跳过重建负载；reason 仅在 result 为 ResultDrop 时非空，
-// 除了 metrics 计数外，BANLV 入口（Handle）还会把它原样回传给客户端（见
-// service/router.go 的 sendDropped），故这里的字符串是面向调用方展示的，应
-// 保持简洁且不泄露不该暴露的内部细节。
-func (f *Filter) Validate(key, value []byte) (newValue []byte, changed bool, result Result, reason string) {
+// 时等于输入、调用方可跳过重建负载；code/reason 仅在 result 为 ResultDrop 时有
+// 意义。code 是 M1 新增的机读错误码（非 schema 校验失败——oversized/非单调——时
+// 恒为 0，调用方应退回自己的默认族码，如 bannet/codec.ErrCodeSchemaValidation；
+// 见 schema.CodeOf 的文档）；reason 是给人看的描述，除了 metrics 计数外，BANLV
+// 入口（Handle）还会把它原样回传给客户端（见 service/router.go 的
+// sendDropped），故这里的字符串是面向调用方展示的，应保持简洁且不泄露不该暴露的
+// 内部细节。
+func (f *Filter) Validate(key, value []byte) (newValue []byte, changed bool, result Result, code uint16, reason string) {
 	return f.validate(key, value, true)
 }
 
@@ -115,51 +120,121 @@ func (f *Filter) Validate(key, value []byte) (newValue []byte, changed bool, res
 // 原因：那条启发式的前提是"同一个 key 短时间内被反复写入即代表时钟异常/
 // 重放"（为无类型 IMU 设备流设计），而 PUT_VERSIONED 的正常工作方式恰恰是
 // 反复对同一个逻辑键写入新版本——本仓库已经因为对不匹配的 key 形状套用这个
-// 启发式吃过一次真实的亏（hasSchema 分支上方注释记录的 quote: 误杀事件），
-// PUT_VERSIONED 是第三种与它形状不匹配的写入模式，不应重复同一类错误。
+// 启发式吃过一次真实的亏（quote: 误杀事件，见下方 validate 的文档）。
 // PUT_VERSIONED 自己有权威的排序机制（temporal.Version.Seq/WriteNanos，由
 // 服务端分配），不依赖、也不应该被这条为完全不同场景写的启发式二次把关。
-func (f *Filter) ValidateVersioned(key, value []byte) (newValue []byte, changed bool, result Result, reason string) {
+func (f *Filter) ValidateVersioned(key, value []byte) (newValue []byte, changed bool, result Result, code uint16, reason string) {
 	return f.validate(key, value, false)
+}
+
+// ValidateForType 是 Validate 的 M1 变体：typeID 来自 BANLV v2 帧头的 type 字段
+// （bannet/codec.HeaderV2.Type）。typeID==0（未声明类型）与 Validate 完全等价——
+// 退回按 key 前缀最长匹配的旧路径，这覆盖了本仓库今天全部的生产写入流量（v1 没有
+// type 概念；QuantScout 目前仍在 v1，见方案 §2.3）。typeID!=0 时，声明的类型是
+// 权威来源：直接按 schema.LookupByType 查找，不再猜 key 前缀（BANLV-2 RFC §9.3：
+// "分派规则从按 key 前缀最长匹配改为按 type 字段直接查表"）；找不到对应契约时
+// 结构化拒绝（reason="unknown_declared_type"），不是悄悄退回前缀匹配——客户端
+// 声明了一个服务端不认识的类型号本身就是需要暴露的问题，不应该被"猜对了前缀就
+// 蒙混过关"掩盖。
+func (f *Filter) ValidateForType(typeID uint16, key, value []byte) (newValue []byte, changed bool, result Result, code uint16, reason string) {
+	return f.validateForType(typeID, key, value, true)
+}
+
+// ValidateVersionedForType 是 ValidateForType 的 PUT_VERSIONED 变体，语义与
+// ValidateVersioned 相对 Validate 的差异相同：跳过时间戳单调性启发式。
+func (f *Filter) ValidateVersionedForType(typeID uint16, key, value []byte) (newValue []byte, changed bool, result Result, code uint16, reason string) {
+	return f.validateForType(typeID, key, value, false)
+}
+
+// validateForType 是 ValidateForType/ValidateVersionedForType 共享的实现。
+func (f *Filter) validateForType(typeID uint16, key, value []byte, checkMonotonic bool) (newValue []byte, changed bool, result Result, code uint16, reason string) {
+	if typeID == 0 {
+		return f.validate(key, value, checkMonotonic)
+	}
+	if f.oversized(value) {
+		metrics.FramesDroppedOversized.Add(1)
+		return value, false, ResultDrop, 0, "oversized_value"
+	}
+
+	descriptor, ok := schema.LookupByType(typeID)
+	if !ok {
+		// 客户端声明了一个服务端不认识的类型号：这本身就是"类型规则不满足"的
+		// 一种（连"这是什么类型"都答不上来，比"这条记录不满足某个已知类型的
+		// 规则"更基础），计入同一个 FramesDroppedSchema 桶，不新开一个计数器——
+		// router_v2.go 的调用方注释依赖"ValidateForType 内部已经按丢弃原因
+		// 各自计数"这条不变量，这里必须兑现，否则这一类拒绝在 headless 部署下
+		// （tail 日志是唯一可观测出口）完全不可见。
+		metrics.FramesDroppedSchema.Add(1)
+		return value, false, ResultDrop, 0, "unknown_declared_type"
+	}
+
+	// 声明的类型是权威来源：直接用它的校验器，不再跑基于 key 前缀的单调性
+	// 启发式（那是"没有声明类型"场景的兜底，见 validate 的文档）。checkMonotonic
+	// 在本分支不生效：M1 未实现 TimeSemantics.Kind != None 的结构化单调性检查
+	// （schema.LoadContracts 在加载期已拒绝这类契约，见其文档），故没有可执行的
+	// 单调性分支可跑；typeID==0 时上面已提前返回，checkMonotonic 在那条路径上
+	// 仍然生效。
+
+	if err := descriptor.Validation.Validate(value); err != nil {
+		metrics.FramesDroppedSchema.Add(1)
+		return value, false, ResultDrop, schema.CodeOf(err, 0), err.Error()
+	}
+
+	if nv, ch := redact(value, f.redactFields); ch {
+		return nv, true, ResultPass, 0, ""
+	}
+	return value, false, ResultPass, 0, ""
+}
+
+// oversized 报告 value 是否超过 maxValueLen（<=0 表示不限）。抽出为独立方法，
+// 让 validate 与 validateForType 共享同一处判断，不各自维护一份。
+func (f *Filter) oversized(value []byte) bool {
+	return f.maxValueLen > 0 && len(value) > f.maxValueLen
 }
 
 // validate 是 Validate/ValidateVersioned 共享的实现；checkMonotonic 控制是否
 // 跑时间戳单调性启发式，两个方法名已经清楚表达各自适用场景，调用方不会看到
 // 这个内部参数。
-func (f *Filter) validate(key, value []byte, checkMonotonic bool) (newValue []byte, changed bool, result Result, reason string) {
-	if f.maxValueLen > 0 && len(value) > f.maxValueLen {
+func (f *Filter) validate(key, value []byte, checkMonotonic bool) (newValue []byte, changed bool, result Result, code uint16, reason string) {
+	if f.oversized(value) {
 		metrics.FramesDroppedOversized.Add(1)
-		return value, false, ResultDrop, "oversized_value"
+		return value, false, ResultDrop, 0, "oversized_value"
 	}
 
-	// 先查 key 是否命中已注册的 schema 类型——这个结果同时决定下面两件事：
-	// 是否跳过单调性校验、是否要跑 schema 校验。
-	validator, hasSchema := schema.Lookup(key)
+	// 先查 key 是否命中已注册类型的 Descriptor——这个结果同时决定下面两件事：
+	// 单调性校验该怎么分派（TimeSemantics.Kind）、是否要跑 schema 校验。
+	descriptor, hasDescriptor := schema.LookupDescriptor(key)
 
 	// 时间戳单调性校验（best-effort）：DoMsgHandle 的 work-stealing 在背压下
 	// 可能让同一连接的帧落到不同 worker 而乱序，此处只做尽力而为的回退/重放
 	// 拦截，不是顺序保证；DropBackward 关闭时仅放行不校验。
 	//
-	// hasSchema 时无条件跳过（不看 f.dropBackward）：parseKey 假设 "设备:时间戳"
-	// 这种末段为数字的 key 约定，是为无类型的 IMU 场景写的启发式；已注册 schema
-	// 的类型有自己明确的 key 语义——行情快照 key（quote:<日期>:<代码>）的末段是
-	// 股票代码，同样可能被解析成数字，对它套用这个启发式会把「代码大小变化」
-	// 误判成「时间戳回退」而错误丢弃。这不是假设性风险：QuantScout 全量实测
-	// （热身后按全量顺序跑 5241 行真实行情）复现了 5 行被误杀，见
-	// docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的 D3 记录。
-	// schema 校验器自己如果需要单调性保证，应在校验规则里显式实现，不应依赖
-	// 这个为另一种数据形状设计的通用启发式。
+	// M1 起，分派依据是 Descriptor.TimeSemantics.Kind（BANLV-2 RFC §9.3），
+	// 不再是"有没有注册 schema"这个粗粒度布尔旁路：
+	//   - 未注册任何 Descriptor（hasDescriptor=false）：这是为无类型 IMU 设备流
+	//     设计的场景，parseKey 假设"设备:时间戳"这种末段为数字的 key 约定，是
+	//     它的本来场景，不是误用；
+	//   - 已注册 Descriptor 且 Kind==None（如 quote）：明确声明"这个类型不需要
+	//     单调性检查"，无条件跳过——行情快照 key（quote:<日期>:<代码>）的末段是
+	//     股票代码，同样可能被解析成数字，对它套用 parseKey 启发式会把「代码
+	//     大小变化」误判成「时间戳回退」而错误丢弃。这不是假设性风险：
+	//     QuantScout 全量实测（热身后按全量顺序跑 5241 行真实行情）复现了 5 行
+	//     被误杀，见 docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的
+	//     D3 记录；
+	//   - 已注册 Descriptor 且 Kind!=None：M1 未实现按 KeyLayout.KeyField 的结构化
+	//     单调性检查（schema.LoadContracts 已在加载期拒绝这类契约，这个分支在
+	//     当前契约集合下不可达），留空是诚实的"尚未支持"，不是静默放行。
 	//
 	// checkMonotonic=false（ValidateVersioned）额外跳过：PUT_VERSIONED 反复
 	// 写同一逻辑键是设计如此，不是时钟异常，见 ValidateVersioned 的文档。
-	if checkMonotonic && f.dropBackward && !hasSchema {
+	if checkMonotonic && f.dropBackward && !hasDescriptor {
 		if device, ts, ok := parseKey(key); ok {
 			f.mu.Lock()
 			last, seen := f.lastTS[device]
 			if seen && ts <= last {
 				f.mu.Unlock()
 				metrics.FramesDroppedNonMonotonic.Add(1)
-				return value, false, ResultDrop, "non_monotonic_timestamp"
+				return value, false, ResultDrop, 0, "non_monotonic_timestamp"
 			}
 			f.lastTS[device] = ts
 			f.mu.Unlock()
@@ -168,18 +243,18 @@ func (f *Filter) validate(key, value []byte, checkMonotonic bool) (newValue []by
 
 	// 按 key 前缀分派到已注册类型的 schema 校验器；未纳管类型（无前缀匹配）不做
 	// schema 校验、直接放行——旧数据类型在新增 schema 前不会被误伤。
-	if hasSchema {
-		if err := validator.Validate(value); err != nil {
+	if hasDescriptor {
+		if err := descriptor.Validation.Validate(value); err != nil {
 			metrics.FramesDroppedSchema.Add(1)
-			return value, false, ResultDrop, err.Error()
+			return value, false, ResultDrop, schema.CodeOf(err, 0), err.Error()
 		}
 	}
 
 	// 字段脱敏：命中则返回改写后的 value。
 	if nv, ch := redact(value, f.redactFields); ch {
-		return nv, true, ResultPass, ""
+		return nv, true, ResultPass, 0, ""
 	}
-	return value, false, ResultPass, ""
+	return value, false, ResultPass, 0, ""
 }
 
 // parsePut 解析 PUT 负载 keyLen(u32 LE)+valueLen(u32 LE)+key+value。委托给

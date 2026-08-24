@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
@@ -14,9 +15,20 @@ import (
 	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/service"
 	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/NeverENG/BanDB/service/ingesthook/schema"
 )
 
 func main() {
+	// 加载数据契约（方案 M1：contracts/*.schema.json，"服务端启动时加载契约并
+	// 强制校验"）。失败即拒绝启动——契约目录缺失/损坏不应该退回旧行为悄悄跳过
+	// 类型校验，那正是方案 §2.4 反对的"静默降级"。找不到契约目录本身也是失败
+	// （不是"没有配置就当作没有契约"的宽松默认），因为 contracts/ 是本仓库自带
+	// 且必须存在的文件，不是可选的外部配置。
+	if err := schema.LoadContractsDefault(); err != nil {
+		fmt.Println("[ERROR] failed to load data contracts:", err)
+		os.Exit(1)
+	}
+
 	// 初始化 FSM
 	KVServer := service.NewKVServer()
 

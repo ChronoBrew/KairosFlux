@@ -33,6 +33,7 @@ import (
 	"github.com/NeverENG/BanDB/internal/metrics"
 	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/NeverENG/BanDB/service/ingesthook/schema"
 )
 
 // startRouterV2TestServer 起一个真实服务端：v1 PUT/GET/DEL 路由 + RouterV2，
@@ -372,8 +373,12 @@ func TestRouterV2_None_StatShowsInjectedRejections(t *testing.T) {
 	if ack.Accepted != 2 || ack.Rejected != 1 {
 		t.Fatalf("accepted/rejected=%d/%d，期望 2/1（诊断粒度：accepted 对不上 received，而不是 received 本身丢失）", ack.Accepted, ack.Rejected)
 	}
-	if ack.FirstErrCode != codec.ErrCodeSchemaValidation {
-		t.Fatalf("firstErrCode=%#x，期望 %#x（schema 校验失败）", ack.FirstErrCode, codec.ErrCodeSchemaValidation)
+	// M1 起，声明了 type（本测试的 PUT 都带 codec.TypeQuote）时按 TypeID 精确
+	// 分派到 quote 校验器，schema 校验失败按 RFC §10.3 的子码细分（这里是
+	// "非正价格"，不再是笼统的 ErrCodeSchemaValidation——那是留给"没有更精确
+	// 子码可用"场景的默认桶，见 service/router_v2.go 的 applyWrite）。
+	if ack.FirstErrCode != schema.ErrCodeNonPositivePrice {
+		t.Fatalf("firstErrCode=%#x，期望 %#x（非正价格，quote 类型的 RFC §10.3 子码）", ack.FirstErrCode, schema.ErrCodeNonPositivePrice)
 	}
 	if ack.FirstErrReason == "" {
 		t.Fatal("firstErrReason 为空，期望携带具体拒绝原因")

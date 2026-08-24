@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	_ "net/http/pprof"
+	"os"
 	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
@@ -14,9 +15,18 @@ import (
 	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/service"
 	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/NeverENG/BanDB/service/ingesthook/schema"
 )
 
 func main() {
+	// 加载数据契约，见 server.go（非 pprof 构建）同一处调用的注释——两个 main
+	// 变体（//go:build pprof 互斥）在这一步必须做同样的事，不能只有其中一个
+	// 强制契约校验。
+	if err := schema.LoadContractsDefault(); err != nil {
+		fmt.Println("[ERROR] failed to load data contracts:", err)
+		os.Exit(1)
+	}
+
 	go func() {
 		fmt.Println("pprof is starting")
 
