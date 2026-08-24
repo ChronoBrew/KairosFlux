@@ -37,7 +37,7 @@ func newFakeReadWriter() *fakeReadWriter {
 	return &fakeReadWriter{versions: make(map[string][]fakeVersion)}
 }
 
-func (s *fakeReadWriter) PutVersioned(logicalKey string, payload []byte) (uint64, error) {
+func (s *fakeReadWriter) PutVersioned(logicalKey string, payload []byte, source string) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clock++
@@ -116,5 +116,5 @@ func (s *fakeReadWriter) versionCount(logicalKey string) int {
 // strategy:index 等既有对象，不代表本包认可"任意直写"这个操作模式（生产
 // 代码路径必须经过 WriteAsAgent/WriteAsEngine）。
 func (s *fakeReadWriter) putRaw(logicalKey string, payload []byte) {
-	_, _ = s.PutVersioned(logicalKey, payload)
+	_, _ = s.PutVersioned(logicalKey, payload, "test-setup")
 }

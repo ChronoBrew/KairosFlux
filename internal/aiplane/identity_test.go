@@ -11,7 +11,7 @@ import (
 func TestWriteAsAgent_RejectsDirectWriteOfNonProposalKind(t *testing.T) {
 	store := newFakeReadWriter()
 
-	_, err := WriteAsAgent(store, KindStrategyObject, "strategy:obj:candidate1", []byte(`{"name":"candidate1","phase":"live"}`))
+	_, err := WriteAsAgent(store, KindStrategyObject, "test-agent", "strategy:obj:candidate1", []byte(`{"name":"candidate1","phase":"live"}`))
 	if err == nil {
 		t.Fatal("agent 身份直写 strategy_object kind 应被拒绝，实际未返回错误")
 	}
@@ -38,7 +38,7 @@ func TestWriteAsAgent_RejectsDirectWriteOfNonProposalKind(t *testing.T) {
 // 时应正常写入，证明拒绝逻辑只针对"非 Proposal"，不是把 agent 写死拒绝一切。
 func TestWriteAsAgent_AllowsProposalKind(t *testing.T) {
 	store := newFakeReadWriter()
-	seq, err := WriteAsAgent(store, KindProposal, "proposal:abc123", []byte(`{"kind":"factor"}`))
+	seq, err := WriteAsAgent(store, KindProposal, "test-agent", "proposal:abc123", []byte(`{"kind":"factor"}`))
 	if err != nil {
 		t.Fatalf("agent 写 Proposal kind 不应被拒绝: %v", err)
 	}

@@ -25,13 +25,19 @@
 // type_id 也能工作（TypeUnspecified 未纳管前缀默认放行，见
 // service/ingesthook/filter.go 的 validate 回退路径）。
 //
-// 已知边界（写进最终报告的"发现的歧义"，不在本包内自行拍板修正）：
-//   - WriteAsAgent 只是本包 API 层的一道闸门：任何调用方仍可以绕过它直接调用
-//     jobctl.Store.PutVersioned 写任意键。真正的强制点应该在
-//     service/router_v2.go 的 handlePutVersioned 里，按 PUT_VERSIONED 请求帧
-//     已经解出的 source 字段做服务端强制——但那需要改 router_v2（有 v1/v2
-//     零回归红线），任务书验收标准只要求"结构化拒绝"这一条能力存在，本次
-//     不做协议层改动。
+// 已知边界（曾经写进"发现的歧义"，现状更新如下）：
+//   - [已解决] WriteAsAgent 此前只是本包 API 层的一道闸门：任何调用方可以
+//     绕过它直接调用 Writer.PutVersioned 写任意键。现在 service/router_v2.go
+//     的 handlePutVersioned 会按 PUT_VERSIONED 请求帧已解出的 source 字段
+//     独立地重新校验一遍同一条规则（internal/identity.SourceRole 判定为
+//     RoleAgent 时，internal/identity.IsProposalKey 判定 key 不是 Proposal
+//     对象则结构化拒绝，错误码 codec.ErrCodeUnauthorizedRole），不再依赖
+//     调用方"有没有走 WriteAsAgent"这条自觉。
+//   - [仍是边界] 上述协议层强制只覆盖 PUT_VERSIONED opcode（自带 source
+//     字段）。字面量 PUT/DEL（v1 opcode、v2 OpcodePut/OpcodeDel）不携带
+//     source，不受这条角色规则约束——它们从设计上就不是"写某个逻辑键的一条
+//     版本化记录"，与 Proposal/Strategy 等对象模型不是同一套键空间语义，
+//     本次任务不把这条规则强行套到不携带角色信息的协议路径上。
 //   - `strategy:index:{fingerprint}`（M3 registry 导入落的键）实际存的是
 //     QuantBrew 的实验/verdict 记录，不是方案 §3.2 对象模型表里定义的
 //     "Strategy 策略库存档"对象——命名与内容不对齐，是发现的既有歧义，本包

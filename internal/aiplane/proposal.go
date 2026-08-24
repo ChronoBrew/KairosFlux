@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+
+	"github.com/ChronoBrew/KairosFlux/internal/identity"
 )
 
 // ProposalKind 枚举 Agent 能提交的提议种类（方案原文任务书第 2/5 项：
@@ -38,7 +40,12 @@ type Proposal struct {
 	Kind ProposalKind `json:"kind"`
 	// SubmittedBy 是提交方标识（如 "quantscout-researcher-v1"），落审计用，
 	// 不是权限判定依据——权限判定只看调用的是 WriteAsAgent 还是
-	// WriteAsEngine，SubmittedBy 是"谁"，不是"能不能"。
+	// WriteAsEngine，SubmittedBy 是"谁"，不是"能不能"。SubmitProposal 把它
+	// 原样传给 WriteAsAgent 的 agentID 参数，编码进落盘写入的 source 字段
+	// （identity.AgentSource），LIST_WRITES 的 BySource 审计能看到具体是
+	// 哪个 agent 提交的；这一步只影响审计可见性与
+	// service/router_v2.go 的角色判定（是否带 "agent:" 前缀），不改变
+	// "能不能写"这件事本身仍然只由 kind==KindProposal 决定。
 	SubmittedBy string `json:"submitted_by"`
 	// FactorName 是结构化的因子标识：Kind==ProposalFactor 时必填。这是
 	// FactorSimilarity/证据图谱查询定位"这个提议是关于哪个因子"的唯一
@@ -124,15 +131,21 @@ func (p Proposal) CanonicalJSON() []byte {
 
 // Fingerprint 返回 Proposal 的确定性指纹（sha256 十六进制），既是
 // proposal:{fingerprint} 键空间的键组成部分，也是"同一份提议重复提交=幂等
-// 无新版本"的判据。
+// 无新版本"的判据。source（落盘写入的操作元数据，见 WriteAsAgent）不参与
+// CanonicalJSON 编码，故不影响指纹——同一份提议内容不管由哪个 agentID
+// 提交，指纹相同，这是有意为之：指纹回答"这是不是同一份提议"，不是"谁
+// 提交的"。
 func (p Proposal) Fingerprint() string {
 	sum := sha256.Sum256(p.CanonicalJSON())
 	return hex.EncodeToString(sum[:])
 }
 
-// ProposalKey 返回 proposal:{fingerprint} 逻辑键。
+// ProposalKey 返回 proposal:{fingerprint} 逻辑键。前缀转发
+// identity.ProposalKeyPrefix——service/router_v2.go 的协议层强制
+// （identity.IsProposalKey）与这里判定"agent 能写的唯一 kind"必须是同一个
+// 字符串，不允许两处各自维护一份 "proposal:" 字面量。
 func ProposalKey(fingerprint string) string {
-	return "proposal:" + fingerprint
+	return identity.ProposalKeyPrefix + fingerprint
 }
 
 // SubmitProposal 是 Proposal API 的唯一入口：校验 -> 算指纹 -> 幂等写入
@@ -162,7 +175,7 @@ func SubmitProposal(rw ReadWriter, p Proposal) (fingerprint string, seq uint64, 
 		return fp, 0, nil // 幂等：内容完全相同，不产生新版本
 	}
 
-	newSeq, err := WriteAsAgent(rw, KindProposal, key, payload)
+	newSeq, err := WriteAsAgent(rw, KindProposal, p.SubmittedBy, key, payload)
 	if err != nil {
 		return "", 0, err
 	}

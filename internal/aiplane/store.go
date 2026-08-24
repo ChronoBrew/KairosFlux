@@ -14,7 +14,7 @@ import (
 // 应该被迫依赖 jobctl 包里"Job 控制面"这个不相关的语义命名——接口属于消费者
 // 这条 Go 惯例的直接体现，两个接口结构相同是巧合，不是耦合。
 type Writer interface {
-	PutVersioned(logicalKey string, payload []byte) (seq uint64, err error)
+	PutVersioned(logicalKey string, payload []byte, source string) (seq uint64, err error)
 }
 
 // AsOfReader 是 Context API/证据图谱查询依赖的确定性读能力：给定 as_of
