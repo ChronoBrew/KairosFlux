@@ -18,6 +18,22 @@ func registryFingerprintKey(fingerprint string) string {
 	return "strategy:index:" + fingerprint
 }
 
+// RegistryIndexKey 是 registryFingerprintKey 的导出别名，供本仓库其它包
+// （internal/aiplane 的证据图谱查询需要按同一个键布局读 M31 导入的实验/
+// verdict 记录）复用同一个键构造规则——两处各写一遍 "strategy:index:"
+// 前缀字面量属于本仓库明令禁止的"依赖偶然实现细节"，键布局只应该有一处
+// 权威定义。
+func RegistryIndexKey(fingerprint string) string {
+	return registryFingerprintKey(fingerprint)
+}
+
+// RegistryIndexPrefix 是 strategy:index: 键空间前缀本身（供前缀扫描枚举
+// 全部已导入的实验记录用），与 RegistryIndexKey("") 逐字节相同，单独导出
+// 是为了调用点语义更清楚（"我要扫描这个前缀" vs "我要拼一个具体键"）。
+func RegistryIndexPrefix() string {
+	return registryFingerprintKey("")
+}
+
 // registryLine 是 registry.jsonl 一行里我们需要用来定位记录的最小字段——
 // 故意不建模完整的 verdict 结构（那是 QuantBrew 侧的契约，字段会随
 // SPEC-M14/M17 等增量演进），只解出 fingerprint 作为对象索引的键，剩下的

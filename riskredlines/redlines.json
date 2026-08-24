@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "redlines": [
+    {
+      "id": "agent_write_scope",
+      "description": "Agent 身份只能通过 Proposal API 写 proposal:{fingerprint} 对象，不得直接写任何其它键空间；违反者被结构化拒绝（UnauthorizedWriteError）。",
+      "applies_to_phase": ""
+    },
+    {
+      "id": "factor_similarity_gate",
+      "description": "两个因子收益相关性 >0.7 时，后进入证据关的一方自动标记 suspect_duplicate 并拒绝 AdmitFactorEvidence，不得进入证据图谱。",
+      "applies_to_phase": "gate"
+    },
+    {
+      "id": "no_live_without_paper_pass",
+      "description": "策略未经过模拟盘（Paper）阶段验证，不得转移到 Live 阶段（见 internal/jobctl.StrategyPhase 状态机：Candidate 只能到 Paper 或 Retired，不能直接到 Live）。",
+      "applies_to_phase": "live"
+    },
+    {
+      "id": "determinism_no_wall_clock",
+      "description": "Context API 与证据图谱查询只能通过调用方显式传入的 as_of 时间点读取账本，不得在组装上下文包的路径上调用系统时钟。",
+      "applies_to_phase": ""
+    },
+    {
+      "id": "no_live_order_execution",
+      "description": "本仓库（KairosFlux/BanDB）与 QuantBrew 回测内核均不触发实盘下单；实盘执行边界由独立的 qb-exec 层承担，AI 数据平面的 Proposal/Context API 不提供、也不代理任何下单能力。",
+      "applies_to_phase": ""
+    }
+  ]
+}

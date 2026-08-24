@@ -1,0 +1,51 @@
+{
+  "type_id": 2,
+  "name": "proposal",
+  "schema_version": 1,
+  "schema_version_note": "M4 AI 数据平面首版。type_id=2 目前未在 service/ingesthook/schema 注册为强制校验类型（proposal: 前缀走 v2 未纳管类型的默认放行路径，见 internal/aiplane/doc.go）——本文件是 KairosFlux<->QuantScout 研究员 Agent 的协议契约，不是服务端强制 schema；两者何时合并是留给协调者的后续决策，不在本次任务范围内。",
+  "key_prefix": "proposal:",
+  "key_layout": {
+    "delimiter": ":",
+    "fields": ["prefix", "fingerprint"]
+  },
+  "time_semantics": {
+    "kind": "none",
+    "key_field": ""
+  },
+  "producer": "QuantScout 研究员 Agent（或任何遵守本协议的 agent 客户端）",
+  "consumers": ["KairosFlux(引擎裁决管道)"],
+  "pit_semantics": "Proposal 对象走时态版本语义、不可变：同一 fingerprint 的内容一旦写入即视为定案，重复提交相同内容是幂等 no-op，不产生覆盖或更新——'修改一条提议' 在协议上不存在，只能提交一条新的（内容不同即 fingerprint 不同）提议。",
+  "idempotency_key": ["fingerprint（由 kind/submitted_by/factor_name/experiment_fingerprint/summary/detail 规范化编码后 sha256 得出，见 internal/aiplane/proposal.go Proposal.Fingerprint）"],
+  "required_fields": ["kind", "submitted_by", "summary"],
+  "kind_specific_required_fields": {
+    "factor": ["factor_name"],
+    "experiment": ["experiment_fingerprint"]
+  },
+  "enum_fields": {
+    "kind": ["factor", "hypothesis", "experiment", "recommendation", "review"]
+  },
+  "write_authorization": {
+    "allowed_role": "agent",
+    "allowed_kind": "proposal",
+    "rejection": "非 proposal kind 的直写请求返回结构化 UnauthorizedWriteError（role/kind/reason 字段，机读），不接受任何越权写入。",
+    "known_limitation": "本约束目前只在 API 层（internal/aiplane.WriteAsAgent）强制，尚未下沉到协议层（service/router_v2.go 的 PUT_VERSIONED 入口）；调用方若绕过本 API 直接发起 PUT_VERSIONED 帧仍可写任意键，见 internal/aiplane/doc.go“已知边界”。"
+  },
+  "downstream_admission": {
+    "kind=factor": "engine 侧收到 factor 提议后，若要把它推进证据图谱（AdmitFactorEvidence），必须先过 FactorSimilarity 门禁（相关性 >0.7 的因子被结构化拒绝，见 factor_similarity 契约字段与 context.schema.json 的 risk_redlines.factor_similarity_gate）；Proposal 本身总是可以提交，被拒绝的只是“进证据关”这一步，不是“能否提交提议”这一步。"
+  },
+  "error_codes": {
+    "validation_failed": "aiplane.ProposalValidationError（字段名+原因，见 internal/aiplane/proposal.go）",
+    "unauthorized_write": "aiplane.UnauthorizedWriteError（role/kind/reason）",
+    "suspect_duplicate_on_admission": "aiplane.SuspectDuplicateError（factor/conflicting_factor/correlation/threshold，仅发生在 AdmitFactorEvidence 阶段，不发生在 SubmitProposal 阶段）"
+  },
+  "example": {
+    "kind": "factor",
+    "submitted_by": "quantscout-researcher-v1",
+    "factor_name": "amihud_illiq",
+    "summary": "amihud 非流动性因子在 109 只标的池上的初步假设：低流动性个股未来超额收益更高",
+    "detail": {
+      "lookback": 20,
+      "weight": 1
+    }
+  }
+}

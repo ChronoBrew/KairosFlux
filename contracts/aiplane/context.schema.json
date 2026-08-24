@@ -1,0 +1,25 @@
+{
+  "type_id": 3,
+  "name": "context_bundle",
+  "schema_version": 1,
+  "schema_version_note": "M4 AI 数据平面首版。这是响应契约（Context API 返回给 agent 的只读上下文包），不是写入类型——因此没有 key_prefix/idempotency_key 这类写路径字段；type_id 只是为了与 quote/proposal 两份契约保持同一份文档格式，不代表本类型会走 PUT_VERSIONED 写路径。",
+  "producer": "KairosFlux(internal/aiplane.BuildContext)",
+  "consumers": ["QuantScout 研究员 Agent（或任何遵守本协议的 agent 客户端）"],
+  "determinism_contract": {
+    "statement": "同一个 ContextRequest.as_of_nanos，在底层账本状态、contracts/*.schema.json 文件内容、riskredlines/redlines.json 文件内容三者都不变的前提下，两次调用产生逐字节相同的 JSON 序列化结果（含字段顺序）。",
+    "no_wall_clock": "组装过程不调用系统时钟；as_of_nanos 完全由调用方在请求里显式提供。",
+    "config_drift_visibility": "contracts_digest/risk_redlines_digest 是对应文件原始字节的 sha256，文件内容任何变化都会反映在这两个摘要字段上，不会在其它字段不变的情况下静默改变响应含义。",
+    "context_fingerprint": "对本响应除 context_fingerprint 自身以外全部字段规范化编码后的 sha256，供调用方快速比对两次响应是否完全一致，不必逐字段 diff。"
+  },
+  "response_fields": {
+    "as_of_nanos": "int64，回显请求的 as_of 时间点（unix 纳秒）。",
+    "dataset_contracts": "数组，每项 {type_id, name, schema_version}，来自 contracts/*.schema.json，按 type_id 升序。",
+    "contracts_digest": "string，contracts/*.schema.json 全部文件原始字节（按文件名排序拼接）的 sha256 十六进制摘要。",
+    "factors_tested": "数组，每项 {experiment_fingerprint, hypothesis_summary, level, as_of, test_index}，来自 strategy:index: 前缀下已导入的 QuantBrew 实验记录，按 experiment_fingerprint 排序。",
+    "strategy_states": "数组，每项 {name, phase}，来自 strategy:obj: 前缀，按 name 排序；phase 取值见 internal/jobctl.StrategyPhase（hypothesis/gate/candidate/paper/live/retired）。",
+    "risk_redlines": "数组，每项 {id, description, applies_to_phase}，来自 riskredlines/redlines.json，按 id 排序。",
+    "risk_redlines_digest": "string，riskredlines/redlines.json 原始字节的 sha256 十六进制摘要。",
+    "context_fingerprint": "string，见 determinism_contract.context_fingerprint。"
+  },
+  "known_limitation": "as_of_nanos 目前只贯穿账本读取（strategy:index/strategy:obj 前缀扫描 + 单键读取），不覆盖 contracts/*.schema.json 与 riskredlines/redlines.json 这两份文件——它们没有版本化写入语义（不走 PUT_VERSIONED），只是磁盘上的当前文件内容；as_of 语义对这两者退化为“调用时磁盘上的内容”，这是本次任务的已知边界，不是 bug。"
+}
