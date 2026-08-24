@@ -48,6 +48,52 @@ func TestLoop_TickReadsSpecAndReconcilesInSortedOrder(t *testing.T) {
 	}
 }
 
+// TestLoop_RepeatedTicksAfterApplyRoundTripAreIdempotent 覆盖生产路径真正
+// 走的那条链路：Apply -> CanonicalJSON -> Store -> GetLatest -> ParseJobSpec
+// -> Fingerprint，而不是像其它测试那样把 Go 值直接传给 Reconcile。如果这条
+// JSON 编解码往返在任何字段上有损（尤其 DependsOn/Env 这两个 nil vs 非空
+// 切片/map 最容易在序列化后变得不对称的字段），拿到的指纹就会和上次写入
+// job:status 时的指纹不一致，sameTrack 每次都判 false，job 会被每个 tick
+// 重新执行一次——对 paper_daily 这种真实调用交易脚本的 job 是严重后果。
+// 两个 job 分别覆盖 DependsOn 为 nil 与非空两种情况。
+func TestLoop_RepeatedTicksAfterApplyRoundTripAreIdempotent(t *testing.T) {
+	store := newFakeStore()
+	clock := newFakeClock(fixedTestTime())
+	exec := newCountingExecutor(ExecResult{ExitCode: 0})
+	r := &Reconciler{Store: store, Executor: exec, Clock: clock, AlertSink: &nullAlertSink{}}
+
+	noDeps := testSpec("no_deps_job")            // DependsOn == nil
+	withDeps := testSpec("with_deps_job", "dep") // DependsOn 非空
+
+	if _, err := Apply(store, noDeps); err != nil {
+		t.Fatalf("apply no_deps_job 出错: %v", err)
+	}
+	if _, err := Apply(store, withDeps); err != nil {
+		t.Fatalf("apply with_deps_job 出错: %v", err)
+	}
+	// with_deps_job 依赖 "dep"，本测试不打算让它真正执行成功（依赖永远不
+	// 满足）——重点不是它能不能跑起来，是"反复 Tick 会不会因为 spec 往返
+	// 失真而被判定成指纹变了、从而重复执行/重复写 pending"。
+
+	loop := NewLoop(store, r, []string{"no_deps_job", "with_deps_job"}, 0)
+
+	for i := 0; i < 100; i++ {
+		if errs := loop.Tick(); len(errs) != 0 {
+			t.Fatalf("第 %d 次 Tick 出错: %v", i, errs)
+		}
+	}
+
+	if got := exec.callCount(); got != 1 {
+		t.Fatalf("no_deps_job 应只被真正执行 1 次（spec 往返后指纹应保持稳定），实际 %d 次", got)
+	}
+	if got := store.versionCount(StatusKey(noDeps.Name)); got != 1 {
+		t.Fatalf("no_deps_job 的 job:status 应只有 1 条版本，实际 %d 条", got)
+	}
+	if got := store.versionCount(StatusKey(withDeps.Name)); got != 1 {
+		t.Fatalf("with_deps_job（依赖始终不满足）的 job:status 应只有 1 条 pending 版本，不应随 Tick 次数膨胀，实际 %d 条", got)
+	}
+}
+
 func TestLoop_TickReportsErrorForMissingSpec(t *testing.T) {
 	store := newFakeStore()
 	r := NewReconciler(store)
