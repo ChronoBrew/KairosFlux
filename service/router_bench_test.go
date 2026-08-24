@@ -5,11 +5,11 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
 )
 
 // benchKeyCardinality 是基准预生成的负载数量：足够大以避免同 key 反复覆写
@@ -79,7 +79,7 @@ func (benchNopStore) Scan(start, end []byte, pred predicate.Predicate, limit int
 
 // BenchmarkRouterHandlePut 测网关写入的真实全链路（含磁盘 fsync）：PreHandle
 // （ingesthook 的 schema 校验 + 脱敏）+ Handle（Router.handlePut 解帧 +
-// KVServer.Write 落盘），接线方式与生产 cmd/ban-server/server.go 一致（同一组
+// KVServer.Write 落盘），接线方式与生产 cmd/kairosflux-server/server.go 一致（同一组
 // redactFields/maxValueLen/dropBackward 参数，同样挂 filter.Handle 为
 // PreHandle）。WAL fsync 主导此基准的 ns/op（约 3-4ms/op，比网关层清洗逻辑
 // 高三个数量级），因此本基准的 ns/op 不适合用来评估网关层优化的收益——
@@ -94,7 +94,7 @@ func BenchmarkRouterHandlePut(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := reqs[i%benchKeyCardinality]
-		if action := router.PreHandle(req); action != bannet.HookPass {
+		if action := router.PreHandle(req); action != kairnet.HookPass {
 			b.Fatalf("第 %d 条基准负载被意外丢弃", i)
 		}
 		router.Handle(req)
@@ -115,7 +115,7 @@ func BenchmarkRouterHandlePut_NoDisk(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		req := reqs[i%benchKeyCardinality]
-		if action := router.PreHandle(req); action != bannet.HookPass {
+		if action := router.PreHandle(req); action != kairnet.HookPass {
 			b.Fatalf("第 %d 条基准负载被意外丢弃", i)
 		}
 		router.Handle(req)

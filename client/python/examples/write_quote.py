@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""write_quote —— 用最小 Python 客户端把一条全市场股票日线快照写入 BanDB。
+"""write_quote —— 用最小 Python 客户端把一条全市场股票日线快照写入 KairosFlux。
 
-演示 QuantScout 这类 Python 上游如何直接写 BANLV 协议（bannet TLV），不经 gRPC、
+演示 QuantScout 这类 Python 上游如何直接写 Kair 协议（kairnet TLV），不经 gRPC、
 不装 protobuf 工具链。key 布局用裁决过的 quote:<日期>:<代码>（日期在前），
-理由见 docs/BANLV-协议规范.md 与 service/ingesthook/schema/quote.go 的注释：
+理由见 docs/Kair-协议规范.md 与 service/ingesthook/schema/quote.go 的注释：
 同一天的全市场快照在 key 空间连续，投递/retention 按「日」成批时不需要改动
 现有机制。
 
@@ -29,7 +29,7 @@ from bandb_client import BanDBClient, DroppedError, KeyNotFoundError  # noqa: E4
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--addr", required=True, help="ban-server 地址，如 127.0.0.1:8080")
+    p.add_argument("--addr", required=True, help="kairosflux-server 地址，如 127.0.0.1:8080")
     p.add_argument("--code", required=True, help="标的代码，如 600000")
     p.add_argument("--date", required=True, help="交易日，YYYY-MM-DD")
     p.add_argument("--open", type=float, required=True)

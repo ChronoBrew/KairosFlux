@@ -1,14 +1,14 @@
 // Package schema 提供「按数据类型注册校验规则」的最小注册表：每种业务数据类型
 // （如行情快照）注册一个 Validator，落盘前按 key 前缀分派到对应校验器。
 //
-// M1（契约层，docs/rfc/BANLV-2.md §9 Schema Descriptor）起，注册表存的是 Descriptor
+// M1（契约层，docs/rfc/Kair-2.md §9 Schema Descriptor）起，注册表存的是 Descriptor
 // （类型的全部声明式语义：key 布局、单调性策略、必填字段、量纲、幂等键、PIT 语义、
 // 生产者/消费者、schema 版本），Validator 只是 Descriptor 的一个字段——Register(prefix,
 // validator) 这个旧 API 不删除，只是变成构造一个最小 Descriptor 的兼容外壳（RFC §9.4
 // 明确的渐进式迁移路径），不是第二套并行的注册表。
 //
 // 定位：这一层只管「一条记录内容是否合法、这个类型要不要单调性检查」，不管帧格式
-// （畸形帧/超限由 service/ingesthook.Filter 处理）也不管传输层（bannet 裸帧 / gRPC
+// （畸形帧/超限由 service/ingesthook.Filter 处理）也不管传输层（kairnet 裸帧 / gRPC
 // 结构体皆可复用，见 Filter.Validate 的调用方）。
 //
 // 分派方式：v2 有线上 `type` 字段的写入按 TypeID 直接查表（精确，见 LookupByType）；
@@ -32,7 +32,7 @@ type Validator interface {
 }
 
 // TimeKind 声明一个类型是否需要单调性保证，替代 filter.go 里"有没有注册 schema"
-// 这个粗粒度旁路判断（BANLV-2 RFC §9.3）。
+// 这个粗粒度旁路判断（Kair-2 RFC §9.3）。
 type TimeKind int
 
 const (
@@ -47,7 +47,7 @@ const (
 )
 
 // KeyLayout 用分隔符 + 字段名列表声明 key 形状，替代"包注释里写一句人话"
-// （BANLV-2 RFC §9.2）。例：quote 类型 = {Delimiter: ":", Fields: ["prefix","date","code"]}。
+// （Kair-2 RFC §9.2）。例：quote 类型 = {Delimiter: ":", Fields: ["prefix","date","code"]}。
 type KeyLayout struct {
 	Delimiter string
 	Fields    []string
@@ -60,12 +60,12 @@ type TimeSemantics struct {
 	KeyField string
 }
 
-// Descriptor 是一个数据类型的全部声明式语义（BANLV-2 RFC §9.2 的落地）：
+// Descriptor 是一个数据类型的全部声明式语义（Kair-2 RFC §9.2 的落地）：
 // key 布局、单调性策略、校验规则、量纲、幂等键、PIT 语义、生产者/消费者、schema
 // 版本，一个类型只在一个地方声明，而不是散落在校验代码、过滤器旁路、文档注释、
 // 建表 DDL 注释里各写一份。
 type Descriptor struct {
-	// TypeID 对应 BANLV v2 协议帧里的 type 字段（bannet/codec.HeaderV2.Type）。
+	// TypeID 对应 Kair v2 协议帧里的 type 字段（kairnet/codec.HeaderV2.Type）。
 	// 0 表示未分配 TypeID（只能靠 KeyPrefix 做 v1/gRPC 场景的前缀匹配，见 Register）。
 	TypeID uint16
 	Name   string
@@ -104,7 +104,7 @@ var (
 
 // Register 为 key 前缀 prefix 注册一个校验器：等价于构造一个最小 Descriptor
 // （TimeSemantics.Kind=None、不分配 TypeID、不声明量纲/幂等键/PIT 语义），见包注释
-// 与 BANLV-2 RFC §9.4 的渐进式迁移路径。重复注册同一前缀会覆盖旧的（便于测试替换/
+// 与 Kair-2 RFC §9.4 的渐进式迁移路径。重复注册同一前缀会覆盖旧的（便于测试替换/
 // 热更新，生产路径通常只在启动时调用一次）。
 func Register(prefix string, v Validator) {
 	RegisterDescriptor(Descriptor{
@@ -172,7 +172,7 @@ func LookupDescriptor(key []byte) (Descriptor, bool) {
 	return best, true
 }
 
-// LookupByType 按 v2 协议帧的 TypeID 精确查找 Descriptor（BANLV-2 RFC §3.2/§9：
+// LookupByType 按 v2 协议帧的 TypeID 精确查找 Descriptor（Kair-2 RFC §3.2/§9：
 // "分派规则从按 key 前缀最长匹配改为按 type 字段直接查表"）。TypeID==0（未声明
 // 类型）不应调用本函数——调用方应退回 LookupDescriptor/Lookup 的前缀匹配路径。
 func LookupByType(typeID uint16) (Descriptor, bool) {

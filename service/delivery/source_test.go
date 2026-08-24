@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/delivery/offset"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/offset"
 )
 
 // fakeScanner 返回预置的有序条目，忽略范围（测试只关心保留 key 过滤与游标推进）。

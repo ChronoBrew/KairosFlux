@@ -1,10 +1,10 @@
 # 分布式演进骨架：下游投递治理（B）+ 分片集群路由（A）
 
-本文档记录 BanDB 从「单机缓冲 + 可选 Raft」向「分片分布式缓冲集群」演进的**架构骨架**。
+本文档记录 KairosFlux 从「单机缓冲 + 可选 Raft」向「分片分布式缓冲集群」演进的**架构骨架**。
 
 ## 为什么是这个方向
 
-起点是一个判断题：是否给 BanDB 接入类 dubbo-go 的网关治理、是否删掉自写 Raft。结论：
+起点是一个判断题：是否给 KairosFlux 接入类 dubbo-go 的网关治理、是否删掉自写 Raft。结论：
 
 - **不引入 dubbo-go 框架，而是借鉴其治理模型自研**，保住项目的零第三方依赖特性。
 - **治理落在数据面**，不是通用服务网格：多个下游 sink 就是要被治理的一组后端（B）；分片路由/放置控制面是 dubbo-go/PD 的数据系统类比（A）。
@@ -108,6 +108,6 @@ flowchart TD
 
 > **后续状态（本文之后）**：本文所述骨架中，`Placement.Forward` 与 `Placement.Rebalance`
 > 两个桩已移除——其理由「跨节点数据传输尚不可用」已不成立，转发能力后来由 `Router` +
-> `PeerPool` 经 BanNet 落地（见 iteration-2026-08-05-shard-routing-banNet）。
+> `PeerPool` 经 KairNet 落地（见 iteration-2026-08-05-shard-routing-banNet）。
 > `Registry` 与 `Placement.Failover` 保留，但集群仍无心跳，故存活视图当前不产生行为。
 > 包位置亦由 `service/cluster` 上提为顶层 `cluster`。

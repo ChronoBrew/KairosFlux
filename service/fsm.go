@@ -9,13 +9,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/internal/temporal"
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/raft"
-	"github.com/NeverENG/BanDB/service/delivery/offset"
-	"github.com/NeverENG/BanDB/storage"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/internal/temporal"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/raft"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/offset"
+	"github.com/ChronoBrew/KairosFlux/storage"
 )
 
 // CommandType 是写命令的类型。具名类型 + 具名常量使拼写只存在此处一份，调用点不再重复

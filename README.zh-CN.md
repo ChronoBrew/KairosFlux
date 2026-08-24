@@ -4,8 +4,8 @@
 
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)
-![Protocol](https://img.shields.io/badge/protocol-BANLV-orange)
-![Performance](https://img.shields.io/badge/BANLV%20vs%20gRPC-2.7x%20faster%20(GET)-brightgreen)
+![Protocol](https://img.shields.io/badge/protocol-Kair-orange)
+![Performance](https://img.shields.io/badge/Kair%20vs%20gRPC-2.7x%20faster%20(GET)-brightgreen)
 <!-- CI 徽章：接入 GitHub Actions 后再补 -->
 
 KairosFlux（原名 BanDB）是 **ChronoBrew** 组织下的时态数据流引擎，围绕一个
@@ -22,15 +22,17 @@ KairosFlux（原名 BanDB）是 **ChronoBrew** 组织下的时态数据流引擎
 单二进制，除 gRPC/Protobuf 外零第三方依赖（gRPC 仅用于一个可选的基准测试
 入口，见下文）。
 
-> 本仓库与协议正在改名过程中：产品名 `BanDB` → `KairosFlux`，协议品牌
-> `BANLV` → `Kair`。改名只发生在品牌/文档层——帧格式、opcode、跨语言测试
-> 向量字节全部不变，今天已部署的任何东西不会因此破坏。代码层路径
-> （`cmd/ban-server`、`bandb_client.py`、`BANDB_ADDR`）尚未迁移，下面每条
-> 命令都是今天能直接跑通的真实命令。
+> 本仓库的产品/协议改名已完成：产品名 `BanDB` → `KairosFlux`，协议品牌
+> `BANLV` → `Kair`。模块路径、包名（`bannet` → `kairnet`）、`cmd/*` 二进制
+> 与文档均已迁移。帧格式、opcode、跨语言测试向量字节全程不变，今天已部署
+> 的任何东西不会因此破坏。有一个文件刻意仍叫 `client/python/bandb_client.py`
+> ——它计划在后续清理里被整体下线，而不是原地改名，因此它的旧标识符
+> （`BanDBClient`、`BanDBError` 等）暂时保留不动。下面每条命令都是今天能
+> 直接跑通的真实命令。
 
 ## 特性
 
-- *原生协议* —— BANLV，一个为摄入场景设计的零依赖二进制 TCP TLV 协议。
+- *原生协议* —— Kair，一个为摄入场景设计的零依赖二进制 TCP TLV 协议。
 - *落盘前清洗* —— 按记录类型可插拔的 schema 校验；不合格的数据不会进入缓冲。
 - *持久化缓冲* —— WAL 支撑的 LSM 引擎，崩溃安全，重启后自动恢复。
 - *可靠投递* —— 至少一次投递，熔断器 + 健康感知路由在多个 sink 间切换。
@@ -44,16 +46,16 @@ KairosFlux（原名 BanDB）是 **ChronoBrew** 组织下的时态数据流引擎
 启动服务端：
 
 ```bash
-cd cmd/ban-server && go run .
+cd cmd/kairosflux-server && go run .
 ```
 
 用 Go 客户端写读（另开终端）：
 
 ```console
-$ go run ./cmd/ban-cli -addr 127.0.0.1:8080 put order:1001 '{"amount":128,"ts":1754380800}'
+$ go run ./cmd/kairosflux-cli -addr 127.0.0.1:8080 put order:1001 '{"amount":128,"ts":1754380800}'
 已写入: order:1001 = {"amount":128,"ts":1754380800}
 
-$ go run ./cmd/ban-cli -addr 127.0.0.1:8080 get order:1001
+$ go run ./cmd/kairosflux-cli -addr 127.0.0.1:8080 get order:1001
 {"amount":128,"ts":1754380800}
 ```
 
@@ -84,7 +86,7 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 - `AdmissionEnabled` 是网关自适应准入，用延迟反馈防并发写过载、过载 shed。
   单一写入方的每日批量写不会产生它要防的那种并发突发，这里不存在它要
   防护的过载问题域，开启只会带来额外的延迟探测开销。
-- `ShardRoutingEnabled` 是把不属本节点的 key 经 BanNet 转发到多节点分片
+- `ShardRoutingEnabled` 是把不属本节点的 key 经 KairNet 转发到多节点分片
   集群里的属主节点。单节点拥有 100% 的 key 空间，没有需要转发的路由决策。
 
 只有当部署形态真的长成这两项功能所对应的样子（真实的多写入方并发负载，
@@ -101,13 +103,13 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 
 ## 架构
 
-`摄入(BANLV，即将改名为 Kair) → 清洗(schema) → 缓冲(LSM) → 投递(Sink)`
+`摄入(Kair) → 清洗(schema) → 缓冲(LSM) → 投递(Sink)`
 
 当前生产投递目标是本地文件；配置项 `DeliverySinkType` 也支持一个带健康感知
 故障切换的 ClickHouse sink。另有两个子系统——Multi-Raft 分片 KV 与借鉴
 dubbo-go 的投递治理层——已完整实现且测试齐全，但默认不参与编译
 （`//go:build experimental`），需要时用 `-tags experimental` 构建。详见
-[docs/BANLV-协议规范.md](docs/BANLV-协议规范.md)。
+[docs/Kair-协议规范.md](docs/Kair-协议规范.md)。
 
 ## 时态内核（已实现，已接入写入路径（M0：PUT_VERSIONED/GET_AS_OF/REPLAY_FINGERPRINT，2026-08-24））
 
@@ -121,7 +123,7 @@ dubbo-go 的投递治理层——已完整实现且测试齐全，但默认不�
 [`方案-BanDB-时态内核与AI数据平面.md`](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/方案-BanDB-时态内核与AI数据平面.md)。
 
 协议这一侧（RFC 阶段，零代码落地——见
-[`docs/rfc/BANLV-2.md`](docs/rfc/BANLV-2.md)，文档开头原话就是"纯设计文档，
+[`docs/rfc/Kair-2.md`](docs/rfc/Kair-2.md)，文档开头原话就是"纯设计文档，
 零代码改动"）梳理了生产场景真正需要的形状：**写多读少**。真实负载是
 QuantScout 每日批量导出约 5000 行，不是双向交互式请求-响应，所以 v2 设计了
 按连接可选的三档 ack——`every`（现状，逐条写都等一个响应）、`window`（每 N
@@ -133,15 +135,15 @@ QuantScout 每日批量导出约 5000 行，不是双向交互式请求-响应�
 
 ## 性能
 
-实测中，BANLV 协议在读路径上明显快于内置的 gRPC 入口（50 并发下 GET 吞吐约
+实测中，Kair 协议在读路径上明显快于内置的 gRPC 入口（50 并发下 GET 吞吐约
 为 2.7 倍）；写路径两者基本持平，因为两条入口最终共用同一条受 fsync 约束的
 持久化路径。复现：`bash scripts/bench.sh`，具体命令见
-[docs/BANLV-协议规范.md](docs/BANLV-协议规范.md)。
+[docs/Kair-协议规范.md](docs/Kair-协议规范.md)。
 
 ## 健壮性（Fuzz 测试）
 
 `go test -fuzz` 对 4 个帧解析入口合计跑了 300 秒（5 分钟），**约 3770 万次
-执行、零崩溃**（`bannet.FuzzUnPack` 369,985 次 / `proto.FuzzDecodeScanRequest`
+执行、零崩溃**（`kairnet.FuzzUnPack` 369,985 次 / `proto.FuzzDecodeScanRequest`
 15,108,651 次 / `proto.FuzzDecodeScanResponse` 12,065,019 次 /
 `ingesthook.FuzzParsePut` 10,203,443 次）。完整记录（包括它脱胎于的畸形帧
 测试矩阵：截断帧、超长声明、非法 msgID、慢客户端半帧沉默等场景）见
@@ -158,8 +160,8 @@ QuantScout（即将改名 ChronoScout，一个 Python 行情爬虫）把全市�
 
 ## 文档
 
-- [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md) —— BANLV 协议规范。
-- [docs/banlv/vectors.json](docs/banlv/vectors.json) —— 跨语言测试向量（Go + Python）。
+- [docs/Kair-协议规范.md](docs/Kair-协议规范.md) —— Kair 协议规范。
+- [docs/kair/vectors.json](docs/kair/vectors.json) —— 跨语言测试向量（Go + Python）。
 - `docs/iteration-*.md` —— 按改动主题记录的工程笔记。
 
 ## 许可证

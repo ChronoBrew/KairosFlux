@@ -4,8 +4,8 @@ import (
 	"net"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/proto"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // fakeConn 只实现测试需要的一个方法（SendBuffMsg），其余方法要么不会被调用、
@@ -32,20 +32,20 @@ func (c *fakeConn) SetProperty(key string, value any) {}
 func (c *fakeConn) Property(key string) any           { return nil }
 func (c *fakeConn) RemoveProperty(key string)         {}
 
-// fakePreHandleReq 是 bannet.Request 的测试替身，只用于驱动 Router.PreHandle。
+// fakePreHandleReq 是 kairnet.Request 的测试替身，只用于驱动 Router.PreHandle。
 type fakePreHandleReq struct {
 	conn *fakeConn
 	data []byte
 }
 
-func (r *fakePreHandleReq) Conn() bannet.Conn   { return r.conn }
+func (r *fakePreHandleReq) Conn() kairnet.Conn  { return r.conn }
 func (r *fakePreHandleReq) MsgData() []byte     { return r.data }
 func (r *fakePreHandleReq) MsgID() string       { return proto.MsgPut }
 func (r *fakePreHandleReq) SetMsgData(d []byte) { r.data = d }
 
 // TestDroppedPayload_RoundTrip 验证 droppedPayload 编码的字节可用 client 侧的
 // parseStatus 语义正确解析：status="dropped"，随后紧跟 reasonLen(u16 LE)+reason，
-// 与 docs/BANLV-协议规范.md 记录的格式一致。
+// 与 docs/Kair-协议规范.md 记录的格式一致。
 func TestDroppedPayload_RoundTrip(t *testing.T) {
 	payload := droppedPayload("quote: non-positive price: open=-1")
 
@@ -83,14 +83,14 @@ func TestDroppedPayload_EmptyReasonDegradesToStatusPayload(t *testing.T) {
 // 反馈的真实问题的直接回归锁定：此前 reason 在这一路径上被悄悄丢弃。
 func TestRouterPreHandle_DropSendsReasonToConn(t *testing.T) {
 	r := NewRouterWithStore(nil)
-	r.SetPreHandle(func(request bannet.Request) (bannet.HookAction, string) {
-		return bannet.HookDrop, "quote: missing required field \"code\""
+	r.SetPreHandle(func(request kairnet.Request) (kairnet.HookAction, string) {
+		return kairnet.HookDrop, "quote: missing required field \"code\""
 	})
 
 	conn := &fakeConn{}
 	req := &fakePreHandleReq{conn: conn}
 
-	if action := r.PreHandle(req); action != bannet.HookDrop {
+	if action := r.PreHandle(req); action != kairnet.HookDrop {
 		t.Fatalf("PreHandle 应返回 HookDrop，得到 %v", action)
 	}
 	if conn.lastMsgID != proto.MsgRespErr {

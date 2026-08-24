@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NeverENG/BanDB/service/delivery"
+	"github.com/ChronoBrew/KairosFlux/service/delivery"
 )
 
 // ErrNoHealthySink 表示一次投递轮转中没有任何 sink 既健康又被熔断器放行。

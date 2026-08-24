@@ -3,9 +3,9 @@ package delivery
 import (
 	"bytes"
 
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/delivery/offset"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/offset"
 )
 
 // Source 是投递的数据来源：给定游标，返回下一批记录与推进后的游标。

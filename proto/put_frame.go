@@ -11,7 +11,7 @@ import "encoding/binary"
 // 另一处。这里定义唯一实现，两个调用方都改为调用它。
 //
 // 放在 proto 包而非 service 或 ingesthook：router 与 ingesthook 是通过
-// cmd/ban-server/server.go 在装配时并列接线的兄弟包，彼此不互相 import
+// cmd/kairosflux-server/server.go 在装配时并列接线的兄弟包，彼此不互相 import
 // （router.go 未 import ingesthook），把编解码放进其中任何一个都会新增一条
 // 此前不存在的包依赖边。proto 是二者都已依赖的公共下游（负责 wire format），
 // SCAN 负载的编解码（DecodeScanRequest/EncodeScanResponse，见 scan.go）已经
@@ -46,7 +46,7 @@ func EncodePutFrame(key, value []byte) []byte {
 // EncodeKeyOnlyFrame 按 GET/DELETE 负载格式编帧：keyLen(u32 LE)+key。与
 // DecodeKeyFrame 互为逆操作——此前只有 EncodePutFrame 一个方向的编码
 // 被提到公共函数里，GET/DELETE 这一侧的编码此前只在 client/client.go 内
-// 联手写了一份（v1 生产路径不需要独立调用它，故没有被提出来）；BANLV v2
+// 联手写了一份（v1 生产路径不需要独立调用它，故没有被提出来）；Kair v2
 // 的测试/工具需要复用同一段编码而不是再手写一遍，遂提出为公共函数，与
 // EncodePutFrame 对称。
 func EncodeKeyOnlyFrame(key []byte) []byte {

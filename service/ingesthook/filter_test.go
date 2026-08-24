@@ -5,18 +5,18 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/ingesthook/schema"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook/schema"
 )
 
-// fakeReq 是 bannet.Request 的测试替身。钩子不触碰连接，Conn 返回 nil。
+// fakeReq 是 kairnet.Request 的测试替身。钩子不触碰连接，Conn 返回 nil。
 type fakeReq struct {
 	msgID string
 	data  []byte
 }
 
-func (f *fakeReq) Conn() bannet.Conn   { return nil }
+func (f *fakeReq) Conn() kairnet.Conn  { return nil }
 func (f *fakeReq) MsgData() []byte     { return f.data }
 func (f *fakeReq) MsgID() string       { return f.msgID }
 func (f *fakeReq) SetMsgData(d []byte) { f.data = d }
@@ -30,7 +30,7 @@ func TestHandle_NonPutPassesThrough(t *testing.T) {
 	f := NewFilter([]string{"gps"}, 0, true)
 	// GET 负载是 keyLen+key，前 8 字节是 key 的一部分，绝不能被当 PUT 解析。
 	req := &fakeReq{msgID: proto.MsgGet, data: []byte("anything")}
-	if got, _ := f.Handle(req); got != bannet.HookPass {
+	if got, _ := f.Handle(req); got != kairnet.HookPass {
 		t.Fatalf("GET 应放行，得到 %v", got)
 	}
 }
@@ -39,7 +39,7 @@ func TestHandle_MalformedDropped(t *testing.T) {
 	f := NewFilter(nil, 0, false)
 	req := &fakeReq{msgID: proto.MsgPut, data: []byte{1, 2, 3}} // 不足 8 字节
 	got, reason := f.Handle(req)
-	if got != bannet.HookDrop {
+	if got != kairnet.HookDrop {
 		t.Fatalf("畸形帧应丢弃，得到 %v", got)
 	}
 	if reason != "malformed_frame" {
@@ -50,37 +50,37 @@ func TestHandle_MalformedDropped(t *testing.T) {
 func TestHandle_OversizedDropped(t *testing.T) {
 	f := NewFilter(nil, 4, false)
 	got, reason := f.Handle(putReq("imu:dev0:1", "toolong"))
-	if got != bannet.HookDrop {
+	if got != kairnet.HookDrop {
 		t.Fatalf("超长 value 应丢弃，得到 %v", got)
 	}
 	if reason != "oversized_value" {
 		t.Fatalf("超长 value 的丢弃原因应为 oversized_value，得到 %q", reason)
 	}
-	if got, _ := f.Handle(putReq("imu:dev0:2", "ok")); got != bannet.HookPass {
+	if got, _ := f.Handle(putReq("imu:dev0:2", "ok")); got != kairnet.HookPass {
 		t.Fatalf("正常 value 应放行，得到 %v", got)
 	}
 }
 
 func TestHandle_MonotonicDrop(t *testing.T) {
 	f := NewFilter(nil, 0, true)
-	if got, _ := f.Handle(putReq("imu:dev0:100", "{}")); got != bannet.HookPass {
+	if got, _ := f.Handle(putReq("imu:dev0:100", "{}")); got != kairnet.HookPass {
 		t.Fatalf("首帧应放行，得到 %v", got)
 	}
 	got, reason := f.Handle(putReq("imu:dev0:99", "{}"))
-	if got != bannet.HookDrop {
+	if got != kairnet.HookDrop {
 		t.Fatalf("回退帧应丢弃，得到 %v", got)
 	}
 	if reason != "non_monotonic_timestamp" {
 		t.Fatalf("回退帧的丢弃原因应为 non_monotonic_timestamp，得到 %q", reason)
 	}
-	if got, _ := f.Handle(putReq("imu:dev0:100", "{}")); got != bannet.HookDrop {
+	if got, _ := f.Handle(putReq("imu:dev0:100", "{}")); got != kairnet.HookDrop {
 		t.Fatalf("重放（相等）帧应丢弃，得到 %v", got)
 	}
-	if got, _ := f.Handle(putReq("imu:dev0:101", "{}")); got != bannet.HookPass {
+	if got, _ := f.Handle(putReq("imu:dev0:101", "{}")); got != kairnet.HookPass {
 		t.Fatalf("前进帧应放行，得到 %v", got)
 	}
 	// 不同设备各自独立计水位。
-	if got, _ := f.Handle(putReq("imu:dev1:1", "{}")); got != bannet.HookPass {
+	if got, _ := f.Handle(putReq("imu:dev1:1", "{}")); got != kairnet.HookPass {
 		t.Fatalf("另一设备首帧应放行，得到 %v", got)
 	}
 }
@@ -88,7 +88,7 @@ func TestHandle_MonotonicDrop(t *testing.T) {
 func TestHandle_MonotonicDisabled(t *testing.T) {
 	f := NewFilter(nil, 0, false)
 	f.Handle(putReq("imu:dev0:100", "{}"))
-	if got, _ := f.Handle(putReq("imu:dev0:99", "{}")); got != bannet.HookPass {
+	if got, _ := f.Handle(putReq("imu:dev0:99", "{}")); got != kairnet.HookPass {
 		t.Fatalf("关闭单调校验后回退帧应放行，得到 %v", got)
 	}
 }
@@ -167,7 +167,7 @@ func TestValidateForType_UnknownDeclaredTypeIsRejectedNotFallenBackToPrefix(t *t
 // 不符合 imu:dev:ts 约定的 key 不参与单调校验，应放行。
 func TestHandle_UnconventionalKeyPasses(t *testing.T) {
 	f := NewFilter(nil, 0, true)
-	if got, _ := f.Handle(putReq("plainkey", "{}")); got != bannet.HookPass {
+	if got, _ := f.Handle(putReq("plainkey", "{}")); got != kairnet.HookPass {
 		t.Fatalf("无约定 key 应放行，得到 %v", got)
 	}
 }
@@ -175,7 +175,7 @@ func TestHandle_UnconventionalKeyPasses(t *testing.T) {
 func TestHandle_RedactRewritesPayload(t *testing.T) {
 	f := NewFilter([]string{"gps", "user_id"}, 0, false)
 	req := putReq("imu:dev0:1", `{"ax":0.01,"gps":"39.9,116.4","user_id":"u123"}`)
-	if got, _ := f.Handle(req); got != bannet.HookPass {
+	if got, _ := f.Handle(req); got != kairnet.HookPass {
 		t.Fatalf("脱敏帧应放行，得到 %v", got)
 	}
 
@@ -204,7 +204,7 @@ func TestHandle_RedactRewritesPayload(t *testing.T) {
 func TestHandle_NonJSONValueUnchanged(t *testing.T) {
 	f := NewFilter([]string{"gps"}, 0, false)
 	req := putReq("imu:dev0:1", "rawbinaryblob")
-	if got, _ := f.Handle(req); got != bannet.HookPass {
+	if got, _ := f.Handle(req); got != kairnet.HookPass {
 		t.Fatalf("非 JSON value 应放行，得到 %v", got)
 	}
 	_, value, _ := parsePut(req.MsgData())
@@ -226,16 +226,16 @@ func TestHandle_SchemaRegisteredKeysSkipMonotonicCheck(t *testing.T) {
 		return `{"code":"` + code + `","date":"2026-08-17","open":10.0,"high":10.5,"low":9.8,"close":10.2,"volume":1000000}`
 	}
 
-	if got, reason := f.Handle(putReq("quote:2026-08-17:600000", quote("600000"))); got != bannet.HookPass {
+	if got, reason := f.Handle(putReq("quote:2026-08-17:600000", quote("600000"))); got != kairnet.HookPass {
 		t.Fatalf("首条合法行情应放行，得到 %v，reason=%q", got, reason)
 	}
 	// 000001 < 600000：若单调性检查未对 schema 类型跳过，这里会被误杀。
-	if got, reason := f.Handle(putReq("quote:2026-08-17:000001", quote("000001"))); got != bannet.HookPass {
+	if got, reason := f.Handle(putReq("quote:2026-08-17:000001", quote("000001"))); got != kairnet.HookPass {
 		t.Fatalf("已注册 schema 的 key 应跳过单调性检查，不应被误判回退丢弃；得到 %v，reason=%q", got, reason)
 	}
 	// 与代码顺序无关：再写回一个"更大"代码也应正常放行，证明水位表压根没有
 	// 被这类 key 写入过（hasSchema 分支从未进入过 parseKey/lastTS）。
-	if got, reason := f.Handle(putReq("quote:2026-08-17:300069", quote("300069"))); got != bannet.HookPass {
+	if got, reason := f.Handle(putReq("quote:2026-08-17:300069", quote("300069"))); got != kairnet.HookPass {
 		t.Fatalf("第三条合法行情应放行，得到 %v，reason=%q", got, reason)
 	}
 }
@@ -248,7 +248,7 @@ func TestHandle_SchemaDropCarriesReason(t *testing.T) {
 	f := NewFilter(nil, 0, false)
 	req := putReq("quote:2026-08-17:600000", `{"open":-1}`) // 非正价格 + 缺必填字段
 	got, reason := f.Handle(req)
-	if got != bannet.HookDrop {
+	if got != kairnet.HookDrop {
 		t.Fatalf("非法行情记录应丢弃，得到 %v", got)
 	}
 	if reason == "" {
@@ -278,7 +278,7 @@ func TestHandle_SchemaAndRedactBothApplyToSameRecord(t *testing.T) {
 	req := putReq("hasschema:1", `{"ax":0.01,"gps":"39.9,116.4"}`)
 
 	got, reason := f.Handle(req)
-	if got != bannet.HookPass {
+	if got != kairnet.HookPass {
 		t.Fatalf("已注册 schema 且校验通过的记录不应被丢弃，得到 %v，reason=%q", got, reason)
 	}
 
@@ -310,7 +310,7 @@ func TestHandle_SchemaNonJSONValueReasonComesFromValidator(t *testing.T) {
 	f := NewFilter([]string{"gps"}, 0, false)
 	req := putReq("quote:2026-08-17:600000", "not json at all")
 	got, reason := f.Handle(req)
-	if got != bannet.HookDrop {
+	if got != kairnet.HookDrop {
 		t.Fatalf("非 JSON 的行情记录应被 schema 校验拒绝，得到 %v", got)
 	}
 	if !bytes.Contains([]byte(reason), []byte("quote: invalid json")) {
@@ -332,7 +332,7 @@ func TestHandle_RedactCatchesEscapedFieldName(t *testing.T) {
 	// mayContainAnyField 的字面量匹配会漏判的情形。
 	req := putReq("imu:dev0:1", `{"\u0067ps":"39.9,116.4","ax":0.01}`)
 	got, _ := f.Handle(req)
-	if got != bannet.HookPass {
+	if got != kairnet.HookPass {
 		t.Fatalf("合法 JSON 应放行，得到 %v", got)
 	}
 	_, value, ok := parsePut(req.MsgData())

@@ -1,4 +1,4 @@
-// Package config 定义 BanDB 的全局运行配置及其加载。加载遵循「默认值（代码内）→ 配置文件
+// Package config 定义 KairosFlux 的全局运行配置及其加载。加载遵循「默认值（代码内）→ 配置文件
 // （config.json）→ 命令行/环境变量」的覆盖优先级，用函数式选项组合表达（见 options.go 的
 // New/FromJSONFile/FromEnvAndFlags/WithXxx）。包级变量 G 在导入时按该顺序加载，供各处以
 // config.G.X 读取；测试/程序化构造可用 config.New(WithXxx(...)) 得到独立配置。
@@ -103,8 +103,8 @@ type GlobalConfig struct {
 	ShardCount int // 分片数（ShardOf 取模基数）
 	VNodes     int // 一致性哈希每节点的虚拟节点数
 
-	// ShardRoutingEnabled 开启分片路由：不属本节点的 key 经 BanNet 转发到 owner。
-	// 默认关闭（单机行为不变）。开启时 Peers 视为各节点的 BanNet 地址，Peers[Me] 须为本节点
+	// ShardRoutingEnabled 开启分片路由：不属本节点的 key 经 KairNet 转发到 owner。
+	// 默认关闭（单机行为不变）。开启时 Peers 视为各节点的 KairNet 地址，Peers[Me] 须为本节点
 	// 监听地址（Host:Port）。
 	ShardRoutingEnabled bool
 

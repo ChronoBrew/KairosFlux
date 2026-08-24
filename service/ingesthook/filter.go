@@ -5,8 +5,8 @@
 // 钩子只读取并改写请求负载，绝不向连接写响应——「丢弃即回写唯一响应」的
 // 不变式由 service.Router.PreHandle 统一持有（见 service/router.go）。
 //
-// 传输层边界：Handle 只做 bannet 帧解析（畸形帧检测），核心清洗逻辑在 Validate 里，
-// 只认 key/value 字节、不认 bannet.Request——因此 gRPC 等其它入口可以直接调用
+// 传输层边界：Handle 只做 kairnet 帧解析（畸形帧检测），核心清洗逻辑在 Validate 里，
+// 只认 key/value 字节、不认 kairnet.Request——因此 gRPC 等其它入口可以直接调用
 // Filter.Validate 复用同一套清洗规则，见 internal/kvgrpc.GRPCServer.Put。
 package ingesthook
 
@@ -17,10 +17,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/internal/metrics"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/ingesthook/schema"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook/schema"
 )
 
 // redactedValue 是脱敏字段被替换成的 JSON 值。
@@ -58,32 +58,32 @@ func NewFilter(redactFields []string, maxValueLen int, dropBackward bool) *Filte
 // （QuantScout 全量实测暴露的真实问题，见
 // docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的 D2 记录）。
 //
-// 只做 bannet 特有的一步：从裸帧里解出 key/value（畸形帧在这一步就地丢弃，
+// 只做 kairnet 特有的一步：从裸帧里解出 key/value（畸形帧在这一步就地丢弃，
 // 它是「帧是否完整」的传输层问题，不是 Validate 管的「内容是否合法」问题）。
 // 解出 key/value 之后的清洗全部委托给 Validate，保证与 gRPC 入口走同一套规则。
-func (f *Filter) Handle(req bannet.Request) (bannet.HookAction, string) {
+func (f *Filter) Handle(req kairnet.Request) (kairnet.HookAction, string) {
 	// 钩子只针对写入帧：GET/DELETE 的负载格式不同，放行不动。
 	if req.MsgID() != proto.MsgPut {
-		return bannet.HookPass, ""
+		return kairnet.HookPass, ""
 	}
 
 	key, value, ok := parsePut(req.MsgData())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
-		return bannet.HookDrop, "malformed_frame" // 畸形帧：长度字段与实际数据不符
+		return kairnet.HookDrop, "malformed_frame" // 畸形帧：长度字段与实际数据不符
 	}
 
 	// v1 帧没有 type 字段，code 在这条路径上没有出口（v1 dropped 响应只有 reason
-	// 字符串，见 docs/BANLV-协议规范.md §3.4），故丢弃。
+	// 字符串，见 docs/Kair-协议规范.md §3.4），故丢弃。
 	newValue, changed, result, _, reason := f.Validate(key, value)
 	if result == ResultDrop {
-		return bannet.HookDrop, reason
+		return kairnet.HookDrop, reason
 	}
 	if changed {
 		// 字段脱敏改写了 value：重建整帧（含新的 valueLen 前缀）。
 		req.SetMsgData(encodePut(key, newValue))
 	}
-	return bannet.HookPass, ""
+	return kairnet.HookPass, ""
 }
 
 // Result 是 Validate 对一条 key/value 的处置结果，与传输层无关。
@@ -98,13 +98,13 @@ const (
 
 // Validate 是清洗核心：value 长度限制 + 时间戳单调性校验 + 按 key 前缀分派的
 // schema 校验（见 service/ingesthook/schema）+ 字段脱敏——只认 key/value 字节，
-// 不解析帧、不触碰连接，bannet.Request 与 gRPC 的 PutRequest 均可直接复用。
+// 不解析帧、不触碰连接，kairnet.Request 与 gRPC 的 PutRequest 均可直接复用。
 //
 // 返回 newValue 是（可能经脱敏改写的）value；changed 标出是否真的被改写，未改写
 // 时等于输入、调用方可跳过重建负载；code/reason 仅在 result 为 ResultDrop 时有
 // 意义。code 是 M1 新增的机读错误码（非 schema 校验失败——oversized/非单调——时
-// 恒为 0，调用方应退回自己的默认族码，如 bannet/codec.ErrCodeSchemaValidation；
-// 见 schema.CodeOf 的文档）；reason 是给人看的描述，除了 metrics 计数外，BANLV
+// 恒为 0，调用方应退回自己的默认族码，如 kairnet/codec.ErrCodeSchemaValidation；
+// 见 schema.CodeOf 的文档）；reason 是给人看的描述，除了 metrics 计数外，Kair
 // 入口（Handle）还会把它原样回传给客户端（见 service/router.go 的
 // sendDropped），故这里的字符串是面向调用方展示的，应保持简洁且不泄露不该暴露的
 // 内部细节。
@@ -127,11 +127,11 @@ func (f *Filter) ValidateVersioned(key, value []byte) (newValue []byte, changed 
 	return f.validate(key, value, false)
 }
 
-// ValidateForType 是 Validate 的 M1 变体：typeID 来自 BANLV v2 帧头的 type 字段
-// （bannet/codec.HeaderV2.Type）。typeID==0（未声明类型）与 Validate 完全等价——
+// ValidateForType 是 Validate 的 M1 变体：typeID 来自 Kair v2 帧头的 type 字段
+// （kairnet/codec.HeaderV2.Type）。typeID==0（未声明类型）与 Validate 完全等价——
 // 退回按 key 前缀最长匹配的旧路径，这覆盖了本仓库今天全部的生产写入流量（v1 没有
 // type 概念；QuantScout 目前仍在 v1，见方案 §2.3）。typeID!=0 时，声明的类型是
-// 权威来源：直接按 schema.LookupByType 查找，不再猜 key 前缀（BANLV-2 RFC §9.3：
+// 权威来源：直接按 schema.LookupByType 查找，不再猜 key 前缀（Kair-2 RFC §9.3：
 // "分派规则从按 key 前缀最长匹配改为按 type 字段直接查表"）；找不到对应契约时
 // 结构化拒绝（reason="unknown_declared_type"），不是悄悄退回前缀匹配——客户端
 // 声明了一个服务端不认识的类型号本身就是需要暴露的问题，不应该被"猜对了前缀就
@@ -209,7 +209,7 @@ func (f *Filter) validate(key, value []byte, checkMonotonic bool) (newValue []by
 	// 可能让同一连接的帧落到不同 worker 而乱序，此处只做尽力而为的回退/重放
 	// 拦截，不是顺序保证；DropBackward 关闭时仅放行不校验。
 	//
-	// M1 起，分派依据是 Descriptor.TimeSemantics.Kind（BANLV-2 RFC §9.3），
+	// M1 起，分派依据是 Descriptor.TimeSemantics.Kind（Kair-2 RFC §9.3），
 	// 不再是"有没有注册 schema"这个粗粒度布尔旁路：
 	//   - 未注册任何 Descriptor（hasDescriptor=false）：这是为无类型 IMU 设备流
 	//     设计的场景，parseKey 假设"设备:时间戳"这种末段为数字的 key 约定，是

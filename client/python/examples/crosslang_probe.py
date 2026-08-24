@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """crosslang_probe —— 跨语言联调测试的 Python 侧驱动脚本。
 
-由 BanDB 仓库的 Go 测试（client/python/crosslang_test.go）以子进程方式调用：
-对一个真实运行中的 ban-server 执行指定场景的一次写入，把结果状态打印到标准
+由 KairosFlux 仓库的 Go 测试（client/python/crosslang_test.go）以子进程方式调用：
+对一个真实运行中的 kairosflux-server 执行指定场景的一次写入，把结果状态打印到标准
 输出的最后一行，供 Go 测试解析比对。不是给人手工跑的工具（虽然也能手工跑），
 是联调测试的固定驱动腿。
 
@@ -52,7 +52,7 @@ def main() -> int:
 
     with BanDBClient(args.addr) as c:
         if args.scenario == "malformed_lengths":
-            # keyLen 谎称 100，实际只有 2 字节数据——与 docs/banlv/vectors.json 的
+            # keyLen 谎称 100，实际只有 2 字节数据——与 docs/kair/vectors.json 的
             # put_request_malformed_lengths 向量同构。
             payload = struct.pack("<II", 100, 0) + b"ab"
             _, status = c.raw_put(payload)

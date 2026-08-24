@@ -4,8 +4,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/storage"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/storage"
 )
 
 // TestKVServer_GetTransparentlyResolvesVersionedKey 验证 M0 的核心兼容承诺：

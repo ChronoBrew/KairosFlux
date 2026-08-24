@@ -5,13 +5,13 @@ import (
 	"errors"
 	"log/slog"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/cluster"
-	"github.com/NeverENG/BanDB/internal/admission"
-	"github.com/NeverENG/BanDB/internal/metrics"
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/storage"
+	"github.com/ChronoBrew/KairosFlux/cluster"
+	"github.com/ChronoBrew/KairosFlux/internal/admission"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/storage"
 )
 
 // KVStore 抽象出 Router 本地处理所需的 KV 能力（*KVServer 满足之）。抽成接口是为了
@@ -37,9 +37,9 @@ type Router struct {
 
 	// 前置处理函数；返回 HookDrop 表示丢弃本帧，reason 是丢弃原因（可为空），
 	// PreHandle 会把它带上 sendDropped 回传给客户端。
-	preHandleFunc func(request bannet.Request) (bannet.HookAction, string)
+	preHandleFunc func(request kairnet.Request) (kairnet.HookAction, string)
 	// 后置处理函数
-	postHandleFunc func(request bannet.Request)
+	postHandleFunc func(request kairnet.Request)
 }
 
 // NewRouter 创建新的路由处理器
@@ -80,31 +80,31 @@ func (r *Router) SetLimiter(l *admission.Limiter) {
 }
 
 // SetPreHandle 设置前置处理函数
-func (r *Router) SetPreHandle(f func(request bannet.Request) (bannet.HookAction, string)) {
+func (r *Router) SetPreHandle(f func(request kairnet.Request) (kairnet.HookAction, string)) {
 	r.preHandleFunc = f
 }
 
 // SetPostHandle 设置后置处理函数
-func (r *Router) SetPostHandle(f func(request bannet.Request)) {
+func (r *Router) SetPostHandle(f func(request kairnet.Request)) {
 	r.postHandleFunc = f
 }
 
 // PreHandle 前置处理。返回 HookDrop 时由本函数回写唯一的「丢弃」响应（携带
 // preHandleFunc 给出的 reason，见 sendDropped），使纯请求-响应协议不发生响应
 // 错位（见 OnConnStart 注释）。
-func (r *Router) PreHandle(request bannet.Request) bannet.HookAction {
+func (r *Router) PreHandle(request kairnet.Request) kairnet.HookAction {
 	if r.preHandleFunc == nil {
-		return bannet.HookPass
+		return kairnet.HookPass
 	}
 	action, reason := r.preHandleFunc(request)
-	if action == bannet.HookDrop {
+	if action == kairnet.HookDrop {
 		sendDropped(request, reason)
 	}
 	return action
 }
 
 // Handle 处理请求。开启准入时先按并发上限准入：过载则 shed（回 overloaded 响应）不进处理。
-func (r *Router) Handle(request bannet.Request) {
+func (r *Router) Handle(request kairnet.Request) {
 	if r.limiter != nil {
 		start, ok := r.limiter.Acquire()
 		if !ok {
@@ -139,23 +139,23 @@ func statusPayload(status string) []byte {
 }
 
 // sendErr 写回错误响应
-func sendErr(req bannet.Request) {
+func sendErr(req kairnet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusError))
 }
 
 // sendNotFound 写回「键不存在」响应。与 sendErr 分开，使客户端能把常规的查不到
 // 与服务端故障区分开——前者不应重试，后者可重试。
-func sendNotFound(req bannet.Request) {
+func sendNotFound(req kairnet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusNotFound))
 }
 
 // sendOverloaded 写回「网关过载 shed」响应；保证每请求恰好一个响应、且可被客户端识别重试。
-func sendOverloaded(req bannet.Request) {
+func sendOverloaded(req kairnet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespErr, statusPayload(proto.StatusOverloaded))
 }
 
 // sendOK 写回 PUT/DEL 成功响应
-func sendOK(req bannet.Request) {
+func sendOK(req kairnet.Request) {
 	req.Conn().SendBuffMsg(proto.MsgRespOK, statusPayload(proto.StatusOK))
 }
 
@@ -165,7 +165,7 @@ func sendOK(req bannet.Request) {
 // 的 parseStatus 只读到 statusLen 声明的字节数为止，reasonLen/reason 落在它认为的
 // "该操作特有的其余字节"（rest）里——旧版 Go SDK 的 Put/Delete 从不读取 rest，
 // 新增这段不会让老客户端解析失败或崩溃，只是拿不到 reason（见
-// docs/BANLV-协议规范.md 的响应负载一节）。reason 为空时 reasonLen=0，行为退化为
+// docs/Kair-协议规范.md 的响应负载一节）。reason 为空时 reasonLen=0，行为退化为
 // 与 statusPayload 完全相同的字节。
 func droppedPayload(reason string) []byte {
 	const maxReasonLen = 4096 // 远大于任何校验错误信息的实际长度，纯粹是防御性上限
@@ -183,12 +183,12 @@ func droppedPayload(reason string) []byte {
 }
 
 // sendDropped 写回「被钩子按策略丢弃」响应，附带丢弃原因；保证每请求恰好一个响应。
-func sendDropped(req bannet.Request, reason string) {
+func sendDropped(req kairnet.Request, reason string) {
 	req.Conn().SendBuffMsg(proto.MsgRespErr, droppedPayload(reason))
 }
 
 // handlePut 处理 PUT 操作
-func (r *Router) handlePut(data []byte, request bannet.Request) {
+func (r *Router) handlePut(data []byte, request kairnet.Request) {
 	// 帧解析委托给 proto.DecodePutFrame（与 ingesthook.Filter 的 parsePut 共用
 	// 同一实现，见该函数注释）；此前这里与那边各自实现过一遍同一段二进制解析。
 	key, value, ok := proto.DecodePutFrame(data)
@@ -232,7 +232,7 @@ func (r *Router) handlePut(data []byte, request bannet.Request) {
 }
 
 // handleGet 处理 GET 操作
-func (r *Router) handleGet(data []byte, request bannet.Request) {
+func (r *Router) handleGet(data []byte, request kairnet.Request) {
 	key, ok := proto.DecodeKeyFrame(data)
 	if !ok {
 		return
@@ -278,7 +278,7 @@ func (r *Router) handleGet(data []byte, request bannet.Request) {
 }
 
 // handleDelete 处理 DELETE 操作
-func (r *Router) handleDelete(data []byte, request bannet.Request) {
+func (r *Router) handleDelete(data []byte, request kairnet.Request) {
 	key, ok := proto.DecodeKeyFrame(data)
 	if !ok {
 		return
@@ -312,7 +312,7 @@ func (r *Router) handleDelete(data []byte, request bannet.Request) {
 }
 
 // handleScan 处理 SCAN 边缘范围查询：解码范围+谓词，服务端筛选后只回传命中切片。
-func (r *Router) handleScan(data []byte, request bannet.Request) {
+func (r *Router) handleScan(data []byte, request kairnet.Request) {
 	req, err := proto.DecodeScanRequest(data)
 	if err != nil {
 		slog.Warn("scan request decode failed", "error", err)
@@ -327,7 +327,7 @@ func (r *Router) handleScan(data []byte, request bannet.Request) {
 }
 
 // PostHandle 后置处理
-func (r *Router) PostHandle(request bannet.Request) {
+func (r *Router) PostHandle(request kairnet.Request) {
 	if r.postHandleFunc != nil {
 		r.postHandleFunc(request)
 	}
@@ -337,10 +337,10 @@ func (r *Router) PostHandle(request bannet.Request) {
 // 不向客户端主动下发任何消息：这是纯请求-响应协议，连接建立时推送一条
 // 未经请求的问候会让客户端把它误读为下一个请求的响应，造成整条连接的
 // 响应错位（每条连接首个操作失败）。
-func (r *Router) OnConnStart(conn bannet.Conn) {}
+func (r *Router) OnConnStart(conn kairnet.Conn) {}
 
 // OnConnStop 连接关闭回调。同理不主动下发消息。
-func (r *Router) OnConnStop(conn bannet.Conn) {}
+func (r *Router) OnConnStop(conn kairnet.Conn) {}
 
 // FSM 获取 FSM 实例
 func (r *Router) FSM() *KVServer {

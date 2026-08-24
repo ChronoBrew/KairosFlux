@@ -325,7 +325,7 @@ const file_test_grpc_kv_proto_rawDesc = "" +
 	"\tKVService\x124\n" +
 	"\x03Put\x12\x15.test_grpc.PutRequest\x1a\x16.test_grpc.PutResponse\x124\n" +
 	"\x03Get\x12\x15.test_grpc.GetRequest\x1a\x16.test_grpc.GetResponse\x12=\n" +
-	"\x06Delete\x12\x18.test_grpc.DeleteRequest\x1a\x19.test_grpc.DeleteResponseB%Z#github.com/NeverENG/BanDB/test_grpcb\x06proto3"
+	"\x06Delete\x12\x18.test_grpc.DeleteRequest\x1a\x19.test_grpc.DeleteResponseB,Z*github.com/ChronoBrew/KairosFlux/test_grpcb\x06proto3"
 
 var (
 	file_test_grpc_kv_proto_rawDescOnce sync.Once

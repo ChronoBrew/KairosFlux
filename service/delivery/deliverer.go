@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/NeverENG/BanDB/internal/metrics"
-	"github.com/NeverENG/BanDB/service/delivery/offset"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/offset"
 )
 
 // sender 是 deliverer 的投递目标抽象：只需 Name/Send 两个方法。delivery.Sink 与

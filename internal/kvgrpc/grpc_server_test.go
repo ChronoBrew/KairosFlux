@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/service"
-	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/service"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
 )
 
 // newStandaloneKVServer 构造一个 standalone 模式（不启 Raft）的 KVServer，
@@ -106,7 +106,7 @@ func TestGRPCServer_NilFilterSkipsValidation(t *testing.T) {
 	}
 }
 
-// TestGRPCServer_PutRejectsOversizedValue 验证 gRPC Put 现在会经过与 bannet 入口
+// TestGRPCServer_PutRejectsOversizedValue 验证 gRPC Put 现在会经过与 kairnet 入口
 // 相同的 value 长度限制——这是清洗缺口修复后新增的行为。
 func TestGRPCServer_PutRejectsOversizedValue(t *testing.T) {
 	filter := ingesthook.NewFilter(nil, 4, false) // maxValueLen=4
@@ -151,7 +151,7 @@ func TestGRPCServer_PutRejectsSchemaViolation(t *testing.T) {
 }
 
 // TestGRPCServer_PutAcceptsValidQuoteAndAppliesRedaction 验证合法行情记录经 gRPC 写入
-// 成功，且脱敏字段（若配置）在落盘前被改写——脱敏逻辑与 bannet 入口共用同一个
+// 成功，且脱敏字段（若配置）在落盘前被改写——脱敏逻辑与 kairnet 入口共用同一个
 // Filter.Validate，行为应一致。
 func TestGRPCServer_PutAcceptsValidQuoteAndAppliesRedaction(t *testing.T) {
 	filter := ingesthook.NewFilter([]string{"analyst_note"}, 0, false)

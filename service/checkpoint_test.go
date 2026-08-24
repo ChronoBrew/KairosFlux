@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/config"
+	"github.com/ChronoBrew/KairosFlux/config"
 )
 
 // setupStandalone 配置一个 standalone KVServer，指定 memtable flush 阈值，返回实例与清理函数。

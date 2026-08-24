@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/service/delivery"
+	"github.com/ChronoBrew/KairosFlux/service/delivery"
 )
 
 // stubSink 是可控 sink：healthy 决定 Health()，err 决定 Send() 结果，calls 记投递次数。

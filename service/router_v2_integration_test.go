@@ -1,9 +1,9 @@
 package service
 
-// RouterV2（docs/rfc/BANLV-2.md §11）的端到端集成测试：起一个真实的
-// bannet.Server（与 cmd/ban-server 同样的接线：v1 Router 处理 PUT/GET/DEL、
+// RouterV2（docs/rfc/Kair-2.md §11）的端到端集成测试：起一个真实的
+// kairnet.Server（与 cmd/kairosflux-server 同样的接线：v1 Router 处理 PUT/GET/DEL、
 // RouterV2 处理 v2 帧），用一个手写的最小 v2 测试客户端（不经过任何生产
-// SDK，直接用 bannet/codec 与 bannet/negotiate 拼帧）驱动，覆盖：
+// SDK，直接用 kairnet/codec 与 kairnet/negotiate 拼帧）驱动，覆盖：
 //
 //  1. v1 客户端连新服务端零影响（RouterV2 的存在不改变 v1 路径）。
 //  2. v2 ack=every：逐帧即时响应。
@@ -25,15 +25,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/bannet/codec"
-	"github.com/NeverENG/BanDB/bannet/negotiate"
-	"github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/internal/metrics"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/ingesthook"
-	"github.com/NeverENG/BanDB/service/ingesthook/schema"
+	"github.com/ChronoBrew/KairosFlux/client"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
+	"github.com/ChronoBrew/KairosFlux/kairnet/negotiate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook/schema"
 )
 
 // startRouterV2TestServer 起一个真实服务端：v1 PUT/GET/DEL 路由 + RouterV2，
@@ -67,13 +67,13 @@ func startRouterV2TestServer(t *testing.T, windowN uint32) string {
 	router.SetPreHandle(filter.Handle)
 	routerV2 := NewRouterV2(kv, filter, windowN)
 
-	srv := bannet.NewServer()
+	srv := kairnet.NewServer()
 	srv.IP = host
 	srv.Port = port
 	srv.AddRouter(proto.MsgPut, router)
 	srv.AddRouter(proto.MsgGet, router)
 	srv.AddRouter(proto.MsgDelete, router)
-	srv.AddRouter(proto.MsgScan, router) // cmd/ban-server 生产接线的四个 v1 opcode 本测试服务端应悉数具备，之前缺 SCAN 纯属遗漏
+	srv.AddRouter(proto.MsgScan, router) // cmd/kairosflux-server 生产接线的四个 v1 opcode 本测试服务端应悉数具备，之前缺 SCAN 纯属遗漏
 	srv.AddRouterV2(routerV2)
 	srv.SetConnStartFunc(router.OnConnStart)
 	srv.SetConnStopFunc(router.OnConnStop)
@@ -98,7 +98,7 @@ func waitRouterV2ServerReady(t *testing.T, addr string) {
 }
 
 // v2Client 是本文件专用的最小 v2 测试客户端：不经过任何生产 SDK，直接用
-// bannet/codec 拼帧，只为测试驱动而存在。
+// kairnet/codec 拼帧，只为测试驱动而存在。
 type v2Client struct {
 	t    *testing.T
 	conn net.Conn

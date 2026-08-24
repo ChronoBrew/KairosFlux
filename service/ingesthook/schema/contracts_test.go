@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet/codec"
+	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
 )
 
 // contractsDir 是相对本测试文件所在包目录（service/ingesthook/schema/）到仓库
@@ -17,7 +17,7 @@ const contractsDir = "../../../contracts"
 // TestLoadContracts_QuoteContractLoadsAndMatchesTypeID 是"服务端启动时加载
 // 契约并强制校验"（方案 M1 任务 2）的加载路径本身的验收：真实的
 // contracts/quote.schema.json 必须能被 LoadContracts 无错解析，且它声明的
-// TypeID 必须与 bannet/codec.TypeQuote 一致——两个包故意不互相导入（schema 是
+// TypeID 必须与 kairnet/codec.TypeQuote 一致——两个包故意不互相导入（schema 是
 // 内容校验层，codec 是协议层），这条测试是防止两处手写数值悄悄漂移的唯一防线
 // （方案 §2.4 风险 2：schema 演化不能只靠约定）。
 func TestLoadContracts_QuoteContractLoadsAndMatchesTypeID(t *testing.T) {

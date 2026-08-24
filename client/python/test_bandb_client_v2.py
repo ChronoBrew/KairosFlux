@@ -1,10 +1,10 @@
-"""BANLV v2 协议向量测试 —— 加载 docs/banlv/vectors-v2.json（手工推导生成，
+"""Kair v2 协议向量测试 —— 加载 docs/kair/vectors-v2.json（手工推导生成，
 不是本仓库任何一侧的 v2 编解码实现自己生成的存档，见该文件顶部 _comment 的
 方法论说明），验证本 Python 客户端的 v2 编解码与手工黄金字节逐字节一致。
 
 与 test_bandb_client.py（v1 向量）并存不合并，对应 Go 侧
-bannet/vectors_v2_test.go（同样与 vectors_test.go 并存），见
-docs/rfc/BANLV-2.md §8 迁移方案第 4 条。
+kairnet/vectors_v2_test.go（同样与 vectors_test.go 并存），见
+docs/rfc/Kair-2.md §8 迁移方案第 4 条。
 
 运行（须在 client/python/ 目录下，保证 bandb_client 可被直接 import）：
     cd client/python && python3 -m unittest test_bandb_client_v2 -v
@@ -48,7 +48,7 @@ from bandb_client import (
 )
 
 _VECTORS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "docs", "banlv", "vectors-v2.json"
+    os.path.dirname(__file__), "..", "..", "docs", "kair", "vectors-v2.json"
 )
 
 
@@ -277,7 +277,7 @@ class WindowStatByeVectorTests(unittest.TestCase):
 
 class NegotiateClientTests(unittest.TestCase):
     """negotiate_client() 的行为测试——对应 Go 侧
-    bannet/negotiate/negotiate_test.go 的同名场景。用 socket.socketpair()
+    kairnet/negotiate/negotiate_test.go 的同名场景。用 socket.socketpair()
     构造一对已连接的本地 socket，不用起真实 TCP 服务器/线程：两端各自有
     内核缓冲区，"服务端"一侧只需 send()/不 send() 即可模拟各种响应模式，
     "客户端"一侧的 negotiate_client() 在真实的 socket 超时语义下运行。

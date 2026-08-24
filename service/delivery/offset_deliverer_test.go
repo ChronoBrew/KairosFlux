@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/service/delivery/offset"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/offset"
 )
 
 // recordingCommitter 是内存 map 实现的假 Committer，模拟持久化 offset 存储，

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 )
 
 // quotePrefix 是行情快照记录的 key 前缀约定：quote:<YYYY-MM-DD>:<代码>。
@@ -25,7 +25,7 @@ const quotePrefix = "quote:"
 const maxPctChange = 0.21
 
 // quoteTypeID 是 quote 类型的 v2 协议 TypeID，数值上必须与
-// bannet/codec.TypeQuote 一致——两个包不能互相导入（schema 是内容校验层，
+// kairnet/codec.TypeQuote 一致——两个包不能互相导入（schema 是内容校验层，
 // codec 是协议层，schema 反向依赖 codec 会把层次搭反），所以这个数值在两处
 // 各自声明，用 TestQuoteTypeIDMatchesCodecConstant（registry_test.go）做
 // 一致性锁定，防止其中一处改动时忘了同步另一处。
@@ -33,7 +33,7 @@ const quoteTypeID uint16 = 1
 
 func init() {
 	// 直接用 RegisterDescriptor 而不是 Register(prefix, validator)：quote 是
-	// 本仓库唯一在生产路径上真实使用 v2 `type` 字段分派的类型（BANLV-2 RFC
+	// 本仓库唯一在生产路径上真实使用 v2 `type` 字段分派的类型（Kair-2 RFC
 	// §3.2/§9），它的 TypeID 映射从进程启动就该生效，不应该依赖
 	// schema.LoadContracts 有没有被调用——服务端在没有 contracts/ 目录（如
 	// 测试环境、历史部署）时，quote 的 key 前缀校验与 TypeID 分派都必须继续

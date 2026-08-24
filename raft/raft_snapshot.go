@@ -4,7 +4,7 @@ package raft
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/NeverENG/BanDB/config"
+	"github.com/ChronoBrew/KairosFlux/config"
 	"log/slog"
 )
 

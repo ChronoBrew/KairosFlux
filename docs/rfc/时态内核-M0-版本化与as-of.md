@@ -1,11 +1,11 @@
 # RFC：时态内核 M0 —— 版本化写入、as-of 查询、自校验指纹
 
 状态：**接线完成**（`internal/temporal` 纯语义层 + storage/service/v2 opcode/
-ban-cli 全链路接线，见下方"接线（2026-08-24）"一节）。
+kairosflux-cli 全链路接线，见下方"接线（2026-08-24）"一节）。
 
 ## 目标
 
-让 BanDB 具备时态内核的三个地基能力：
+让 KairosFlux 具备时态内核的三个地基能力：
 
 1. **写不覆盖**：同一逻辑记录的每次写入都是不可变版本；
 2. **读按 as-of**：查询可以问“在某个时刻，系统当时知道什么”；
@@ -49,7 +49,7 @@ ban-cli 全链路接线，见下方"接线（2026-08-24）"一节）。
 - 不改现有 `quote:` schema 校验规则本身（`ValidateVersioned` 仍会跑它，只是
   跳过与版本化写入冲突的单调性启发式，见接线一节第 6 条）；
 - 新增四个 v2 opcode（`0x09`-`0x0C`），不复用/不改写任何既有 opcode 的语义；
-- `cmd/ban-server` 生产入口的接线（`service.NewRouterV2` 参数类型从
+- `cmd/kairosflux-server` 生产入口的接线（`service.NewRouterV2` 参数类型从
   `KVStore` 收紧为 `TemporalRawStore`）对生产/测试的现有调用点均透明——三处
   调用点传入的都已是 `*service.KVServer`，该类型接线后自动满足新接口，无需
   改动调用点本身。
@@ -60,7 +60,7 @@ ban-cli 全链路接线，见下方"接线（2026-08-24）"一节）。
   序、`Latest`/`AsOf` 语义（含未来写入不可见、同刻决胜）、指纹确定性/顺序
   无关/长度前缀无歧义、新增的 value/current 编解码 round-trip；
 - `go build ./...` / `go vet ./...` / `go test ./...` / `go test -race
-  ./internal/temporal/... ./service/... ./proto/... ./bannet/...` 四关独立
+  ./internal/temporal/... ./service/... ./proto/... ./kairnet/...` 四关独立
   退出码均为 0；
 - 同一逻辑键写 3 个版本：`GET`（v1 与 v2）透明返回最新、`GET_AS_OF` 只返回
   当时可见版本（`TestRouterV2_PutVersionedThenGetAsOfAndListVersions`、
@@ -73,7 +73,7 @@ ban-cli 全链路接线，见下方"接线（2026-08-24）"一节）。
 - v1 零回归：既有 `TestRouterV2_V1ClientUnaffected` 与全部 crosslang 向量
   测试（`client/python/crosslang_test.go`）改动前后行为不变，本次改动未触碰
   这些测试文件本身（除新增一行 SCAN 路由注册，纯新增能力不改变已有断言）；
-- `ban-cli put-versioned/get-as-of/list-versions/fingerprint` 四条新命令
+- `kairosflux-cli put-versioned/get-as-of/list-versions/fingerprint` 四条新命令
   对一个真实运行的 standalone 服务端手动跑通（含 GET 透明解析、as_of 早于/
   晚于全部写入、fingerprint 两次重放结果一致）。
 
@@ -139,9 +139,9 @@ RouterV2 的 GET 都经它）字面量未命中时，回退读 `:current` 指针
 两个方法，不是一个方法加个开关参数：调用方是谁、该不该看见内部键，类型
 签名上就是两件事。
 
-### 5. `REPLAY_FINGERPRINT` 做成服务端 opcode，`ban-cli` 是瘦客户端
+### 5. `REPLAY_FINGERPRINT` 做成服务端 opcode，`kairosflux-cli` 是瘦客户端
 
-没有做成"离线直接开库工具"（本仓库确有这类先例，见 `cmd/ban-ingest` 直接
+没有做成"离线直接开库工具"（本仓库确有这类先例，见 `cmd/kairosflux-ingest` 直接
 `storage.NewEngine`）：那要求没有其它进程同时持有同一份 LSM 数据目录，而
 这个自检的典型场景恰恰是"服务端正在跑，现在核对一下账本"，两个进程各自打
 开同一组 SSTable/WAL 是不安全的。服务端算、CLI 只转发展示，避免这个问题。
@@ -170,6 +170,6 @@ M0 视为可接受（管理/自检工具，非热路径），不解决属 M1+。
 1. schema registry 数据化（机器可读契约，含版本）；
 2. QuantScout 版本化写入迁移（快照/财报/筛选/推荐）；
 3. QuantBrew 侧 as-of 数据适配器；
-4. Python 客户端 v2 版本化写入 + as-of 读（本次只补了 Go 侧 `ban-cli` 瘦
+4. Python 客户端 v2 版本化写入 + as-of 读（本次只补了 Go 侧 `kairosflux-cli` 瘦
    客户端，`client/python` 未改动）；
 5. SCAN 的双时态语义重新设计（解析出当前值当作一行、bitemporal 查询）。

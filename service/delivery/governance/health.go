@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/NeverENG/BanDB/service/delivery"
+	"github.com/ChronoBrew/KairosFlux/service/delivery"
 )
 
 // StartHealthProbe 周期性读取每个 sink 的 Health() 并以 slog 打健康快照（骨架，观测用）。

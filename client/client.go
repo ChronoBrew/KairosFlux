@@ -1,9 +1,9 @@
-// Package client 是 BanDB 的 Go 客户端 SDK。
+// Package client 是 KairosFlux 的 Go 客户端 SDK。
 //
-// 它与 cmd/ban-cli 里的交互式演示客户端不同：后者是单连接、无超时、无重试的示例代码，
+// 它与 cmd/kairosflux-cli 里的交互式演示客户端不同：后者是单连接、无超时、无重试的示例代码，
 // 不可被引用（package main）。本包提供可引用的库，并补齐生产使用所必需的三件事：
 //
-//   - 连接池：BanNet 是严格的请求-响应协议，一条连接必须收到响应才能发下一帧，
+//   - 连接池：KairNet 是严格的请求-响应协议，一条连接必须收到响应才能发下一帧，
 //     故并发只能由多条连接提供；池化同时免去每次请求的 TCP 握手。
 //   - context：超时与取消经 context 传入，映射为连接的读写 deadline。
 //   - 有界重试：服务端在准入过载时专门回 overloaded 状态以示「可重试」。SDK 据此对可
@@ -35,8 +35,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // 默认参数。均可经 Options 覆盖。
@@ -91,7 +91,7 @@ func (o *Options) applyDefaults() {
 	}
 }
 
-// Client 是并发安全的 BanDB 客户端。可被多个 goroutine 共用，应作为长生命周期对象复用
+// Client 是并发安全的 KairosFlux 客户端。可被多个 goroutine 共用，应作为长生命周期对象复用
 // 而非每次请求新建——新建会丢掉连接池的全部收益。
 type Client struct {
 	opts Options

@@ -2,15 +2,15 @@ package proto
 
 import "encoding/binary"
 
-// BANLV v2 响应体编解码（docs/rfc/BANLV-2.md §10/§11.2.2/§11.2.3）。放在本包
-// 而不是 bannet/codec：与 put_frame.go/scan.go 同一个先例——codec 包只认
+// Kair v2 响应体编解码（docs/rfc/Kair-2.md §10/§11.2.2/§11.2.3）。放在本包
+// 而不是 kairnet/codec：与 put_frame.go/scan.go 同一个先例——codec 包只认
 // v2 帧envelope（14 字节头+裸负载字节），不认负载内部该怎么解释；
 // EncodeScanResponse 已经是"响应体的具体编码格式归 proto 包"的既有先例，
 // 本文件延续同一分层。
 
 // V2ErrPayload 编码 v2 ERR（opcode=0x81）响应负载：[code u16 LE]
 // [reasonLen u16 LE][reason]。code 是 §10 机读错误码（本阶段最小子集，见
-// bannet/codec.ErrCodeXxx），reason 是人读原因，两者都发（§10.2）。
+// kairnet/codec.ErrCodeXxx），reason 是人读原因，两者都发（§10.2）。
 func V2ErrPayload(code uint16, reason string) []byte {
 	buf := make([]byte, 4+len(reason))
 	binary.LittleEndian.PutUint16(buf[0:2], code)

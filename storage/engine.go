@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/NeverENG/BanDB/internal/credit"
-	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/internal/credit"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 )
 
 // Engine 是 LSM 存储引擎：它同时持有内存中的表与磁盘上的 SSTable 集合，并驱动二者

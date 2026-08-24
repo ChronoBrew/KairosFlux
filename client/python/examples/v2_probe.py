@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""v2_probe —— BANLV v2 帧编解码的跨语言联调驱动脚本。
+"""v2_probe —— Kair v2 帧编解码的跨语言联调驱动脚本。
 
-由 BanDB 仓库的 Go 测试（client/python/crosslang_test.go 的
+由 KairosFlux 仓库的 Go 测试（client/python/crosslang_test.go 的
 TestCrosslang_V2FrameCrossLanguage）以子进程方式调用，两个方向各验证一次：
 
   encode: 按参数构造一个 v2 帧，打印其十六进制到标准输出最后一行——
-          Go 侧用 bannet/codec.DataPackV2.UnPack 解析这段十六进制，断言
+          Go 侧用 kairnet/codec.DataPackV2.UnPack 解析这段十六进制，断言
           解出的字段与参数一致（验证"Python 编码的 v2 帧 Go 能解"）。
   decode: 读入一个十六进制 v2 帧（Go 侧用 codec.DataPackV2.Pack 生成），
           解析后把字段打印成 "opcode=.. type=.. corr_id=.. data_hex=.."

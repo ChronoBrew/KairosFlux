@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS default.quote_snapshot
     -- 误按"股"消费手数据）的账务/回测错账，且不会报错，只会悄悄算错。
     volume      Float64,
     prev_close  Nullable(Float64),          -- 可选：无昨收（首个交易日/复牌）时为 NULL
-    _key        String,                     -- 原始 BanDB key（quote:<date>:<code>），仅供审计，不是去重键
+    _key        String,                     -- 原始 KairosFlux key（quote:<date>:<code>），仅供审计，不是去重键
     _ingested_at DateTime DEFAULT now()     -- 落库时间，供运维排查投递延迟
 )
 ENGINE = ReplacingMergeTree
@@ -32,7 +32,7 @@ ORDER BY (code, date)                        -- 去重键：同一 (code, date) 
                                               -- 查询侧如需强一致去重（merge 尚未发生前），
                                               -- 用 `SELECT ... FINAL` 或 argMax(col, _ingested_at)。
 PARTITION BY toYYYYMM(date)                  -- 按月分区：quote:<日期>:<代码> 的 key 布局
-                                              -- 令同一天的写入在 BanDB 侧连续，这里按月分区
+                                              -- 令同一天的写入在 KairosFlux 侧连续，这里按月分区
                                               -- 是常见的 ClickHouse 时间序列约定，二者互不冲突。
 SETTINGS index_granularity = 8192;
 ```
@@ -41,7 +41,7 @@ SETTINGS index_granularity = 8192;
 必填字段齐全、价格 `>0`、`volume>=0`、OHLC 一致、涨跌幅在 ±21% 以内（阈值取
 21% 而非更常见的 20%，是为了容纳创业板/科创板 ±20% 涨跌停在四舍五入到分后
 可能出现的 +20.0x% 边界值，见 `docs/iteration-2026-08-20-quantscout-realdata-fixes.md`
-的 D1 记录）——校验已经在 BanDB 落盘前做过一遍，这张表的约束更多是审计/回归用，
+的 D1 记录）——校验已经在 KairosFlux 落盘前做过一遍，这张表的约束更多是审计/回归用，
 不代表 ClickHouse 侧还要重新校验。
 
 ## 服务器内存调优（4GB 内存服务器）
@@ -56,7 +56,7 @@ ClickHouse 默认配置假设的是数十 GB 内存的机器，直接拿默认�
 <clickhouse>
     <!-- 服务端总内存硬顶：默认按物理内存的 90% 估算，在 4GB 机器上这个默认值
          太激进（几乎不给 OS/其它进程留余量）。显式设为 2GB，给 OS 页缓存、
-         BanDB 自身（如果同机部署）、以及内核其它开销留出另外一半。 -->
+         KairosFlux 自身（如果同机部署）、以及内核其它开销留出另外一半。 -->
     <max_server_memory_usage>2000000000</max_server_memory_usage>
 
     <!-- 标记缓存（mark cache）：默认 5GB，在 4GB 机器上比总内存还大，必须调低。

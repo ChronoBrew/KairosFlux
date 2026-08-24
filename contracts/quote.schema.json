@@ -2,7 +2,7 @@
   "type_id": 1,
   "name": "quote",
   "schema_version": 2,
-  "schema_version_note": "v1 归档（如 2026-08-17/08-18 的 QuantScout 快照）缺失 open 字段；v2 起 open 为必填。BanDB 的 QuoteSnapshot 校验器已经按 v2 强制要求 open——本字段只是把这条既有事实显式声明成可追溯的版本号，不是本次新增的校验行为。",
+  "schema_version_note": "v1 归档（如 2026-08-17/08-18 的 QuantScout 快照）缺失 open 字段；v2 起 open 为必填。KairosFlux 的 QuoteSnapshot 校验器已经按 v2 强制要求 open——本字段只是把这条既有事实显式声明成可追溯的版本号，不是本次新增的校验行为。",
   "key_prefix": "quote:",
   "key_layout": {
     "delimiter": ":",
@@ -13,8 +13,8 @@
     "key_field": ""
   },
   "producer": "QuantScout",
-  "consumers": ["BanDB", "QuantBrew"],
-  "pit_semantics": "交易日快照；quote_timestamp 字段反解出真实成交时点。BanDB 时态内核（M0）的写入时间即 as-of 时间，本类型不区分有效时间与写入时间（双时态统一查询是方案 M2+ 的范围，见 docs/rfc/时态内核-M0-版本化与as-of.md）。",
+  "consumers": ["KairosFlux", "QuantBrew"],
+  "pit_semantics": "交易日快照；quote_timestamp 字段反解出真实成交时点。KairosFlux 时态内核（M0）的写入时间即 as-of 时间，本类型不区分有效时间与写入时间（双时态统一查询是方案 M2+ 的范围，见 docs/rfc/时态内核-M0-版本化与as-of.md）。",
   "idempotency_key": ["date", "code"],
   "required_fields": ["code", "date", "open", "high", "low", "close", "volume"],
   "units": {

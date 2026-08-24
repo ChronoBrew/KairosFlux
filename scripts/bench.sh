@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# bench.sh — 清理旧数据后, 全新启动一个 BanDB 服务端并跑 benchmark, 结束后关停。
+# bench.sh — 清理旧数据后, 全新启动一个 KairosFlux 服务端并跑 benchmark, 结束后关停。
 #
 # 解决的问题: 直接对一个长期运行/复用数据目录的服务端压测, 会读到上一轮残留的
 # SSTable/WAL/Raft 状态(脏数据), 影响结果。本脚本每次都把服务端的数据落到一个
 # 受控且可被完全清空的目录, 保证每次压测都是干净状态。
 #
 # 用法:
-#   bash scripts/bench.sh [ban-bench 参数...]
+#   bash scripts/bench.sh [kairosflux-bench 参数...]
 #   PORT=8081 bash scripts/bench.sh -d 10s -c 16 -n 10000 -mode mixed
 #
-# 透传给 ban-bench 的常用参数: -d 时长  -c 并发  -n key数  -mode put|get|delete|mixed
+# 透传给 kairosflux-bench 的常用参数: -d 时长  -c 并发  -n key数  -mode put|get|delete|mixed
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,12 +36,12 @@ sed -e "s/\"Port\": [0-9][0-9]*/\"Port\": $PORT/" \
 
 # 3. 构建
 echo "[bench] building server & benchmark ..."
-go build -o "$REPO/bin/ban-server" ./cmd/ban-server
-go build -o "$REPO/bin/ban-bench" ./cmd/ban-bench
+go build -o "$REPO/bin/kairosflux-server" ./cmd/kairosflux-server
+go build -o "$REPO/bin/kairosflux-bench" ./cmd/kairosflux-bench
 
 # 4. 启动服务端(CWD=RUNDIR: 优先读 RUNDIR/config/config.json, 数据落入受控位置)
 echo "[bench] starting fresh server on :$PORT ..."
-( cd "$RUNDIR" && exec "$REPO/bin/ban-server" ) > "$SRVLOG" 2>&1 &
+( cd "$RUNDIR" && exec "$REPO/bin/kairosflux-server" ) > "$SRVLOG" 2>&1 &
 SRV_PID=$!
 cleanup() { kill "$SRV_PID" 2>/dev/null || true; }
 trap cleanup EXIT
@@ -79,7 +79,7 @@ fi
 # 6. 跑 benchmark(透传参数); 退出码即压测结果, 便于 CI 据此判定
 echo "[bench] running benchmark ..."
 set +e
-"$REPO/bin/ban-bench" -addr "127.0.0.1:$PORT" "$@"
+"$REPO/bin/kairosflux-bench" -addr "127.0.0.1:$PORT" "$@"
 rc=$?
 set -e
 exit "$rc"

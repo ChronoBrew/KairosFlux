@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/NeverENG/BanDB/predicate"
+	"github.com/ChronoBrew/KairosFlux/predicate"
 )
 
 func TestScanRequestRoundTrip(t *testing.T) {

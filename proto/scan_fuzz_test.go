@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/NeverENG/BanDB/predicate"
+	"github.com/ChronoBrew/KairosFlux/predicate"
 )
 
 // FuzzDecodeScanRequest 对 SCAN 请求解码跑随机字节。这是服务端在 Router.handleScan

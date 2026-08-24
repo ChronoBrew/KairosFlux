@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/NeverENG/BanDB/predicate"
+	"github.com/ChronoBrew/KairosFlux/predicate"
 )
 
 // SCAN 请求负载布局（小端）：

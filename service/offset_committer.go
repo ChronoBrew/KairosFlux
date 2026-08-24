@@ -1,6 +1,6 @@
 package service
 
-import "github.com/NeverENG/BanDB/service/delivery/offset"
+import "github.com/ChronoBrew/KairosFlux/service/delivery/offset"
 
 // offsetCommitter 把投递层 offset 子包的 Committer 适配到 KVServer 的写读路径：
 // Put 经 KVServer.Write（raft 模式经 Raft 日志强一致复制，standalone 经存储层 WAL），

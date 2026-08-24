@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/NeverENG/BanDB/service/delivery"
-	"github.com/NeverENG/BanDB/service/delivery/governance"
+	. "github.com/ChronoBrew/KairosFlux/service/delivery"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/governance"
 )
 
 // fileRecord 与 delivery.FileSink 内部未导出的同名类型形状一致（key/value 两个

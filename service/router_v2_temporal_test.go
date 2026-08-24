@@ -9,11 +9,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet/codec"
-	"github.com/NeverENG/BanDB/bannet/negotiate"
-	"github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
+	"github.com/ChronoBrew/KairosFlux/client"
+	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
+	"github.com/ChronoBrew/KairosFlux/kairnet/negotiate"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 func (c *v2Client) putVersioned(corrID uint32, key, value string) *codec.MessageV2 {

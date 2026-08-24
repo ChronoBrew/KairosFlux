@@ -1,16 +1,16 @@
-"""bandb_client —— BanDB 的 BANLV(自研 TLV) 协议最小 Python 客户端。
+"""bandb_client —— BanDB 的 Kair(自研 TLV) 协议最小 Python 客户端。
 
-定位：生产摄入的权威入口是 bannet（BANLV 协议），不是 gRPC ——见
-internal/kvgrpc 包注释与 docs/BANLV-协议规范.md 的说明。本客户端是
-BANLV 协议在 Python 侧的最小可用实现，供 QuantScout 这类 Python 上游
+定位：生产摄入的权威入口是 kairnet（Kair 协议），不是 gRPC ——见
+internal/kvgrpc 包注释与 docs/Kair-协议规范.md 的说明。本客户端是
+Kair 协议在 Python 侧的最小可用实现，供 QuantScout 这类 Python 上游
 直接写入行情快照，不依赖 protobuf 工具链。
 
-权威实现：BanDB 仓库的 bannet/（帧编解码）与 client/（Go SDK，请求/响应负载
+权威实现：BanDB 仓库的 kairnet/（帧编解码）与 client/（Go SDK，请求/响应负载
 格式）。本文件逐字段对照它们实现，每个函数的文档字符串标注对应的 Go 源码
-位置；协议本身的正式规范见 docs/BANLV-协议规范.md（含跨语言测试向量）。
+位置；协议本身的正式规范见 docs/Kair-协议规范.md（含跨语言测试向量）。
 
 刻意的最小范围（不做的事，与 Go SDK 的差异）：
-  - 无连接池：BANLV 是严格请求-响应协议，一条 socket 一次只能有一个在途请求；
+  - 无连接池：Kair 是严格请求-响应协议，一条 socket 一次只能有一个在途请求；
     需要并发时由调用方开多个 BanDBClient 实例。
   - 无自动重试：Go SDK 对 overloaded 等可重试错误做指数退避重试（见
     client/client.go 的 do()），本实现只把状态映射为异常，重试策略留给调用方。
@@ -44,7 +44,7 @@ STATUS_DROPPED = "dropped"
 STATUS_OVERLOADED = "overloaded"
 STATUS_NOTFOUND = "notfound"
 
-# 帧头固定 6 字节：dataLen(u32 LE) + idLen(u16 LE)。见 bannet/datapack.go
+# 帧头固定 6 字节：dataLen(u32 LE) + idLen(u16 LE)。见 kairnet/datapack.go
 # 的 DataPack.HeadLen/Pack/UnPack，以及 client/conn.go 的 frameHeadLen。
 _FRAME_HEAD_LEN = 6
 _HEAD_STRUCT = struct.Struct("<IH")  # dataLen u32 LE, idLen u16 LE
@@ -114,7 +114,7 @@ def _status_to_exception(status: str, rest: bytes = b"") -> "BanDBError | None":
 
 def parse_drop_reason(rest: bytes) -> str:
     """从 dropped 响应的剩余字节里解出丢弃原因：[reasonLen u16 LE][reason bytes]
-    （见 service/router.go 的 droppedPayload、docs/BANLV-协议规范.md 的响应负载
+    （见 service/router.go 的 droppedPayload、docs/Kair-协议规范.md 的响应负载
     一节）。老服务端未实现该字段、或字节格式不符时返回空字符串，不报错——是否
     携带 reason 是可选的协议扩展。对应 Go: client/conn.go 的 parseDropReason()。
     """
@@ -127,15 +127,15 @@ def parse_drop_reason(rest: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 帧编解码。对应 bannet/datapack.go（Pack/UnPack）与 client/conn.go（encodeFrame/
+# 帧编解码。对应 kairnet/datapack.go（Pack/UnPack）与 client/conn.go（encodeFrame/
 # roundTrip 的头部解析）。
 # ---------------------------------------------------------------------------
 
 
 def encode_frame(msg_id: str, data: bytes) -> bytes:
-    """按 BANLV 线格式编码一帧：[dataLen u32 LE][idLen u16 LE][id][data]。
+    """按 Kair 线格式编码一帧：[dataLen u32 LE][idLen u16 LE][id][data]。
 
-    对应 Go: client/conn.go 的 encodeFrame()，语义与 bannet/datapack.go 的
+    对应 Go: client/conn.go 的 encodeFrame()，语义与 kairnet/datapack.go 的
     DataPack.Pack() 一致（服务端用后者编码响应）。
     """
     id_bytes = msg_id.encode("ascii")
@@ -146,7 +146,7 @@ def encode_frame(msg_id: str, data: bytes) -> bytes:
 def decode_frame_header(head: bytes) -> Tuple[int, int]:
     """解析 6 字节定长帧头，返回 (dataLen, idLen)。
 
-    对应 Go: bannet/datapack.go 的 DataPack.UnPack()（服务端侧）与
+    对应 Go: kairnet/datapack.go 的 DataPack.UnPack()（服务端侧）与
     client/conn.go 的 roundTrip() 里对响应头的解析（客户端侧）。
     """
     if len(head) != _FRAME_HEAD_LEN:
@@ -280,7 +280,7 @@ class BanDBClient:
             raise err
 
     def put_many(self, items: Iterable[Tuple[bytes, bytes]]) -> None:
-        """批量写入：逐条循环调用 put()。BANLV 是严格请求-响应协议，单连接无法
+        """批量写入：逐条循环调用 put()。Kair 是严格请求-响应协议，单连接无法
         流水线，批量在协议层面就是循环——这与「批量」的直觉不同，但如实反映
         协议约束（Go SDK 用连接池做并发批量，本最小实现不做池化，见模块文档）。
         """
@@ -308,12 +308,12 @@ class BanDBClient:
 
 
 # ---------------------------------------------------------------------------
-# BANLV v2（docs/rfc/BANLV-2.md）。以下是纯新增区块，不改动上面 v1 的任何一行
+# Kair v2（docs/rfc/Kair-2.md）。以下是纯新增区块，不改动上面 v1 的任何一行
 # ——v1 是且仍是生产协议，v2 是本阶段追加的能力，两者在这个文件里完全独立。
 #
-# 权威实现对照：bannet/codec/v2.go（帧编解码）、bannet/negotiate/negotiate.go
-# （§5/§5.1 HELLO 协商）。跨语言测试向量见 docs/banlv/vectors-v2.json，Python
-# 侧测试见 test_bandb_client_v2.py（对应 Go 侧 bannet/vectors_v2_test.go）。
+# 权威实现对照：kairnet/codec/v2.go（帧编解码）、kairnet/negotiate/negotiate.go
+# （§5/§5.1 HELLO 协商）。跨语言测试向量见 docs/kair/vectors-v2.json，Python
+# 侧测试见 test_bandb_client_v2.py（对应 Go 侧 kairnet/vectors_v2_test.go）。
 # ---------------------------------------------------------------------------
 
 # --- 帧格式常量 (RFC §2/§3) ---------------------------------------------------
@@ -354,7 +354,7 @@ TYPE_UNSPECIFIED = 0  # 未声明类型，向后兼容默认值，退化为 v1 �
 TYPE_QUOTE = 1  # 对应 "quote:" 前缀校验器
 
 # 机读错误码（RFC §10，第二阶段最小可用子集）。对应 Go:
-# bannet/codec.ErrCodeXxx——两侧数值必须一致，否则 firstErrCode 在跨语言
+# kairnet/codec.ErrCodeXxx——两侧数值必须一致，否则 firstErrCode 在跨语言
 # 场景下失去意义。
 ERR_CODE_NONE = 0x0000
 ERR_CODE_MALFORMED_FRAME = 0x1001
@@ -476,7 +476,7 @@ def build_hello_response_v2() -> bytes:
 # MSG_HELLO 是 v1 帧格式里 HELLO 探测帧使用的 msgID 字符串——注意这与
 # OPCODE_HELLO(0x05) 是两回事：后者是 v2 原生帧格式下的 opcode 分派项，
 # 协商阶段客户端还不知道对端是否支持 v2，只能、也应该用 v1 格式探测
-# （见 encode_hello_probe_v2 与 docs/rfc/BANLV-2.md §5.1 的说明）。
+# （见 encode_hello_probe_v2 与 docs/rfc/Kair-2.md §5.1 的说明）。
 MSG_HELLO = "HELLO"
 
 
@@ -657,7 +657,7 @@ class ReconciliationError(BanDBError):
 
 
 class BanDBClientV2:
-    """BANLV v2 客户端：ack=window/none 两档批量写入 API（RFC §11.2.2/
+    """Kair v2 客户端：ack=window/none 两档批量写入 API（RFC §11.2.2/
     §11.2.3/§11.4）。ack=every 不需要专门的批量 API——每帧都有即时响应，
     与 v1 BanDBClient 心智模型相同，直接用 send_every_put()/recv_frame()
     即可。
@@ -684,7 +684,7 @@ class BanDBClientV2:
         version, ack = negotiate_client(self._sock, self._timeout, ack_pref)
         if version != SNIFF_V2:
             self.close()
-            raise ProtocolError(f"服务端未确认 BANLV v2（判定为 {version!r}）")
+            raise ProtocolError(f"服务端未确认 Kair v2（判定为 {version!r}）")
         self.ack = ack
         return ack
 

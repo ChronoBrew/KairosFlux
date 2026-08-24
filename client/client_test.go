@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service"
+	"github.com/ChronoBrew/KairosFlux/client"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service"
 )
 
-// startServer 在进程内起一个真实的 BanNet + KVServer（standalone，数据落临时目录），
+// startServer 在进程内起一个真实的 KairNet + KVServer（standalone，数据落临时目录），
 // 返回其监听地址。SDK 的测试对真实服务端而非桩，才能覆盖线格式与状态码契约。
 func startServer(t *testing.T) string {
 	t.Helper()
@@ -44,7 +44,7 @@ func startServer(t *testing.T) string {
 	kv := service.NewKVServer()
 	router := service.NewRouter(kv)
 
-	srv := bannet.NewServer()
+	srv := kairnet.NewServer()
 	srv.IP = host
 	srv.Port = port
 	srv.AddRouter(proto.MsgPut, router)
@@ -153,7 +153,7 @@ func TestEmptyValuePreserved(t *testing.T) {
 }
 
 // TestConcurrentUsage 多 goroutine 共用同一 Client：验证连接池的并发安全，
-// 并确认并发请求不会因共用连接而串话（BanNet 是严格请求-响应协议）。
+// 并确认并发请求不会因共用连接而串话（KairNet 是严格请求-响应协议）。
 // 配合 -race 运行。
 func TestConcurrentUsage(t *testing.T) {
 	c := newClient(t, startServer(t), func(o *client.Options) { o.PoolSize = 4 })

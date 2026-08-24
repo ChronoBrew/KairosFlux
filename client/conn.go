@@ -8,14 +8,14 @@ import (
 	"net"
 	"time"
 
-	"github.com/NeverENG/BanDB/proto"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
-// 线格式（与 pkg/proto 的包注释一致，服务端对应实现为 bannet.DataPack）：
+// 线格式（与 pkg/proto 的包注释一致，服务端对应实现为 kairnet.DataPack）：
 //
 //	帧: [dataLen u32 LE][idLen u16 LE][id bytes][data bytes]
 //
-// SDK 自行实现编解码而不导入 bannet：后者是服务端实现包，含监听、连接管理与 worker 池，
+// SDK 自行实现编解码而不导入 kairnet：后者是服务端实现包，含监听、连接管理与 worker 池，
 // 客户端不应把它们拖进依赖图。这份实现与服务端的一致性由 wire_compat_test.go 交叉校验，
 // 避免两侧各自演进而漂移。
 const frameHeadLen = 6
@@ -24,12 +24,12 @@ const frameHeadLen = 6
 // （服务端，或任何能在网络上冒充服务端的角色）声明的 u32，最大约 4.29GiB——不设
 // 上限的话，`make([]byte, dataLen)` 会在实际读到任何负载字节之前就按对端声称的
 // 长度分配内存，是 TLV 解析器的经典内存放大漏洞，服务端侧同一漏洞已在
-// bannet.Connection（hardMaxPackageSize）修过，这里是同一条协议在客户端侧的镜像
+// kairnet.Connection（hardMaxPackageSize）修过，这里是同一条协议在客户端侧的镜像
 // 攻击面：一个恶意或被攻陷的服务端只需回一个 6 字节头部就能让客户端尝试分配
 // 数 GiB。此值与服务端默认的 MaxPackageSize 数量级一致，属于合理的响应体量上限。
 const maxResponseFrameSize = 64 << 20 // 64MiB
 
-// conn 是一条到服务端的连接。BanNet 是严格的请求-响应协议：一条连接上必须
+// conn 是一条到服务端的连接。KairNet 是严格的请求-响应协议：一条连接上必须
 // 「发一帧、收一帧」后才能发下一帧，故 conn 不可被并发使用——并发由连接池提供。
 type conn struct {
 	nc net.Conn
@@ -130,7 +130,7 @@ func statusError(status string, rest []byte) error {
 
 // parseDropReason 从 dropped 响应的剩余字节里解出丢弃原因：
 // [reasonLen u16 LE][reason bytes]（见 service/router.go 的 droppedPayload、
-// docs/BANLV-协议规范.md 的响应负载一节）。老服务端未实现该字段、或字节格式
+// docs/Kair-协议规范.md 的响应负载一节）。老服务端未实现该字段、或字节格式
 // 不符时返回空字符串而不报错——这是可选的协议扩展，不应让老服务端的响应
 // 被判为协议错误。
 func parseDropReason(rest []byte) string {

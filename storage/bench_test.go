@@ -2,7 +2,7 @@ package storage_test
 
 import (
 	"fmt"
-	"github.com/NeverENG/BanDB/storage"
+	"github.com/ChronoBrew/KairosFlux/storage"
 	"testing"
 )
 

@@ -2,8 +2,8 @@ package service
 
 import (
 	"fmt"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/predicate"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/predicate"
 	"path/filepath"
 	"testing"
 	"time"

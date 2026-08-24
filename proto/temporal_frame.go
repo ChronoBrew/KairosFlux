@@ -2,7 +2,7 @@ package proto
 
 import "encoding/binary"
 
-// BANLV v2 时态内核新增 opcode（PUT_VERSIONED/GET_AS_OF/LIST_VERSIONS/
+// Kair v2 时态内核新增 opcode（PUT_VERSIONED/GET_AS_OF/LIST_VERSIONS/
 // REPLAY_FINGERPRINT，见 docs/rfc/时态内核-M0-版本化与as-of.md）的请求/响应
 // 负载编解码。放在 proto 包而非 service：与 put_frame.go/scan.go 同一先例——
 // codec 包只认 v2 帧 envelope，负载内部布局归 proto 包。
@@ -80,7 +80,7 @@ func EncodeListVersionsResponse(entries [][]byte) []byte {
 }
 
 // VersionEntryView 是 DecodeListVersionsResponse 解出的一条版本记录，供调用方
-// （ban-cli 等 v2 客户端）按字段读取，避免在调用点重复手写多返回值解构。
+// （kairosflux-cli 等 v2 客户端）按字段读取，避免在调用点重复手写多返回值解构。
 type VersionEntryView struct {
 	Seq        uint64
 	WriteNanos int64

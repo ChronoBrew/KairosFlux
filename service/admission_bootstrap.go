@@ -3,8 +3,8 @@ package service
 import (
 	"log/slog"
 
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/internal/admission"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/internal/admission"
 )
 
 // EnableAdmissionFromConfig 按配置在 router 上开启网关自适应准入（默认关闭直接返回）。

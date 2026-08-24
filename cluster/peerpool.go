@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	bandb "github.com/NeverENG/BanDB/client"
+	kairosflux "github.com/ChronoBrew/KairosFlux/client"
 )
 
 // peerMaxRetries 是转发到属主节点时的重试次数，取 0（不重试）。
@@ -18,27 +18,27 @@ const peerMaxRetries = -1 // client.Options 中负值表示不重试
 
 // PeerPool 维护到各 peer 节点的客户端，供分片转发复用。
 //
-// 每个 peer 一个 client.Client：BanNet 是请求-响应协议，一条连接必须收到响应才能发下
+// 每个 peer 一个 client.Client：KairNet 是请求-响应协议，一条连接必须收到响应才能发下
 // 一帧，故对同一 peer 的并发转发由 SDK 内部的连接池以多条连接承担，而非串行排队。
 type PeerPool struct {
 	mu      sync.Mutex
 	timeout time.Duration
-	peers   map[string]*bandb.Client
+	peers   map[string]*kairosflux.Client
 }
 
 // NewPeerPool 创建一个转发连接池。timeout 为每次拨号/请求的超时。
 func NewPeerPool(timeout time.Duration) *PeerPool {
-	return &PeerPool{timeout: timeout, peers: map[string]*bandb.Client{}}
+	return &PeerPool{timeout: timeout, peers: map[string]*kairosflux.Client{}}
 }
 
 // client 取（或惰性创建）到该 peer 的客户端。
-func (p *PeerPool) client(addr string) (*bandb.Client, error) {
+func (p *PeerPool) client(addr string) (*kairosflux.Client, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if c, ok := p.peers[addr]; ok {
 		return c, nil
 	}
-	c, err := bandb.New(bandb.Options{
+	c, err := kairosflux.New(kairosflux.Options{
 		Addrs:          []string{addr},
 		DialTimeout:    p.timeout,
 		RequestTimeout: p.timeout,
@@ -81,7 +81,7 @@ func (p *PeerPool) Get(addr string, key []byte) ([]byte, bool, error) {
 
 	value, err := c.Get(ctx, key)
 	switch {
-	case errors.Is(err, bandb.ErrKeyNotFound):
+	case errors.Is(err, kairosflux.ErrKeyNotFound):
 		return nil, false, nil
 	case err != nil:
 		return nil, false, err

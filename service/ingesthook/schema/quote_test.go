@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeverENG/BanDB/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 )
 
 // validQuote 返回一份通过全部校验的基线记录，测试用例只改动其中需要触发失败的字段。

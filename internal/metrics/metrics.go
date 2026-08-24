@@ -31,7 +31,7 @@ var (
 	OffsetCommits             atomic.Int64 // 投递游标 offset 提交次数
 	CircuitOpen               atomic.Int64 // 下游 sink 熔断器跳到 open 的次数
 	AdmissionShed             atomic.Int64 // 网关自适应准入拒绝（shed）的请求数
-	PanicsRecovered           atomic.Int64 // bannet 连接/请求处理路径捕获并恢复的 panic 次数（应恒为 0，非 0 说明有 bug）
+	PanicsRecovered           atomic.Int64 // kairnet 连接/请求处理路径捕获并恢复的 panic 次数（应恒为 0，非 0 说明有 bug）
 )
 
 // 仪表：当前瞬时值，由持有者注册回调，快照时实时读取。

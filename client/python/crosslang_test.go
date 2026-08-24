@@ -1,10 +1,10 @@
-// Package python_test 是 BANLV 协议的跨语言联调测试：起一个真实的 ban-server
-// （与 cmd/ban-server 同样的接线：KVServer + Router + ingesthook.Filter），
+// Package python_test 是 Kair 协议的跨语言联调测试：起一个真实的 kairosflux-server
+// （与 cmd/kairosflux-server 同样的接线：KVServer + Router + ingesthook.Filter），
 // 分别用 Go SDK（client 包）与本目录的 Python 客户端（bandb_client.py）对同一批
 // 场景发起写入，断言服务端对两者的行为完全一致——包括被 ingesthook 清洗拒绝的路径。
 //
-// 这是"gRPC 只是基准测试/对照用途，生产摄入走 bannet TLV(BANLV)"这一定位下，
-// BANLV 协议本身的验收核心：协议实现分裂成 Go/Python 两份，若不做跨语言联调，
+// 这是"gRPC 只是基准测试/对照用途，生产摄入走 kairnet TLV(Kair)"这一定位下，
+// Kair 协议本身的验收核心：协议实现分裂成 Go/Python 两份，若不做跨语言联调，
 // 两侧可能各自演进而在客户端看不见的地方悄悄分叉（如响应状态码语义、字段序）。
 //
 // 环境无 python3 时跳过（不阻塞 go test ./...），见 requirePython3。
@@ -27,13 +27,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/bannet/codec"
-	"github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service"
-	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/client"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
 )
 
 // requirePython3 在环境无 python3 时跳过测试——联调测试依赖外部解释器，
@@ -47,8 +47,8 @@ func requirePython3(t *testing.T) string {
 	return path
 }
 
-// startCrosslangServer 起一个真实的 BANLV 服务端：standalone 模式、数据落临时
-// 目录、挂载与 cmd/ban-server 一致的 ingesthook.Filter（含 quote: schema 校验，
+// startCrosslangServer 起一个真实的 Kair 服务端：standalone 模式、数据落临时
+// 目录、挂载与 cmd/kairosflux-server 一致的 ingesthook.Filter（含 quote: schema 校验，
 // 见 service/ingesthook/schema 包 init() 自注册）。maxValueLen=2048 用于制造
 // "oversized" 场景，与生产默认值（不限）不同，仅为测试需要。
 func startCrosslangServer(t *testing.T) string {
@@ -75,12 +75,12 @@ func startCrosslangServer(t *testing.T) string {
 	kv := service.NewKVServer()
 	router := service.NewRouter(kv)
 
-	// dropBackward=false：quote key 的末段是股票代码而非时间戳，与 cmd/ban-grpc-server
+	// dropBackward=false：quote key 的末段是股票代码而非时间戳，与 cmd/kairosflux-grpc-server
 	// 的构造理由相同（见 service/ingesthook.Filter.Validate 的注释）。
 	filter := ingesthook.NewFilter(nil, 2048, false)
 	router.SetPreHandle(filter.Handle)
 
-	srv := bannet.NewServer()
+	srv := kairnet.NewServer()
 	srv.IP = host
 	srv.Port = port
 	srv.AddRouter(proto.MsgPut, router)
@@ -109,7 +109,7 @@ func waitCrosslangServerReady(t *testing.T, addr string) {
 }
 
 // rawPutStatus 是 Go 侧的低级 PUT：绕过 client.Client（它总是编码正确的负载），
-// 直接用 bannet.DataPack 手工构造一帧发送，用于发出刻意畸形的 PUT 负载。
+// 直接用 kairnet.DataPack 手工构造一帧发送，用于发出刻意畸形的 PUT 负载。
 // 与 Python 侧 BanDBClient.raw_put 是同一场景的两种语言实现。
 func rawPutStatus(t *testing.T, addr string, payload []byte) string {
 	t.Helper()
@@ -121,7 +121,7 @@ func rawPutStatus(t *testing.T, addr string, payload []byte) string {
 	defer conn.Close()
 	conn.SetDeadline(time.Now().Add(3 * time.Second))
 
-	frame, err := bannet.NewDataPack().Pack(bannet.NewMessage(proto.MsgPut, payload))
+	frame, err := kairnet.NewDataPack().Pack(kairnet.NewMessage(proto.MsgPut, payload))
 	if err != nil {
 		t.Fatalf("Pack 失败: %v", err)
 	}
@@ -236,7 +236,7 @@ func TestCrosslang_GoAndPythonAgree(t *testing.T) {
 	}
 
 	// 畸形负载场景单独跑：Go 走 rawPut，Python 走 crosslang_probe.py 的
-	// malformed_lengths 分支，两者发送的是同一份字节（见 docs/banlv/vectors.json
+	// malformed_lengths 分支，两者发送的是同一份字节（见 docs/kair/vectors.json
 	// 的 put_request_malformed_lengths 向量）。
 	t.Run("malformed_lengths", func(t *testing.T) {
 		malformed := append(binary.LittleEndian.AppendUint32(nil, 100), binary.LittleEndian.AppendUint32(nil, 0)...)
@@ -273,7 +273,7 @@ func TestCrosslang_GoAndPythonAgree(t *testing.T) {
 	})
 }
 
-// TestCrosslang_V2FrameCrossLanguage 是 BANLV v2 帧编解码（docs/rfc/BANLV-2.md
+// TestCrosslang_V2FrameCrossLanguage 是 Kair v2 帧编解码（docs/rfc/Kair-2.md
 // §2/§3）的跨语言联调测试：不需要起服务端，只验证两侧的 v2 帧编解码本身
 // 互相兼容——这是 vectors-v2.json 静态向量比对之外的第二重证据（两侧各自
 // 读同一份 JSON 断言，理论上仍可能"两侧对同一份向量的理解方式恰好一致地
@@ -281,9 +281,9 @@ func TestCrosslang_GoAndPythonAgree(t *testing.T) {
 // 文件这个中间层）。
 //
 // 覆盖两个方向：
-//  1. Python 编码一帧 → Go 用 bannet/codec.DataPackV2.UnPack 解析，断言字段
+//  1. Python 编码一帧 → Go 用 kairnet/codec.DataPackV2.UnPack 解析，断言字段
 //     与构造参数一致（"Python 编的帧 Go 能解"）。
-//  2. Go 用 bannet/codec.DataPackV2.Pack 编码一帧 → Python 侧
+//  2. Go 用 kairnet/codec.DataPackV2.Pack 编码一帧 → Python 侧
 //     examples/v2_probe.py decode 解析，断言打印出的字段与 Go 的构造参数
 //     一致（"Go 编的帧 Python 能解"）。
 func TestCrosslang_V2FrameCrossLanguage(t *testing.T) {
@@ -353,8 +353,8 @@ func parseFrameHexLine(t *testing.T, out string) string {
 }
 
 // startCrosslangV2Server 起一个真实服务端：与 startCrosslangServer 一样的
-// v1 PUT/GET/DEL 路由（零影响），额外挂 service.RouterV2 处理 BANLV v2
-// 帧（RFC docs/rfc/BANLV-2.md §11）——本文件的 v2 跨语言联调测试用它验证
+// v1 PUT/GET/DEL 路由（零影响），额外挂 service.RouterV2 处理 Kair v2
+// 帧（RFC docs/rfc/Kair-2.md §11）——本文件的 v2 跨语言联调测试用它验证
 // Go 服务端确实能和一个独立的 Python 客户端实现（bandb_client.BanDBClientV2）
 // 就 ack=window/none 协议说通，不只是双方各自的单元测试自洽。
 func startCrosslangV2Server(t *testing.T, windowN uint32) string {
@@ -384,7 +384,7 @@ func startCrosslangV2Server(t *testing.T, windowN uint32) string {
 	router.SetPreHandle(filter.Handle)
 	routerV2 := service.NewRouterV2(kv, filter, windowN)
 
-	srv := bannet.NewServer()
+	srv := kairnet.NewServer()
 	srv.IP = host
 	srv.Port = port
 	srv.AddRouter(proto.MsgPut, router)
@@ -448,7 +448,7 @@ func mustAtoi(t *testing.T, m map[string]string, key string) int {
 	return n
 }
 
-// TestCrosslang_V2WindowBatchAndReconcile 是 BANLV v2 ack=window（RFC §11.2.2）
+// TestCrosslang_V2WindowBatchAndReconcile 是 Kair v2 ack=window（RFC §11.2.2）
 // 与 BYE 收尾（§11.4）的跨语言联调核心：Go 服务端 × Python 客户端
 // （bandb_client.BanDBClientV2），批量写入一批帧、显式 FLUSH、再 BYE，
 // 断言 Python 客户端解析出的 WINDOW_ACK/STAT_ACK 计数与实际写入条数一致。
@@ -485,7 +485,7 @@ func TestCrosslang_V2WindowBatchAndReconcile(t *testing.T) {
 	}
 }
 
-// TestCrosslang_V2NoneStatReconcile 是 BANLV v2 ack=none + STAT 对账
+// TestCrosslang_V2NoneStatReconcile 是 Kair v2 ack=none + STAT 对账
 // （RFC §11.2.3）的跨语言联调：Python 客户端写入一批帧（含人为注入的
 // schema 拒绝），调用 reconcile()（库内置对账，不提供绕开它的路径），
 // 断言 Go 服务端报告的 received 与 Python 本地发送计数一致、且

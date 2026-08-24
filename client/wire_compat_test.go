@@ -5,17 +5,17 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/proto"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // TestFrameEncodingMatchesServer 交叉校验 SDK 的帧编码与服务端实现逐字节一致。
 //
-// SDK 自行实现线格式而不导入 bannet（后者是服务端实现包，含监听、连接管理与 worker 池，
+// SDK 自行实现线格式而不导入 kairnet（后者是服务端实现包，含监听、连接管理与 worker 池，
 // 不应进入客户端依赖图）。代价是两份实现可能各自演进而漂移，本测试即为此设的护栏：
 // 一旦任一侧改动帧布局，这里立刻失败。
 //
-// 注意本测试位于包内（package client）而非 _test 外部包，故它引用 bannet 只影响测试
+// 注意本测试位于包内（package client）而非 _test 外部包，故它引用 kairnet 只影响测试
 // 二进制，不会成为 SDK 的对外依赖。
 func TestFrameEncodingMatchesServer(t *testing.T) {
 	cases := []struct {
@@ -30,12 +30,12 @@ func TestFrameEncodingMatchesServer(t *testing.T) {
 		{"较长 msgID", proto.MsgScan, bytes.Repeat([]byte("x"), 300)},
 	}
 
-	dp := bannet.NewDataPack()
+	dp := kairnet.NewDataPack()
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			mine := encodeFrame(tc.msgID, tc.data)
 
-			theirs, err := dp.Pack(bannet.NewMessage(tc.msgID, tc.data))
+			theirs, err := dp.Pack(kairnet.NewMessage(tc.msgID, tc.data))
 			if err != nil {
 				t.Fatalf("服务端 Pack 失败: %v", err)
 			}
@@ -49,7 +49,7 @@ func TestFrameEncodingMatchesServer(t *testing.T) {
 
 // TestFrameHeadLenMatchesServer 固定帧头长度常量与服务端一致。
 func TestFrameHeadLenMatchesServer(t *testing.T) {
-	if got, want := frameHeadLen, int(bannet.NewDataPack().HeadLen()); got != want {
+	if got, want := frameHeadLen, int(kairnet.NewDataPack().HeadLen()); got != want {
 		t.Fatalf("frameHeadLen = %d, 服务端 HeadLen = %d", got, want)
 	}
 }

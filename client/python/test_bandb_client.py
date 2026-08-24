@@ -1,8 +1,8 @@
-"""BANLV 协议向量测试 —— 加载 docs/banlv/vectors.json（由 bannet 权威 Go 实现生成，
-见 docs/BANLV-协议规范.md 附录），验证本 Python 客户端的编解码与 Go 侧逐字节一致。
+"""Kair 协议向量测试 —— 加载 docs/kair/vectors.json（由 kairnet 权威 Go 实现生成，
+见 docs/Kair-协议规范.md 附录），验证本 Python 客户端的编解码与 Go 侧逐字节一致。
 
 这是防止 Go/Python 两个实现悄悄分叉的锚点：Go 侧对应测试见
-bannet/vectors_test.go，两者读同一份 vectors.json。任何一侧改了编解码逻辑，
+kairnet/vectors_test.go，两者读同一份 vectors.json。任何一侧改了编解码逻辑，
 只要向量文件不变，测试就会在改错的那一侧失败。
 
 运行（须在 client/python/ 目录下，保证 bandb_client 可被直接 import）：
@@ -28,7 +28,7 @@ from bandb_client import (
 )
 
 _VECTORS_PATH = os.path.join(
-    os.path.dirname(__file__), "..", "..", "docs", "banlv", "vectors.json"
+    os.path.dirname(__file__), "..", "..", "docs", "kair", "vectors.json"
 )
 
 
@@ -95,8 +95,8 @@ class VectorTests(unittest.TestCase):
         self.assertEqual(status, "dropped")
 
     def test_resp_err_dropped_with_reason(self):
-        """BANLV v1.1 扩展向量：dropped 之后追加 reasonLen+reason（见
-        docs/BANLV-协议规范.md 3.4 节）。验证 parse_status 与 parse_drop_reason
+        """Kair v1.1 扩展向量：dropped 之后追加 reasonLen+reason（见
+        docs/Kair-协议规范.md 3.4 节）。验证 parse_status 与 parse_drop_reason
         联用能从这份 Go 权威生成的向量里还原出完整 reason 字符串。
         """
         v = self._vec("resp_err_dropped_with_reason")
@@ -137,7 +137,7 @@ class VectorTests(unittest.TestCase):
 
     def test_parse_drop_reason_roundtrip(self):
         """dropped 响应在 status 之后追加 [reasonLen u16 LE][reason]（见
-        service/router.go 的 droppedPayload、docs/BANLV-协议规范.md）。这里不依赖
+        service/router.go 的 droppedPayload、docs/Kair-协议规范.md）。这里不依赖
         vectors.json（该向量文件目前只覆盖不带 reason 的旧 dropped 响应），直接
         验证 parse_drop_reason 对新格式的解析。
         """

@@ -5,7 +5,7 @@
   "SSTablePath": "../../log",
   "Host": "127.0.0.1",
   "Port": 8080,
-  "Name": "BanDB",
+  "Name": "KairosFlux",
   "MaxConn": 100,
   "MaxPackageSize": 16777216,
   "WorkerPoolSize": 100,

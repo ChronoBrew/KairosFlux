@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/raft"
-	"github.com/NeverENG/BanDB/service/delivery"
-	"github.com/NeverENG/BanDB/service/delivery/governance"
-	"github.com/NeverENG/BanDB/service/delivery/offset"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/raft"
+	"github.com/ChronoBrew/KairosFlux/service/delivery"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/governance"
+	"github.com/ChronoBrew/KairosFlux/service/delivery/offset"
 )
 
 // deliveryTarget 是 newDeliverySink 的返回类型：Name+Send，与 delivery 包内部

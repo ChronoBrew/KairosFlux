@@ -4,8 +4,8 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/NeverENG/BanDB/internal/temporal"
-	"github.com/NeverENG/BanDB/proto"
+	"github.com/ChronoBrew/KairosFlux/internal/temporal"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // TemporalRawStore 是 TemporalStore 依赖的存储能力：在 KVStore（Write/Get，
@@ -94,7 +94,7 @@ func (s *TemporalStore) nextSeq(logical string) (uint64, error) {
 
 // PutVersioned 为 logical 写入一条新版本，返回分配到的 seq。writeNanos 由
 // 调用方给定（服务端 time.Now().UnixNano()，见 RouterV2.handlePutVersioned；
-// BanDB 不像 QuantBrew 回测内核那样要求确定性时钟，这里用真实时钟是本仓库
+// KairosFlux 不像 QuantBrew 回测内核那样要求确定性时钟，这里用真实时钟是本仓库
 // 既有惯例，见 storage/sstable_write.go 等处的 time.Now() 用法)。
 func (s *TemporalStore) PutVersioned(logical string, payload []byte, writeNanos int64) (uint64, error) {
 	lock := s.lockFor(logical)

@@ -6,13 +6,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/NeverENG/BanDB/config"
+	"github.com/ChronoBrew/KairosFlux/config"
 )
 
 // setupTemporalTest 起一个真实的 standalone KVServer（临时 WAL/SSTable 目录），
 // 供 TemporalStore 的单测直接读写底层存储，不经网络层。与
 // startRouterV2TestServer（service/router_v2_integration_test.go）同样的
-// standalone 接线方式，但不起 bannet.Server——这里只测 TemporalStore 本身的
+// standalone 接线方式，但不起 kairnet.Server——这里只测 TemporalStore 本身的
 // 业务逻辑，不需要协议层。
 func setupTemporalTest(t *testing.T) *KVServer {
 	t.Helper()

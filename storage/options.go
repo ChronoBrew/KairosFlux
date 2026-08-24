@@ -1,6 +1,6 @@
 package storage
 
-import "github.com/NeverENG/BanDB/config"
+import "github.com/ChronoBrew/KairosFlux/config"
 
 // Options 是存储引擎的全部可调参数，构造时一次性传入。
 //

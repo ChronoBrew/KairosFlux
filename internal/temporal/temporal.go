@@ -1,4 +1,4 @@
-// Package temporal 定义 BanDB 时态内核（M0）的版本化记录语义。
+// Package temporal 定义 KairosFlux 时态内核（M0）的版本化记录语义。
 //
 // 核心思想（M0）：
 //   - 一条逻辑记录用 logical key 标识，例如 "quote:2026-08-17:600000"。

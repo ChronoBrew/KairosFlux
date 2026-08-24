@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""v2_window_probe —— BANLV v2 ack=window/none 交互模式（RFC
-docs/rfc/BANLV-2.md §11）的跨语言联调驱动脚本。
+"""v2_window_probe —— Kair v2 ack=window/none 交互模式（RFC
+docs/rfc/Kair-2.md §11）的跨语言联调驱动脚本。
 
-由 BanDB 仓库的 Go 测试（client/python/crosslang_test.go 的
+由 KairosFlux 仓库的 Go 测试（client/python/crosslang_test.go 的
 TestCrosslang_V2WindowBatchAndReconcile/TestCrosslang_V2NoneStatReconcile）
 以子进程方式调用：用 Python 的 BanDBClientV2 连接一个真实的、由 Go 侧起的
-bannet.Server + service.RouterV2，批量写入、FLUSH/STAT/BYE，把结果打印成
+kairnet.Server + service.RouterV2，批量写入、FLUSH/STAT/BYE，把结果打印成
 "key=value"形式的行，供 Go 测试解析断言——验证的不是"两侧对同一份协议的
 理解方式恰好一致地错"，而是"Go 服务端真的按这份协议跟一个独立的 Python
 客户端实现说得通"。

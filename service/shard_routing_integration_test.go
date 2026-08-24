@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/NeverENG/BanDB/bannet"
-	bandb "github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/cluster"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/predicate"
-	"github.com/NeverENG/BanDB/proto"
+	kairosflux "github.com/ChronoBrew/KairosFlux/client"
+	"github.com/ChronoBrew/KairosFlux/cluster"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/predicate"
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // memKV 是隔离的内存 KV，用作每个节点的本地 store——从而在一个进程内起多节点、
@@ -60,8 +60,8 @@ func (s *memKV) has(key string) bool {
 	return ok
 }
 
-// TestShardRouting_MultiNode 在一个进程内起 3 个真实 BanNet 节点，验证：
-// 写入非本节点 key 会经 BanNet TCP 转发到属主、只落在属主的 store（数据分片）、
+// TestShardRouting_MultiNode 在一个进程内起 3 个真实 KairNet 节点，验证：
+// 写入非本节点 key 会经 KairNet TCP 转发到属主、只落在属主的 store（数据分片）、
 // 从任一节点都能读到（读转发）。
 func TestShardRouting_MultiNode(t *testing.T) {
 	peers := []string{"127.0.0.1:19311", "127.0.0.1:19312", "127.0.0.1:19313"}
@@ -76,7 +76,7 @@ func TestShardRouting_MultiNode(t *testing.T) {
 		pool := cluster.NewPeerPool(2 * time.Second)
 		router.SetRouting(placement, addr, pool)
 
-		srv := bannet.NewServer()
+		srv := kairnet.NewServer()
 		host, portStr, _ := net.SplitHostPort(addr)
 		port, _ := strconv.Atoi(portStr)
 		srv.IP = host
@@ -172,9 +172,9 @@ func indexOfOther(ss []string, a, b int) int {
 }
 
 // newTestClient 建一个指向 addr 的 SDK 客户端，随测试结束关闭。
-func newTestClient(t *testing.T, addr string) *bandb.Client {
+func newTestClient(t *testing.T, addr string) *kairosflux.Client {
 	t.Helper()
-	c, err := bandb.New(bandb.Options{
+	c, err := kairosflux.New(kairosflux.Options{
 		Addrs:          []string{addr},
 		DialTimeout:    2 * time.Second,
 		RequestTimeout: 2 * time.Second,

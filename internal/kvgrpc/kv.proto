@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package test_grpc;
 
-option go_package = "github.com/NeverENG/BanDB/internal/kvgrpc";
+option go_package = "github.com/ChronoBrew/KairosFlux/internal/kvgrpc";
 
 service KVService {
   rpc Put(PutRequest) returns (PutResponse);

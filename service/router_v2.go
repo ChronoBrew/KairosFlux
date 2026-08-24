@@ -6,18 +6,18 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/bannet/codec"
-	"github.com/NeverENG/BanDB/bannet/negotiate"
-	"github.com/NeverENG/BanDB/internal/metrics"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service/ingesthook"
-	"github.com/NeverENG/BanDB/storage"
+	"github.com/ChronoBrew/KairosFlux/internal/metrics"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
+	"github.com/ChronoBrew/KairosFlux/kairnet/negotiate"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/storage"
 )
 
-// RouterV2 是 BANLV v2（docs/rfc/BANLV-2.md）的业务处理器：单一 HandleV2
+// RouterV2 是 Kair v2（docs/rfc/Kair-2.md）的业务处理器：单一 HandleV2
 // 方法内部按 opcode switch（与 v1 Router.Handle 对 msgID switch 是同一写法），
-// 由 bannet.Server.AddRouterV2 注册。
+// 由 kairnet.Server.AddRouterV2 注册。
 //
 // 与 v1 Router 的两处刻意的范围收缩（本阶段明确不做，不是遗漏）：
 //   - 不支持 SetRouting 的分片转发能力——v2 本阶段的任务是 ack 三档协商/
@@ -25,9 +25,9 @@ import (
 //     对齐是后续阶段的工作，见 DEVELOPMENT.md。
 //   - 不接入 admission.Limiter 网关准入——理由同上。
 //
-// 并发模型：HandleV2 由 bannet.Server.onFrameV2 在该连接自己的 Reader
+// 并发模型：HandleV2 由 kairnet.Server.onFrameV2 在该连接自己的 Reader
 // goroutine 里同步调用（RFC §11.2.2"窗口内写帧严格按到达顺序处理"这条
-// 不变量的实现落点，见 bannet/server.go 的 onFrameV2 注释）——因此
+// 不变量的实现落点，见 kairnet/server.go 的 onFrameV2 注释）——因此
 // v2ConnState 不需要加锁：同一时刻只有这一个 goroutine 会读写它，这是
 // RFC §11.2.3 实现提醒里"是否需要锁"这个开放问题在本实现下的答案。
 type RouterV2 struct {
@@ -55,7 +55,7 @@ const DefaultV2WindowSafetyValveN = 1000
 // NewRouterV2 构造一个 RouterV2。filter 为 nil 时跳过 schema 校验；
 // windowSafetyValveN<=0 时退化为 DefaultV2WindowSafetyValveN。store 的类型从
 // KVStore 收紧为 TemporalRawStore（KVStore 的超集，多要求 ScanRaw）：生产唯一
-// 调用点（cmd/ban-server）与现有测试调用点都传入 *KVServer，*KVServer 已实现
+// 调用点（cmd/kairosflux-server）与现有测试调用点都传入 *KVServer，*KVServer 已实现
 // ScanRaw（见 service/fsm.go），故这一收紧不需要改动任何既有调用点。
 func NewRouterV2(store TemporalRawStore, filter *ingesthook.Filter, windowSafetyValveN uint32) *RouterV2 {
 	if windowSafetyValveN == 0 {
@@ -70,7 +70,7 @@ func NewRouterV2(store TemporalRawStore, filter *ingesthook.Filter, windowSafety
 }
 
 // v2ConnStatePropertyKey 是 v2ConnState 挂在 handler.Conn 属性袋上的 key。
-const v2ConnStatePropertyKey = "banlv.v2.connState"
+const v2ConnStatePropertyKey = "kair.v2.connState"
 
 // v2ConnState 是一条 v2 连接的窗口/累计计数状态（RFC §11.2.2/§11.2.3）。
 // 窗口态（windowXxx）只在 ack=window 时有意义；累计态（cumXxx）覆盖整条
@@ -92,7 +92,7 @@ type v2ConnState struct {
 	cumFirstErrReason string
 }
 
-func (r *RouterV2) connState(conn bannet.Conn) *v2ConnState {
+func (r *RouterV2) connState(conn kairnet.Conn) *v2ConnState {
 	if s, ok := conn.Property(v2ConnStatePropertyKey).(*v2ConnState); ok {
 		return s
 	}
@@ -101,15 +101,15 @@ func (r *RouterV2) connState(conn bannet.Conn) *v2ConnState {
 	return s
 }
 
-func (r *RouterV2) ackTier(conn bannet.Conn) negotiate.AckTier {
+func (r *RouterV2) ackTier(conn kairnet.Conn) negotiate.AckTier {
 	if ack, ok := conn.Property(negotiate.ConnPropertyAckTier).(negotiate.AckTier); ok {
 		return ack
 	}
 	return negotiate.AckEvery
 }
 
-// HandleV2 实现 bannet.HandlerV2：按 opcode 分派。
-func (r *RouterV2) HandleV2(req bannet.RequestV2) {
+// HandleV2 实现 kairnet.HandlerV2：按 opcode 分派。
+func (r *RouterV2) HandleV2(req kairnet.RequestV2) {
 	switch req.Opcode() {
 	case codec.OpcodePut, codec.OpcodeDel:
 		r.handleWrite(req)
@@ -142,7 +142,7 @@ func (r *RouterV2) HandleV2(req bannet.RequestV2) {
 // 关闭时收到 GET/SCAN，先按 §11.2.2 规则隐式关闭它（发 WINDOW_ACK），
 // 再正常处理这条读请求——保证同一连接上"写后立即读"不需要客户端先手动
 // FLUSH。ack=every/none 模式下没有"窗口"这个概念，不做任何事。
-func (r *RouterV2) maybeImplicitFlush(req bannet.RequestV2) {
+func (r *RouterV2) maybeImplicitFlush(req kairnet.RequestV2) {
 	if r.ackTier(req.Conn()) != negotiate.AckWindow {
 		return
 	}
@@ -156,7 +156,7 @@ func (r *RouterV2) maybeImplicitFlush(req bannet.RequestV2) {
 //   - every：与 v1 语义等价，逐帧回一个 OK/ERR。
 //   - window：不逐帧回应，累计进当前窗口，按 corr_id 变化/安全阀 N 关窗。
 //   - none：不逐帧回应，只累计连接级计数，无窗口概念。
-func (r *RouterV2) handleWrite(req bannet.RequestV2) {
+func (r *RouterV2) handleWrite(req kairnet.RequestV2) {
 	accepted, errCode, reason := r.applyWrite(req)
 
 	switch r.ackTier(req.Conn()) {
@@ -184,7 +184,7 @@ func (r *RouterV2) handleWrite(req bannet.RequestV2) {
 // 的）"，若把畸形帧排除在 received 之外，ack=none 的 STAT 对账会把"网络层
 // 确实收到了字节、但帧本身不合法"这类问题永久排除在诊断范围之外，与
 // §11.2.3 强调的诊断粒度设计意图相悖。
-func (r *RouterV2) applyWrite(req bannet.RequestV2) (accepted bool, errCode uint16, reason string) {
+func (r *RouterV2) applyWrite(req kairnet.RequestV2) (accepted bool, errCode uint16, reason string) {
 	data := req.Data()
 
 	if req.Opcode() == codec.OpcodeDel {
@@ -215,7 +215,7 @@ func (r *RouterV2) applyWrite(req bannet.RequestV2) (accepted bool, errCode uint
 
 	if r.filter != nil {
 		// ValidateForType（M1）：req.Type()==0（未声明类型）与此前的 Validate 完全
-		// 等价，覆盖今天全部生产流量；非零时按声明的 TypeID 精确分派（BANLV-2 RFC
+		// 等价，覆盖今天全部生产流量；非零时按声明的 TypeID 精确分派（Kair-2 RFC
 		// §9.3），见 Filter.ValidateForType 的文档。
 		newValue, _, result, code, reason := r.filter.ValidateForType(req.Type(), key, value)
 		if result == ingesthook.ResultDrop {
@@ -250,7 +250,7 @@ func (r *RouterV2) applyWrite(req bannet.RequestV2) (accepted bool, errCode uint
 // RFC §11.2.2 的窗口边界规则：corr_id 变化则先隐式关闭旧窗口再开新窗口，
 // 计数达到安全阀 N 则关闭当前窗口。同时镜像写入连接级累计计数——BYE 的
 // 隐式 STAT 摘要（§11.4）需要它，无论窗口在那一刻是开是关。
-func (r *RouterV2) recordIntoWindow(req bannet.RequestV2, accepted bool, errCode uint16, reason string) {
+func (r *RouterV2) recordIntoWindow(req kairnet.RequestV2, accepted bool, errCode uint16, reason string) {
 	conn := req.Conn()
 	state := r.connState(conn)
 
@@ -282,7 +282,7 @@ func (r *RouterV2) recordIntoWindow(req bannet.RequestV2, accepted bool, errCode
 
 // closeWindow 关闭当前打开的窗口并发出 WINDOW_ACK（RFC §11.2.2），随后把
 // 窗口态清空为"未打开"。调用前必须已确认 state.windowOpen==true。
-func (r *RouterV2) closeWindow(conn bannet.Conn, state *v2ConnState) {
+func (r *RouterV2) closeWindow(conn kairnet.Conn, state *v2ConnState) {
 	body := proto.V2AckBody(state.windowCorrID, state.windowReceived, state.windowAccepted,
 		state.windowRejected, state.windowFirstErrCode, state.windowFirstErrReason)
 	r.sendV2(conn, codec.OpcodeWindowAck, codec.TypeUnspecified, state.windowCorrID, body)
@@ -291,7 +291,7 @@ func (r *RouterV2) closeWindow(conn bannet.Conn, state *v2ConnState) {
 
 // recordCumulative 把一次写结果计入连接级累计计数（ack=none 专用：没有
 // 窗口概念，每帧独立累计，不发任何响应）。
-func (r *RouterV2) recordCumulative(conn bannet.Conn, accepted bool, errCode uint16, reason string) {
+func (r *RouterV2) recordCumulative(conn kairnet.Conn, accepted bool, errCode uint16, reason string) {
 	state := r.connState(conn)
 	r.recordCumulativeOnly(state, accepted, errCode, reason)
 }
@@ -310,7 +310,7 @@ func (r *RouterV2) recordCumulativeOnly(state *v2ConnState, accepted bool, errCo
 	// 是三个计数器唯一的写入点这一事实保证成立，这里加一道防御性断言，
 	// 若被打破说明本文件自身的记账逻辑有 bug（不是外部输入能触发的）。
 	if state.cumReceived != state.cumAccepted+state.cumRejected {
-		slog.Error("banNet v2 accounting invariant violated",
+		slog.Error("kairnet v2 accounting invariant violated",
 			"received", state.cumReceived, "accepted", state.cumAccepted, "rejected", state.cumRejected)
 	}
 }
@@ -321,7 +321,7 @@ func (r *RouterV2) recordCumulativeOnly(state *v2ConnState, accepted bool, errCo
 // 忽略这次 FLUSH。非 window 模式（every/none）下 FLUSH 没有意义，同样回一个
 // 全零 WINDOW_ACK，不报错——协议未对"档位不匹配的控制帧"定义拒绝语义，
 // 静默接受空响应比断连接更符合"读多写少场景，宽容优先"的取向。
-func (r *RouterV2) handleFlush(req bannet.RequestV2) {
+func (r *RouterV2) handleFlush(req kairnet.RequestV2) {
 	conn := req.Conn()
 	if r.ackTier(conn) == negotiate.AckWindow {
 		state := r.connState(conn)
@@ -337,7 +337,7 @@ func (r *RouterV2) handleFlush(req bannet.RequestV2) {
 // handleStat 处理 STAT（opcode 0x08，RFC §11.2.3）：回传连接自建立以来的
 // 累计「接收/接受/拒绝」计数，corr_id 取 STAT 请求帧本身的 corr_id
 // （普通请求-响应关联，不是窗口分组）。非破坏性：不清零、不影响后续计数。
-func (r *RouterV2) handleStat(req bannet.RequestV2) {
+func (r *RouterV2) handleStat(req kairnet.RequestV2) {
 	state := r.connState(req.Conn())
 	body := proto.V2AckBody(req.CorrID(), state.cumReceived, state.cumAccepted,
 		state.cumRejected, state.cumFirstErrCode, state.cumFirstErrReason)
@@ -354,7 +354,7 @@ func (r *RouterV2) handleStat(req bannet.RequestV2) {
 //     这一步的 corr_id 应该是什么（STAT_ACK 一节描述的是"STAT 请求触发"
 //     的普通场景），这里选择"触发它的那一帧"这个最自然的读法，记入交付
 //     报告的偏差清单。
-func (r *RouterV2) handleBye(req bannet.RequestV2) {
+func (r *RouterV2) handleBye(req kairnet.RequestV2) {
 	conn := req.Conn()
 	ack := r.ackTier(conn)
 	if ack != negotiate.AckWindow && ack != negotiate.AckNone {
@@ -376,7 +376,7 @@ func (r *RouterV2) handleBye(req bannet.RequestV2) {
 // value 本身（§4 结构化响应体细节本轮不定稿，见 RFC，本阶段选择最小可用
 // 编码：value 就是负载，不额外包一层状态字段——opcode 本身已经区分了
 // 成功/失败）。
-func (r *RouterV2) handleGet(req bannet.RequestV2) {
+func (r *RouterV2) handleGet(req kairnet.RequestV2) {
 	key, ok := proto.DecodeKeyFrame(req.Data())
 	if !ok {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
@@ -397,7 +397,7 @@ func (r *RouterV2) handleGet(req bannet.RequestV2) {
 
 // handleScan 处理 SCAN：复用 proto.EncodeScanResponse 的条目编码（去掉 v1
 // 特有的 status 字符串前缀，opcode 本身已经承担这个角色）。
-func (r *RouterV2) handleScan(req bannet.RequestV2) {
+func (r *RouterV2) handleScan(req kairnet.RequestV2) {
 	sreq, err := proto.DecodeScanRequest(req.Data())
 	if err != nil {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
@@ -421,7 +421,7 @@ func (r *RouterV2) handleScan(req bannet.RequestV2) {
 // 不参与 §11.2.2 的 ack 三档窗口/累计记账（见 codec.OpcodePutVersioned 文档），
 // 总是立即响应：OK 负载 = 分配到的 seq（[u64 LE] 8 字节），供调用方确认/
 // 记录这次写对应的版本号；ERR 负载沿用既有 V2ErrPayload 结构。
-func (r *RouterV2) handlePutVersioned(req bannet.RequestV2) {
+func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
 	key, value, ok := proto.DecodePutFrame(req.Data())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
@@ -463,7 +463,7 @@ func (r *RouterV2) handlePutVersioned(req bannet.RequestV2) {
 // 纳秒时间戳），返回该时刻可见的最新版本（temporal.AsOf 语义：绝不返回未来
 // 写入）。找不到（该逻辑键从未被版本化写过，或 as_of 早于其首次写入）与 v1/
 // v2 GET 对齐，回 ERR reason="notfound"（不是协议错误，是"确实没有"）。
-func (r *RouterV2) handleGetAsOf(req bannet.RequestV2) {
+func (r *RouterV2) handleGetAsOf(req kairnet.RequestV2) {
 	key, asOfNanos, ok := proto.DecodeAsOfFrame(req.Data())
 	if !ok {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
@@ -486,7 +486,7 @@ func (r *RouterV2) handleGetAsOf(req bannet.RequestV2) {
 // 逻辑键，与 GET/DELETE 共用同一帧格式）。返回该逻辑键全部版本，按 seq 升序；
 // 没有任何版本是合法结果（OK，count=0），不是 ERR——"从未写过"与"请求本身
 // 出错"是两件事，不应共用同一个错误响应通道。
-func (r *RouterV2) handleListVersions(req bannet.RequestV2) {
+func (r *RouterV2) handleListVersions(req kairnet.RequestV2) {
 	key, ok := proto.DecodeKeyFrame(req.Data())
 	if !ok {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
@@ -510,7 +510,7 @@ func (r *RouterV2) handleListVersions(req bannet.RequestV2) {
 // 复用同一帧格式，但字段含义不同，故不共用同一个"key"命名的文档措辞，见
 // TemporalStore.ReplayFingerprint 的文档）。对前缀下每个逻辑键做重放对账，
 // 返回一致性摘要——这是验收三问第 2 问"账本可重放指纹一致"的可执行入口。
-func (r *RouterV2) handleReplayFingerprint(req bannet.RequestV2) {
+func (r *RouterV2) handleReplayFingerprint(req kairnet.RequestV2) {
 	prefix, ok := proto.DecodeKeyFrame(req.Data())
 	if !ok {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
@@ -526,22 +526,22 @@ func (r *RouterV2) handleReplayFingerprint(req bannet.RequestV2) {
 	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
 }
 
-func (r *RouterV2) sendOK(conn bannet.Conn, typ uint16, corrID uint32, payload []byte) {
+func (r *RouterV2) sendOK(conn kairnet.Conn, typ uint16, corrID uint32, payload []byte) {
 	r.sendV2(conn, codec.OpcodeOK, typ, corrID, payload)
 }
 
-func (r *RouterV2) sendErr(conn bannet.Conn, typ uint16, corrID uint32, errCode uint16, reason string) {
+func (r *RouterV2) sendErr(conn kairnet.Conn, typ uint16, corrID uint32, errCode uint16, reason string) {
 	r.sendV2(conn, codec.OpcodeErr, typ, corrID, proto.V2ErrPayload(errCode, reason))
 }
 
-func (r *RouterV2) sendV2(conn bannet.Conn, opcode uint8, typ uint16, corrID uint32, payload []byte) {
+func (r *RouterV2) sendV2(conn kairnet.Conn, opcode uint8, typ uint16, corrID uint32, payload []byte) {
 	msg := codec.NewMessageV2(codec.HeaderV2{Opcode: opcode, Type: typ, CorrID: corrID}, payload)
 	frame, err := codec.NewDataPackV2().Pack(msg)
 	if err != nil {
-		slog.Error("banNet v2 pack response failed", "error", err)
+		slog.Error("kairnet v2 pack response failed", "error", err)
 		return
 	}
 	if err := conn.SendRawMsg(frame); err != nil {
-		slog.Debug("banNet v2 send response failed", "connID", conn.ID(), "error", err)
+		slog.Debug("kairnet v2 send response failed", "connID", conn.ID(), "error", err)
 	}
 }

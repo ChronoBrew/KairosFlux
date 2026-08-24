@@ -3,7 +3,7 @@ package ingesthook
 import "testing"
 
 // FuzzParsePut 对 PUT 负载解析（keyLen+valueLen+key+value）跑随机字节。这是
-// ingesthook.Filter.Handle 在 bannet 帧解出的 data 上直接调用的函数——两个长度
+// ingesthook.Filter.Handle 在 kairnet 帧解出的 data 上直接调用的函数——两个长度
 // 字段都是攻击者可控的 u32，是判断"畸形帧"的第一道关卡，必须对任意输入都不 panic。
 func FuzzParsePut(f *testing.F) {
 	f.Add([]byte{})

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/NeverENG/BanDB/bannet"
-	"github.com/NeverENG/BanDB/client"
-	"github.com/NeverENG/BanDB/config"
-	"github.com/NeverENG/BanDB/proto"
-	"github.com/NeverENG/BanDB/service"
-	"github.com/NeverENG/BanDB/service/ingesthook"
+	"github.com/ChronoBrew/KairosFlux/client"
+	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service"
+	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
 )
 
 // startServerWithFilter 与 startServer 相同，但额外挂载一个 ingesthook.Filter——
@@ -43,7 +43,7 @@ func startServerWithFilter(t *testing.T, filter *ingesthook.Filter) string {
 	router := service.NewRouter(kv)
 	router.SetPreHandle(filter.Handle)
 
-	srv := bannet.NewServer()
+	srv := kairnet.NewServer()
 	srv.IP = host
 	srv.Port = port
 	srv.AddRouter(proto.MsgPut, router)

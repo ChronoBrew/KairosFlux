@@ -4,8 +4,8 @@
 
 ![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)
 ![Go Version](https://img.shields.io/badge/go-1.26%2B-00ADD8?logo=go)
-![Protocol](https://img.shields.io/badge/protocol-BANLV-orange)
-![Performance](https://img.shields.io/badge/BANLV%20vs%20gRPC-2.7x%20faster%20(GET)-brightgreen)
+![Protocol](https://img.shields.io/badge/protocol-Kair-orange)
+![Performance](https://img.shields.io/badge/Kair%20vs%20gRPC-2.7x%20faster%20(GET)-brightgreen)
 <!-- CI badge: add once a GitHub Actions workflow is wired up -->
 
 KairosFlux (formerly BanDB) is the temporal data-flow engine of **ChronoBrew**,
@@ -27,16 +27,19 @@ downstream at a pace the sink can handle.
 Single binary. No third-party dependencies beyond gRPC/Protobuf, which is
 only used for an optional benchmarking endpoint (see below).
 
-> This repository and its wire protocol are mid-rename: product name
-> `BanDB` → `KairosFlux`, protocol brand `BANLV` → `Kair`. The rename is
-> brand/doc only — frame format, opcodes, and cross-language test vector
-> bytes are unchanged, so nothing deployed today breaks. Code-layer paths
-> (`cmd/ban-server`, `bandb_client.py`, `BANDB_ADDR`) haven't moved yet;
-> every command below is real and runnable as written.
+> This repository has completed its product/protocol rename: `BanDB` →
+> `KairosFlux`, protocol brand `BANLV` → `Kair`. Module path, package name
+> (`bannet` → `kairnet`), `cmd/*` binaries, and docs have all moved. Frame
+> format, opcodes, and cross-language test vector bytes are unchanged
+> throughout, so nothing deployed today breaks. One file is deliberately
+> still named `client/python/bandb_client.py` — it's slated to be retired
+> outright in an upcoming cleanup rather than renamed in place, so its old
+> identifiers (`BanDBClient`, `BanDBError`, ...) are left alone for now.
+> Every command below is real and runnable as written.
 
 ## Features
 
-- *Native protocol* — BANLV, a zero-dependency binary TCP TLV protocol built for ingest.
+- *Native protocol* — Kair, a zero-dependency binary TCP TLV protocol built for ingest.
 - *Clean before buffering* — pluggable per-record-type schema validation; bad rows never reach the buffer.
 - *Durable buffer* — WAL-backed LSM engine, crash-safe, survives restarts.
 - *Reliable delivery* — at-least-once, with circuit breakers and health-aware routing across sinks.
@@ -50,16 +53,16 @@ Requires Go 1.26+.
 Start a server:
 
 ```bash
-cd cmd/ban-server && go run .
+cd cmd/kairosflux-server && go run .
 ```
 
 Write and read with the Go client (another terminal):
 
 ```console
-$ go run ./cmd/ban-cli -addr 127.0.0.1:8080 put order:1001 '{"amount":128,"ts":1754380800}'
+$ go run ./cmd/kairosflux-cli -addr 127.0.0.1:8080 put order:1001 '{"amount":128,"ts":1754380800}'
 已写入: order:1001 = {"amount":128,"ts":1754380800}
 
-$ go run ./cmd/ban-cli -addr 127.0.0.1:8080 get order:1001
+$ go run ./cmd/kairosflux-cli -addr 127.0.0.1:8080 get order:1001
 {"amount":128,"ts":1754380800}
 ```
 
@@ -113,14 +116,14 @@ sanity bound on daily price change. Adding a new record type is one
 
 ## Architecture
 
-`Ingest (BANLV / soon Kair) → Clean (schema) → Buffer (LSM) → Deliver (Sink)`
+`Ingest (Kair) → Clean (schema) → Buffer (LSM) → Deliver (Sink)`
 
 The current production sink writes to a local file; a ClickHouse sink with
 health-aware failover is available behind config (`DeliverySinkType`). Two
 subsystems — a Multi-Raft sharded KV and a dubbo-go-inspired delivery
 governance layer — are fully implemented and tested but excluded from the
 default build (`//go:build experimental`); build with `-tags experimental`
-to include them. Details: [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md).
+to include them. Details: [docs/Kair-协议规范.md](docs/Kair-协议规范.md).
 
 ## Temporal Core (built, not yet wired into the write path)
 
@@ -138,7 +141,7 @@ a shipped capability; see
 in the QuantBrew repo for the full four-milestone plan.
 
 The protocol side of this (RFC stage, zero code shipped — see
-[`docs/rfc/BANLV-2.md`](docs/rfc/BANLV-2.md), whose header literally says
+[`docs/rfc/Kair-2.md`](docs/rfc/Kair-2.md), whose header literally says
 "design document, no code changes yet") sketches what production usage
 actually needs: **write-heavy, read-light**. The real load is QuantScout's
 daily batch export of ~5000 rows, not interactive request/response, so v2
@@ -154,17 +157,17 @@ behavior.
 
 ## Performance
 
-In our benchmarks, the BANLV wire protocol is measurably faster than the
+In our benchmarks, the Kair wire protocol is measurably faster than the
 bundled gRPC endpoint on the read path (2.7x on GET at 50 concurrent
 clients; writes are roughly on par since both share the same fsync-bound
 persistence path). Reproduce with `bash scripts/bench.sh` and the commands
-in [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md).
+in [docs/Kair-协议规范.md](docs/Kair-协议规范.md).
 
 ## Robustness
 
 `go test -fuzz` against the 4 frame-parsing entry points ran for a combined
 300 seconds (5 minutes) and logged **~37.7 million executions with zero
-crashes** (`bannet.FuzzUnPack` 369,985 / `proto.FuzzDecodeScanRequest`
+crashes** (`kairnet.FuzzUnPack` 369,985 / `proto.FuzzDecodeScanRequest`
 15,108,651 / `proto.FuzzDecodeScanResponse` 12,065,019 /
 `ingesthook.FuzzParsePut` 10,203,443). Full write-up, including the
 malformed-frame test matrix (truncated frames, oversized length claims,
@@ -184,8 +187,8 @@ against the Python-side source.
 
 ## Documentation
 
-- [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md) — BANLV wire protocol spec.
-- [docs/banlv/vectors.json](docs/banlv/vectors.json) — cross-language test vectors (Go + Python).
+- [docs/Kair-协议规范.md](docs/Kair-协议规范.md) — Kair wire protocol spec.
+- [docs/kair/vectors.json](docs/kair/vectors.json) — cross-language test vectors (Go + Python).
 - `docs/iteration-*.md` — dated engineering notes on specific changes.
 
 ## License
