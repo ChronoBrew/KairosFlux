@@ -72,6 +72,7 @@ func startRouterV2TestServer(t *testing.T, windowN uint32) string {
 	srv.AddRouter(proto.MsgPut, router)
 	srv.AddRouter(proto.MsgGet, router)
 	srv.AddRouter(proto.MsgDelete, router)
+	srv.AddRouter(proto.MsgScan, router) // cmd/ban-server 生产接线的四个 v1 opcode 本测试服务端应悉数具备，之前缺 SCAN 纯属遗漏
 	srv.AddRouterV2(routerV2)
 	srv.SetConnStartFunc(router.OnConnStart)
 	srv.SetConnStopFunc(router.OnConnStop)

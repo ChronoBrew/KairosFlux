@@ -104,6 +104,29 @@ const (
 // service/router.go 的 sendDropped），故这里的字符串是面向调用方展示的，应
 // 保持简洁且不泄露不该暴露的内部细节。
 func (f *Filter) Validate(key, value []byte) (newValue []byte, changed bool, result Result, reason string) {
+	return f.validate(key, value, true)
+}
+
+// ValidateVersioned 是 Validate 的版本化写入变体（时态内核 M0，
+// docs/rfc/时态内核-M0-版本化与as-of.md）：与 Validate 做完全相同的检查
+// （value 长度上限/schema 校验/字段脱敏），唯独跳过下面 validate 里的时间戳
+// 单调性启发式。
+//
+// 原因：那条启发式的前提是"同一个 key 短时间内被反复写入即代表时钟异常/
+// 重放"（为无类型 IMU 设备流设计），而 PUT_VERSIONED 的正常工作方式恰恰是
+// 反复对同一个逻辑键写入新版本——本仓库已经因为对不匹配的 key 形状套用这个
+// 启发式吃过一次真实的亏（hasSchema 分支上方注释记录的 quote: 误杀事件），
+// PUT_VERSIONED 是第三种与它形状不匹配的写入模式，不应重复同一类错误。
+// PUT_VERSIONED 自己有权威的排序机制（temporal.Version.Seq/WriteNanos，由
+// 服务端分配），不依赖、也不应该被这条为完全不同场景写的启发式二次把关。
+func (f *Filter) ValidateVersioned(key, value []byte) (newValue []byte, changed bool, result Result, reason string) {
+	return f.validate(key, value, false)
+}
+
+// validate 是 Validate/ValidateVersioned 共享的实现；checkMonotonic 控制是否
+// 跑时间戳单调性启发式，两个方法名已经清楚表达各自适用场景，调用方不会看到
+// 这个内部参数。
+func (f *Filter) validate(key, value []byte, checkMonotonic bool) (newValue []byte, changed bool, result Result, reason string) {
 	if f.maxValueLen > 0 && len(value) > f.maxValueLen {
 		metrics.FramesDroppedOversized.Add(1)
 		return value, false, ResultDrop, "oversized_value"
@@ -126,7 +149,10 @@ func (f *Filter) Validate(key, value []byte) (newValue []byte, changed bool, res
 	// docs/iteration-2026-08-20-quantscout-realdata-fixes.md 的 D3 记录。
 	// schema 校验器自己如果需要单调性保证，应在校验规则里显式实现，不应依赖
 	// 这个为另一种数据形状设计的通用启发式。
-	if f.dropBackward && !hasSchema {
+	//
+	// checkMonotonic=false（ValidateVersioned）额外跳过：PUT_VERSIONED 反复
+	// 写同一逻辑键是设计如此，不是时钟异常，见 ValidateVersioned 的文档。
+	if checkMonotonic && f.dropBackward && !hasSchema {
 		if device, ts, ok := parseKey(key); ok {
 			f.mu.Lock()
 			last, seen := f.lastTS[device]

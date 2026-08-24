@@ -109,7 +109,7 @@ dubbo-go 的投递治理层——已完整实现且测试齐全，但默认不�
 （`//go:build experimental`），需要时用 `-tags experimental` 构建。详见
 [docs/BANLV-协议规范.md](docs/BANLV-协议规范.md)。
 
-## 时态内核（已实现，尚未接入写入路径）
+## 时态内核（已实现，已接入写入路径（M0：PUT_VERSIONED/GET_AS_OF/REPLAY_FINGERPRINT，2026-08-24））
 
 `internal/temporal` 实现了一个"AI 原生"时序引擎需要的语义：写入永不覆盖
 （每次写产生一个不可变新版本）、`as_of(t)` 返回写入时间 ≤ t 的最新版本、

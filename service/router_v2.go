@@ -1,8 +1,10 @@
 package service
 
 import (
+	"encoding/binary"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/NeverENG/BanDB/bannet"
 	"github.com/NeverENG/BanDB/bannet/codec"
@@ -29,7 +31,11 @@ import (
 // v2ConnState 不需要加锁：同一时刻只有这一个 goroutine 会读写它，这是
 // RFC §11.2.3 实现提醒里"是否需要锁"这个开放问题在本实现下的答案。
 type RouterV2 struct {
-	store KVStore
+	store TemporalRawStore
+	// temporal 是时态内核 M0 接线（PUT_VERSIONED/GET_AS_OF/LIST_VERSIONS/
+	// REPLAY_FINGERPRINT）的业务实现，构造时基于同一个 store 建立——版本化
+	// 数据与 v1/v2 的普通 PUT/GET 数据共享同一份存储，不是另开一份。
+	temporal *TemporalStore
 	// filter 可为 nil：不做 schema 校验，PUT 只要帧本身能解出 key/value
 	// 就一律 accepted（与 v1 在没有配置 ingesthook.Filter 时的行为对称）。
 	filter *ingesthook.Filter
@@ -47,12 +53,20 @@ type RouterV2 struct {
 const DefaultV2WindowSafetyValveN = 1000
 
 // NewRouterV2 构造一个 RouterV2。filter 为 nil 时跳过 schema 校验；
-// windowSafetyValveN<=0 时退化为 DefaultV2WindowSafetyValveN。
-func NewRouterV2(store KVStore, filter *ingesthook.Filter, windowSafetyValveN uint32) *RouterV2 {
+// windowSafetyValveN<=0 时退化为 DefaultV2WindowSafetyValveN。store 的类型从
+// KVStore 收紧为 TemporalRawStore（KVStore 的超集，多要求 ScanRaw）：生产唯一
+// 调用点（cmd/ban-server）与现有测试调用点都传入 *KVServer，*KVServer 已实现
+// ScanRaw（见 service/fsm.go），故这一收紧不需要改动任何既有调用点。
+func NewRouterV2(store TemporalRawStore, filter *ingesthook.Filter, windowSafetyValveN uint32) *RouterV2 {
 	if windowSafetyValveN == 0 {
 		windowSafetyValveN = DefaultV2WindowSafetyValveN
 	}
-	return &RouterV2{store: store, filter: filter, windowSafetyValveN: windowSafetyValveN}
+	return &RouterV2{
+		store:              store,
+		temporal:           NewTemporalStore(store),
+		filter:             filter,
+		windowSafetyValveN: windowSafetyValveN,
+	}
 }
 
 // v2ConnStatePropertyKey 是 v2ConnState 挂在 handler.Conn 属性袋上的 key。
@@ -111,6 +125,14 @@ func (r *RouterV2) HandleV2(req bannet.RequestV2) {
 		r.handleStat(req)
 	case codec.OpcodeBye:
 		r.handleBye(req)
+	case codec.OpcodePutVersioned:
+		r.handlePutVersioned(req)
+	case codec.OpcodeGetAsOf:
+		r.handleGetAsOf(req)
+	case codec.OpcodeListVersions:
+		r.handleListVersions(req)
+	case codec.OpcodeReplayFingerprint:
+		r.handleReplayFingerprint(req)
 	default:
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "unknown opcode")
 	}
@@ -373,6 +395,116 @@ func (r *RouterV2) handleScan(req bannet.RequestV2) {
 	// status 之后的 count+entries 部分，opcode=OK 已经表达了"成功"。
 	full := proto.EncodeScanResponse(proto.StatusOK, entries)
 	body := full[1+len(proto.StatusOK):]
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
+}
+
+// handlePutVersioned 处理 PUT_VERSIONED（时态内核 M0 新增 opcode）：与 v1/v2
+// OpcodePut 刻意不同的语义——OpcodePut 覆盖写字面量 key（老客户端零影响，
+// 见 codec.OpcodePutVersioned 的文档），这里的写入永不覆盖，每次调用产生
+// 一条新的不可变版本。请求帧格式与 PUT 相同（proto.DecodePutFrame：key=
+// 逻辑键，value=本次版本的负载），不新开一套帧格式。
+//
+// 不参与 §11.2.2 的 ack 三档窗口/累计记账（见 codec.OpcodePutVersioned 文档），
+// 总是立即响应：OK 负载 = 分配到的 seq（[u64 LE] 8 字节），供调用方确认/
+// 记录这次写对应的版本号；ERR 负载沿用既有 V2ErrPayload 结构。
+func (r *RouterV2) handlePutVersioned(req bannet.RequestV2) {
+	key, value, ok := proto.DecodePutFrame(req.Data())
+	if !ok {
+		metrics.FramesDroppedMalformed.Add(1)
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+
+	if r.filter != nil {
+		// ValidateVersioned，不是 Validate：跳过时间戳单调性启发式，见其文档——
+		// 那条启发式假设"同一 key 被反复写入=时钟异常"，与 PUT_VERSIONED 的
+		// 正常工作方式（反复对同一逻辑键写新版本）直接冲突，冲突在写这段代码
+		// 时就用真实服务端 smoke test 复现过。
+		newValue, _, result, reason := r.filter.ValidateVersioned(key, value)
+		if result == ingesthook.ResultDrop {
+			r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeSchemaValidation, reason)
+			return
+		}
+		value = newValue
+	}
+
+	seq, err := r.temporal.PutVersioned(string(key), value, time.Now().UnixNano())
+	if err != nil {
+		metrics.WriteErrors.Add(1)
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "store_error")
+		return
+	}
+	metrics.Writes.Add(1)
+
+	payload := make([]byte, 8)
+	binary.LittleEndian.PutUint64(payload, seq)
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), payload)
+}
+
+// handleGetAsOf 处理 GET_AS_OF：请求帧 proto.DecodeAsOfFrame（key + as_of
+// 纳秒时间戳），返回该时刻可见的最新版本（temporal.AsOf 语义：绝不返回未来
+// 写入）。找不到（该逻辑键从未被版本化写过，或 as_of 早于其首次写入）与 v1/
+// v2 GET 对齐，回 ERR reason="notfound"（不是协议错误，是"确实没有"）。
+func (r *RouterV2) handleGetAsOf(req bannet.RequestV2) {
+	key, asOfNanos, ok := proto.DecodeAsOfFrame(req.Data())
+	if !ok {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+	metrics.Reads.Add(1)
+	v, found, err := r.temporal.GetAsOf(string(key), asOfNanos)
+	if err != nil {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
+		return
+	}
+	if !found {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "notfound")
+		return
+	}
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), proto.EncodeVersionEntry(v.Seq, v.WriteNanos, v.Payload))
+}
+
+// handleListVersions 处理 LIST_VERSIONS：请求帧 proto.DecodeKeyFrame（key=
+// 逻辑键，与 GET/DELETE 共用同一帧格式）。返回该逻辑键全部版本，按 seq 升序；
+// 没有任何版本是合法结果（OK，count=0），不是 ERR——"从未写过"与"请求本身
+// 出错"是两件事，不应共用同一个错误响应通道。
+func (r *RouterV2) handleListVersions(req bannet.RequestV2) {
+	key, ok := proto.DecodeKeyFrame(req.Data())
+	if !ok {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+	metrics.Reads.Add(1)
+	versions, err := r.temporal.ListVersions(string(key))
+	if err != nil {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
+		return
+	}
+	entries := make([][]byte, len(versions))
+	for i, v := range versions {
+		entries[i] = proto.EncodeVersionEntry(v.Seq, v.WriteNanos, v.Payload)
+	}
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), proto.EncodeListVersionsResponse(entries))
+}
+
+// handleReplayFingerprint 处理 REPLAY_FINGERPRINT：请求帧 proto.DecodeKeyFrame
+// （key 在这里的含义是逻辑键前缀，不是某一个具体逻辑键——与 LIST_VERSIONS
+// 复用同一帧格式，但字段含义不同，故不共用同一个"key"命名的文档措辞，见
+// TemporalStore.ReplayFingerprint 的文档）。对前缀下每个逻辑键做重放对账，
+// 返回一致性摘要——这是验收三问第 2 问"账本可重放指纹一致"的可执行入口。
+func (r *RouterV2) handleReplayFingerprint(req bannet.RequestV2) {
+	prefix, ok := proto.DecodeKeyFrame(req.Data())
+	if !ok {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+	result, err := r.temporal.ReplayFingerprint(string(prefix))
+	if err != nil {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
+		return
+	}
+	body := proto.EncodeReplayFingerprintResponse(
+		result.KeyCount, uint32(len(result.Mismatches)), result.Fingerprint, result.Mismatches)
 	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
 }
 

@@ -48,6 +48,18 @@ const (
 	OpcodeFlush uint8 = 0x07
 	OpcodeStat  uint8 = 0x08
 
+	// OpcodePutVersioned/OpcodeGetAsOf/OpcodeListVersions/OpcodeReplayFingerprint：
+	// 时态内核 M0 接线新增 opcode（docs/rfc/时态内核-M0-版本化与as-of.md），紧接在
+	// 已有编号之后顺延分配。与既有写路径的刻意区分：v1 OpcodePut/OpcodeDel 与 v2
+	// 该二者保留原有"覆盖写"语义不变（老客户端零影响），版本化只属于这四个新
+	// opcode，不静默改变任何既有行为。四者均不参与 §11.2.2 的 ack 三档窗口/累计
+	// 记账——它们是数据模型层的新增能力而非既有写路径的批处理优化，简化起见统一
+	// 按"请求-即时响应"处理，与 GET/SCAN/STAT 同类（响应用既有 OpcodeOK/OpcodeErr）。
+	OpcodePutVersioned      uint8 = 0x09
+	OpcodeGetAsOf           uint8 = 0x0A
+	OpcodeListVersions      uint8 = 0x0B
+	OpcodeReplayFingerprint uint8 = 0x0C
+
 	OpcodeOK  uint8 = 0x80
 	OpcodeErr uint8 = 0x81
 

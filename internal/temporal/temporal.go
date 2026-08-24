@@ -16,8 +16,10 @@ package temporal
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -61,9 +63,32 @@ func ParseVersionStorageKey(storageKey string) (logical string, seq uint64, ok b
 	return storageKey[:i], seq, true
 }
 
+// currentSuffix 是 :current 指针键相对逻辑键的后缀。与 versionSep(":v") 刻意
+// 首字符不同（'c' vs 'v'），保证 :current 键在字典序上排在同一逻辑键的所有
+// 版本键之前（见 VersionStorageKeyLowerBound/UpperBound 的范围扫描）。
+const currentSuffix = ":current"
+
 // CurrentStorageKey 返回逻辑记录的“当前版本指针”存储键。
 func CurrentStorageKey(logical string) string {
-	return logical + ":current"
+	return logical + currentSuffix
+}
+
+// IsCurrentStorageKey 报告 storageKey 是否是某个逻辑键的 :current 指针键。
+// 供 SCAN 过滤内部键使用（版本化记录对业务 SCAN 不可见，见 M0 RFC）。
+func IsCurrentStorageKey(storageKey string) bool {
+	return strings.HasSuffix(storageKey, currentSuffix) && len(storageKey) > len(currentSuffix)
+}
+
+// VersionStorageKeyLowerBound/VersionStorageKeyUpperBound 返回某逻辑键全部版本
+// 存储键的闭区间扫描边界（seq 从 0 到 uint64 最大值），供 LIST_VERSIONS/
+// GET_AS_OF/REPLAY_FINGERPRINT 按 [start,end] 精确圈定该逻辑键的版本键、不
+// 依赖裸前缀匹配（裸前缀在逻辑键本身含冒号时会有歧义，定宽区间不会）。
+func VersionStorageKeyLowerBound(logical string) string {
+	return VersionStorageKey(logical, 0)
+}
+
+func VersionStorageKeyUpperBound(logical string) string {
+	return VersionStorageKey(logical, math.MaxUint64)
 }
 
 // CurrentValue 是 :current 指针的内容：当前版本号 + 负载指纹。
@@ -136,4 +161,51 @@ func Fingerprint(entries []Entry) string {
 		h.Write([]byte{'\n'})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// EncodeVersionValue 编码某版本存储键落盘的 value：[writeNanos u64 LE][payload]。
+// 版本键只有 payload 是业务负责的内容，写入时刻必须与它一起落盘才能支持
+// AsOf 判定（AsOf 语义定义在 WriteNanos 上，见 AsOf 函数），而存储层是无结构
+// 的字节 KV，故由本函数把两者打包进一份 value。
+func EncodeVersionValue(writeNanos int64, payload []byte) []byte {
+	buf := make([]byte, 8+len(payload))
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(writeNanos))
+	copy(buf[8:], payload)
+	return buf
+}
+
+// DecodeVersionValue 是 EncodeVersionValue 的逆操作。长度不足 8 字节（不可能
+// 是本函数编码的结果）返回 ok=false。
+func DecodeVersionValue(raw []byte) (writeNanos int64, payload []byte, ok bool) {
+	if len(raw) < 8 {
+		return 0, nil, false
+	}
+	writeNanos = int64(binary.LittleEndian.Uint64(raw[0:8]))
+	return writeNanos, raw[8:], true
+}
+
+// EncodeCurrentValue 编码 :current 指针落盘的 value：
+// [seq u64 LE][hashLen u16 LE][payloadHash bytes]。hashLen 前缀而非定长，是
+// 因为 CurrentValue.PayloadHash 的类型是十六进制字符串（与 Version.PayloadHash()
+// 返回值一致，两处不做 hex↔raw 的额外换算），长度本应恒为 64，但显式前缀比
+// "硬编码 64 且未来换指纹算法时静默错位" 更安全。
+func EncodeCurrentValue(cv CurrentValue) []byte {
+	buf := make([]byte, 8+2+len(cv.PayloadHash))
+	binary.LittleEndian.PutUint64(buf[0:8], cv.Seq)
+	binary.LittleEndian.PutUint16(buf[8:10], uint16(len(cv.PayloadHash)))
+	copy(buf[10:], cv.PayloadHash)
+	return buf
+}
+
+// DecodeCurrentValue 是 EncodeCurrentValue 的逆操作。
+func DecodeCurrentValue(raw []byte) (CurrentValue, bool) {
+	if len(raw) < 10 {
+		return CurrentValue{}, false
+	}
+	seq := binary.LittleEndian.Uint64(raw[0:8])
+	n := int(binary.LittleEndian.Uint16(raw[8:10]))
+	if len(raw) < 10+n {
+		return CurrentValue{}, false
+	}
+	return CurrentValue{Seq: seq, PayloadHash: string(raw[10 : 10+n])}, true
 }

@@ -93,6 +93,47 @@ func TestHandle_MonotonicDisabled(t *testing.T) {
 	}
 }
 
+// TestValidateVersioned_SkipsMonotonicCheckForRepeatedKey 是时态内核 M0 引入
+// ValidateVersioned 的直接动因：PUT_VERSIONED 反复对同一逻辑键写入是设计如此
+// （不是时钟异常），Validate 的单调性启发式会误杀第二次写——这在联调服务端
+// 真实跑起来时立刻复现过（不是纸面推演）。
+func TestValidateVersioned_SkipsMonotonicCheckForRepeatedKey(t *testing.T) {
+	f := NewFilter(nil, 0, true)
+	key := []byte("reading:2026-08-17:600000")
+
+	if _, _, result, _ := f.ValidateVersioned(key, []byte("v1")); result != ResultPass {
+		t.Fatalf("第一次版本化写入应放行, got %v", result)
+	}
+	// 同一个 key 再写两次——若走 Validate 第二次起会被判"非单调"丢弃（见
+	// TestHandle_MonotonicDrop），ValidateVersioned 必须每次都放行，这正是它
+	// 存在的理由。
+	for i, val := range []string{"v2", "v3", "v4"} {
+		if _, _, result, reason := f.ValidateVersioned(key, []byte(val)); result != ResultPass {
+			t.Fatalf("第 %d 次版本化写入到同一逻辑键应放行, got %v reason=%q", i+2, result, reason)
+		}
+	}
+
+	// ValidateVersioned 完全不touch lastTS 水位（不只是跳过判定，也不记录）：
+	// 换一条从未经过 ValidateVersioned 的普通 key，Validate 的单调性判定不受
+	// 上面这些版本化写入的干扰，行为与 TestHandle_MonotonicDrop 完全一致。
+	if _, _, result, _ := f.Validate([]byte("imu:dev0:100"), []byte("{}")); result != ResultPass {
+		t.Fatal("独立 key 首次 Validate 应放行")
+	}
+	if _, _, result, reason := f.Validate([]byte("imu:dev0:99"), []byte("{}")); result != ResultDrop || reason != "non_monotonic_timestamp" {
+		t.Fatalf("Validate 自身的单调性判定应不受 ValidateVersioned 调用影响: result=%v reason=%q", result, reason)
+	}
+}
+
+// TestValidateVersioned_StillEnforcesSchemaAndLength 验证 ValidateVersioned
+// 只跳过单调性检查这一项，value 长度上限与 schema 校验与 Validate 完全一致
+// （不是"版本化写入绕过一切校验"）。
+func TestValidateVersioned_StillEnforcesSchemaAndLength(t *testing.T) {
+	f := NewFilter(nil, 3, true) // maxValueLen=3
+	if _, _, result, reason := f.ValidateVersioned([]byte("k"), []byte("toolong")); result != ResultDrop || reason != "oversized_value" {
+		t.Fatalf("超长 value 应仍被拒绝, got result=%v reason=%q", result, reason)
+	}
+}
+
 // 不符合 imu:dev:ts 约定的 key 不参与单调校验，应放行。
 func TestHandle_UnconventionalKeyPasses(t *testing.T) {
 	f := NewFilter(nil, 0, true)

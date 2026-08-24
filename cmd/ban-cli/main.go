@@ -38,6 +38,15 @@ func main() {
 
 // runCommand 执行单条命令，返回进程退出码。
 func runCommand(addr string, args []string) int {
+	// 时态内核 M0 新增的四个命令走独立的 v2 瘦客户端（cmd/ban-cli/temporal.go），
+	// 不经过下面的 v1 client SDK（bandb.New 建立的是纯 v1 连接池，PUT_VERSIONED
+	// 等 opcode 对它不存在）。提前分派，避免为这几个命令白建一条不会用到的 v1
+	// 连接。
+	switch args[0] {
+	case "put-versioned", "get-as-of", "list-versions", "fingerprint":
+		return runTemporalCommand(addr, args)
+	}
+
 	c, err := bandb.New(bandb.Options{Addrs: []string{addr}})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "创建客户端失败: %v\n", err)
@@ -112,6 +121,12 @@ func usage() {
   ban-cli [-addr <host:port>] put <key> <val> 写入
   ban-cli [-addr <host:port>] get <key>       读取（键不存在时退出码 3）
   ban-cli [-addr <host:port>] delete <key>    删除
+
+时态内核 M0（版本化写入/as-of 读取/指纹重放对账，v2 协议，另开连接）:
+  ban-cli [-addr <host:port>] put-versioned <key> <val>       版本化写入（不覆盖），打印分配到的 seq
+  ban-cli [-addr <host:port>] get-as-of <key> <as_of_nanos>   读取该时刻可见的版本（找不到时退出码 3）
+  ban-cli [-addr <host:port>] list-versions <key>             列出该逻辑键全部版本
+  ban-cli [-addr <host:port>] fingerprint <prefix>             对前缀下的逻辑键重放指纹并与 :current 对账
 
 示例:
   ban-cli

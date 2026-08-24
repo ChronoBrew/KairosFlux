@@ -3,12 +3,14 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/NeverENG/BanDB/config"
+	"github.com/NeverENG/BanDB/internal/temporal"
 	"github.com/NeverENG/BanDB/predicate"
 	"github.com/NeverENG/BanDB/proto"
 	"github.com/NeverENG/BanDB/raft"
@@ -269,12 +271,51 @@ func (k *KVServer) replaySnapshot(entry raft.LogEntry) {
 
 // Get 读取 key 的最新值。key 不存在时返回 storage.ErrKeyNotFound，调用方以
 // errors.Is 判别，从而与读盘失败等真实故障区分开。
+//
+// 字面量未命中时回退尝试按 :current 指针解析版本化记录（时态内核 M0，见
+// docs/rfc/时态内核-M0-版本化与as-of.md）：PUT_VERSIONED 从不写字面量 key 本身，
+// 只写 "key:vSEQ" 版本键与 "key:current" 指针键，故对已被版本化写过的逻辑键，
+// 字面量查找必然落空，必须由这里的回退步骤解析出当前版本的负载。这一实现
+// 落点是唯一的——v1 Router.handleGet 与 v2 RouterV2.handleGet 都经同一个
+// KVStore.Get 到这里，因此"GET 对版本化记录透明"对两个协议版本自动成立，
+// 不需要在 router 层各自实现一遍。
+// 对既有纯 v1 PUT 写入的 key：字面量查找直接命中，回退步骤不会被触达，
+// 行为与改动前逐字节相同（零回归）。
 func (k *KVServer) Get(key []byte) ([]byte, error) {
 	value, err := k.storage.Get(key)
-	if value == nil && err == nil {
+	if err == nil && value != nil {
+		return value, nil
+	}
+	if err != nil && !errors.Is(err, storage.ErrKeyNotFound) {
+		return nil, err
+	}
+	return k.getViaCurrentPointer(key)
+}
+
+// getViaCurrentPointer 是 Get 的版本化回退路径：读 :current 指针 → 取指针指向
+// 的版本键 → 拆出该版本的 payload。指针损坏、指针指向的版本键缺失（孤儿指针，
+// 理论上不应发生，见 temporal 包关于崩溃安全写序的说明）均按未命中处理，不
+// 当作故障向上抛——GET 对"这个 key 从未被写过"与"这个 key 的时态记录内部
+// 不一致"两种情形，从客户端视角看应该是同一种可观察结果（NotFound），后一种
+// 情形的诊断应走 REPLAY_FINGERPRINT 对账，不是让普通 GET 报错。
+func (k *KVServer) getViaCurrentPointer(key []byte) ([]byte, error) {
+	curRaw, err := k.storage.Get([]byte(temporal.CurrentStorageKey(string(key))))
+	if err != nil {
 		return nil, storage.ErrKeyNotFound
 	}
-	return value, err
+	cur, ok := temporal.DecodeCurrentValue(curRaw)
+	if !ok {
+		return nil, storage.ErrKeyNotFound
+	}
+	verRaw, err := k.storage.Get([]byte(temporal.VersionStorageKey(string(key), cur.Seq)))
+	if err != nil {
+		return nil, storage.ErrKeyNotFound
+	}
+	_, payload, ok := temporal.DecodeVersionValue(verRaw)
+	if !ok {
+		return nil, storage.ErrKeyNotFound
+	}
+	return payload, nil
 }
 
 // maxScanResults 限制单次扫描返回条目数，防止无谓词大范围扫描撑爆内存。
@@ -292,6 +333,21 @@ func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate, limit int) 
 	}
 	out := make([]proto.ScanEntry, 0)
 	k.storage.ScanRange(start, end, func(key, value []byte) bool {
+		// 时态内核内部键（版本键 "key:vSEQ"、当前指针键 "key:current"）对业务 SCAN
+		// 不可见——SCAN 面向"一个逻辑键一行"的既有契约，这两类键是 PUT_VERSIONED
+		// 私有的记账结构，泄漏出去会让调用方看到同一条逻辑记录裂成多条不相关的
+		// "key"。过滤必须在这个回调里做（而不是在收集到 out 之后再筛），否则一段
+		// 恰好夹杂大量内部键的范围会在触发 limit 截断时不公平地挤占真实业务条目
+		// 的名额。M0 刻意选择"隐藏"而非"解析出当前值当作这一行"：后者需要把
+		// [start,end] 往指针键的后缀范围外扩才能不漏掉边界上的 :current，属于
+		// SCAN 语义的后续重新设计（M1+），M0 先保持零回归+零内部键泄漏这个更
+		// 保守、更容易验证正确性的立场。
+		if _, _, ok := temporal.ParseVersionStorageKey(string(key)); ok {
+			return true
+		}
+		if temporal.IsCurrentStorageKey(string(key)) {
+			return true
+		}
 		if !pred.Eval(value) {
 			return true
 		}
@@ -305,6 +361,23 @@ func (k *KVServer) Scan(start, end []byte, pred predicate.Predicate, limit int) 
 			}
 			return false
 		}
+		return true
+	})
+	return out
+}
+
+// ScanRaw 按 [start,end] 闭区间原样扫描底层存储，不做 Scan 那样的内部键过滤——
+// 专供时态内核自身读取版本键/current 指针使用（TemporalStore 的
+// ListVersions/GetAsOf/ReplayFingerprint），与面向业务 SCAN 协议的 Scan
+// （过滤内部键，见其注释）刻意区分，不合并成一个带开关的方法：调用方是谁、
+// 该不该看见内部键，在类型签名上就该是两个不同的方法，不是一个隐藏参数。
+func (k *KVServer) ScanRaw(start, end []byte) []proto.ScanEntry {
+	out := make([]proto.ScanEntry, 0)
+	k.storage.ScanRange(start, end, func(key, value []byte) bool {
+		out = append(out, proto.ScanEntry{
+			Key:   append([]byte(nil), key...),
+			Value: append([]byte(nil), value...),
+		})
 		return true
 	})
 	return out

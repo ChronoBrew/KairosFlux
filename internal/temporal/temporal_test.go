@@ -103,6 +103,64 @@ func TestFingerprintLengthPrefixPreventsAmbiguity(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeVersionValueRoundTrip(t *testing.T) {
+	raw := EncodeVersionValue(12345, []byte("hello"))
+	nanos, payload, ok := DecodeVersionValue(raw)
+	if !ok || nanos != 12345 || string(payload) != "hello" {
+		t.Fatalf("round trip 失败: nanos=%d payload=%q ok=%v", nanos, payload, ok)
+	}
+}
+
+func TestDecodeVersionValueRejectsTooShort(t *testing.T) {
+	if _, _, ok := DecodeVersionValue([]byte("short")); ok {
+		t.Fatal("不足 8 字节应解析失败")
+	}
+}
+
+func TestEncodeDecodeCurrentValueRoundTrip(t *testing.T) {
+	cv := CurrentValue{Seq: 7, PayloadHash: "deadbeef"}
+	raw := EncodeCurrentValue(cv)
+	got, ok := DecodeCurrentValue(raw)
+	if !ok || got != cv {
+		t.Fatalf("round trip 失败: got=%+v ok=%v", got, ok)
+	}
+}
+
+func TestDecodeCurrentValueRejectsMalformed(t *testing.T) {
+	for _, bad := range [][]byte{
+		nil,
+		{1, 2, 3},
+		EncodeCurrentValue(CurrentValue{Seq: 1, PayloadHash: "ab"})[:9], // 声明了 hashLen 但截断
+	} {
+		if _, ok := DecodeCurrentValue(bad); ok {
+			t.Fatalf("畸形 current value %v 不应解析成功", bad)
+		}
+	}
+}
+
+func TestVersionStorageKeyBoundsCoverAllSeqAndOnlyThisLogicalKey(t *testing.T) {
+	lower := VersionStorageKeyLowerBound("quote:2026-08-17:600000")
+	upper := VersionStorageKeyUpperBound("quote:2026-08-17:600000")
+	mid := VersionStorageKey("quote:2026-08-17:600000", 42)
+	if !(lower <= mid && mid <= upper) {
+		t.Fatalf("中间版本键应落在 [lower,upper] 内: lower=%q mid=%q upper=%q", lower, mid, upper)
+	}
+	// 另一逻辑键（数字续接，':'(0x3a) 比任何数字字符都大，故不会落入区间）不应被区间覆盖。
+	other := VersionStorageKey("quote:2026-08-17:6000000", 1)
+	if lower <= other && other <= upper {
+		t.Fatalf("另一逻辑键 %q 不应落入 %q 的版本区间", other, "quote:2026-08-17:600000")
+	}
+}
+
+func TestIsCurrentStorageKey(t *testing.T) {
+	if !IsCurrentStorageKey(CurrentStorageKey("k")) {
+		t.Fatal("CurrentStorageKey 的输出应被识别为 current 键")
+	}
+	if IsCurrentStorageKey("k") || IsCurrentStorageKey(":current") {
+		t.Fatal("裸后缀或无逻辑键前缀不应被识别为 current 键")
+	}
+}
+
 func TestPayloadHashStable(t *testing.T) {
 	v := Version{LogicalKey: "k", Seq: 1, WriteNanos: 1, Payload: []byte("payload")}
 	if v.PayloadHash() != v.PayloadHash() {
