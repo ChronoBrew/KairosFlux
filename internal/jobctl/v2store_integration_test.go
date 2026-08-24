@@ -82,7 +82,7 @@ func TestV2Store_PutVersionedThenGetLatestRoundTrip(t *testing.T) {
 	store := NewV2Store(addr, 3*time.Second)
 	defer store.Close()
 
-	seq, err := store.PutVersioned("job:status:integration_job", []byte(`{"phase":"succeeded"}`))
+	seq, err := store.PutVersioned("job:status:integration_job", []byte(`{"phase":"succeeded"}`), EngineSource)
 	if err != nil {
 		t.Fatalf("PutVersioned 失败: %v", err)
 	}

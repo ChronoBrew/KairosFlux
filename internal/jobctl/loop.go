@@ -98,7 +98,7 @@ func Apply(store Store, spec JobSpec) (uint64, error) {
 	if err := spec.Validate(); err != nil {
 		return 0, err
 	}
-	seq, err := store.PutVersioned(SpecKey(spec.Name), spec.CanonicalJSON())
+	seq, err := store.PutVersioned(SpecKey(spec.Name), spec.CanonicalJSON(), EngineSource)
 	if err != nil {
 		return 0, fmt.Errorf("apply job spec 失败: %w", err)
 	}

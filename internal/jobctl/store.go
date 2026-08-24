@@ -20,11 +20,22 @@ package jobctl
 // 幂等"，注入面用接口留好，真实集成路径由 V2Store 提供、由
 // v2store_integration_test.go 做少量端到端覆盖。
 type Store interface {
-	// PutVersioned 写入 logicalKey 的一条新版本，返回分配到的 seq。
-	PutVersioned(logicalKey string, payload []byte) (seq uint64, err error)
+	// PutVersioned 写入 logicalKey 的一条新版本，返回分配到的 seq。source 是
+	// 这次写入的操作元数据来源标识（M2 信封字段，见 service/router_v2.go
+	// handlePutVersioned 的文档），本包所有调用点一律传 EngineSource——jobctl
+	// 是确定性 reconcile 管道自身，不是某个具体 agent 在写，审计（LIST_WRITES
+	// 的 BySource 聚合）需要能把这些写入与 agent 提议写区分开。
+	PutVersioned(logicalKey string, payload []byte, source string) (seq uint64, err error)
 
 	// GetLatest 返回 logicalKey 当前可见的最新版本负载；从未写过返回
 	// found=false、err=nil（"从未写过"不是错误，与 temporal.TemporalStore
 	// 的既有约定一致）。
 	GetLatest(logicalKey string) (payload []byte, found bool, err error)
 }
+
+// EngineSource 是 jobctl 包对外声明的写入方标识（PUT_VERSIONED 请求帧的
+// source 字段）：job:spec/job:status/job:events 全部以这个身份写入，与
+// internal/identity.SourceRole 的判定规则一致——不带 "agent:" 前缀，落在
+// RoleEngine，不受 service/router_v2.go 的 agent 写入范围限制（那条限制只
+// 约束以 agent 身份声明的写入）。
+const EngineSource = "jobctl"

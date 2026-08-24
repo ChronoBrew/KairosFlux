@@ -25,7 +25,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{versions: make(map[string][][]byte)}
 }
 
-func (s *fakeStore) PutVersioned(logicalKey string, payload []byte) (uint64, error) {
+func (s *fakeStore) PutVersioned(logicalKey string, payload []byte, source string) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := append([]byte(nil), payload...)

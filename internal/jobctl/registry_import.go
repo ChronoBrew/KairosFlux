@@ -111,7 +111,7 @@ func (imp *RegistryImporter) ImportReader(r io.Reader) (ImportResult, error) {
 			result.Unchanged++
 			continue
 		}
-		if _, err := imp.Store.PutVersioned(key, rawCopy); err != nil {
+		if _, err := imp.Store.PutVersioned(key, rawCopy, EngineSource); err != nil {
 			result.Errors = append(result.Errors, ImportError{Line: lineNo, Reason: fmt.Sprintf("写入索引失败: %v", err)})
 			continue
 		}

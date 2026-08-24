@@ -117,9 +117,13 @@ func errFromErrResp(resp *codec.MessageV2) error {
 	return fmt.Errorf("服务端拒绝: code=%#x reason=%s", code, reason)
 }
 
-// PutVersioned 实现 Store：对应 PUT_VERSIONED opcode。
-func (s *V2Store) PutVersioned(logicalKey string, payload []byte) (uint64, error) {
-	resp, err := s.roundTrip(codec.OpcodePutVersioned, proto.EncodePutFrame([]byte(logicalKey), payload))
+// PutVersioned 实现 Store：对应 PUT_VERSIONED opcode。source 编进请求帧的
+// M2 操作元数据信封（proto.EncodePutVersionedFrame），落到服务端账本上供
+// LIST_WRITES 审计按来源聚合——此前本方法一直用 proto.EncodePutFrame（不带
+// source 段），源头审计缺口正是本次任务要补的（见 store.go EngineSource
+// 文档）。
+func (s *V2Store) PutVersioned(logicalKey string, payload []byte, source string) (uint64, error) {
+	resp, err := s.roundTrip(codec.OpcodePutVersioned, proto.EncodePutVersionedFrame([]byte(logicalKey), payload, source))
 	if err != nil {
 		return 0, err
 	}

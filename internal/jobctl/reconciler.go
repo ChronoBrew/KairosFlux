@@ -146,13 +146,13 @@ func (r *Reconciler) Reconcile(spec JobSpec) (JobStatus, error) {
 		ev = Event{Slot: slot, Attempt: attempt, SpecFingerprint: fp, Outcome: EventFailed, ExitCode: result.ExitCode, Message: msg, WriteNanos: nowNanos}
 	}
 
-	if _, err := r.Store.PutVersioned(EventsKey(spec.Name), encodeEvent(ev)); err != nil {
+	if _, err := r.Store.PutVersioned(EventsKey(spec.Name), encodeEvent(ev), EngineSource); err != nil {
 		return JobStatus{}, fmt.Errorf("写事件账本失败: %w", err)
 	}
 	if status.Phase == PhaseAlerting && r.AlertSink != nil {
 		r.AlertSink.Alert(spec.Name, ev)
 	}
-	if _, err := r.Store.PutVersioned(StatusKey(spec.Name), encodeJobStatus(status)); err != nil {
+	if _, err := r.Store.PutVersioned(StatusKey(spec.Name), encodeJobStatus(status), EngineSource); err != nil {
 		return JobStatus{}, fmt.Errorf("写状态失败: %w", err)
 	}
 	return status, nil
@@ -195,7 +195,7 @@ func (r *Reconciler) writeStatusIfChanged(name string, prev JobStatus, prevFound
 	if prevFound && prev == next {
 		return nil
 	}
-	_, err := r.Store.PutVersioned(StatusKey(name), encodeJobStatus(next))
+	_, err := r.Store.PutVersioned(StatusKey(name), encodeJobStatus(next), EngineSource)
 	if err != nil {
 		return fmt.Errorf("写状态失败: %w", err)
 	}
