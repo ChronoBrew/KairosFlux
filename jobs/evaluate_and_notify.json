@@ -1,0 +1,10 @@
+{
+  "name": "evaluate_and_notify",
+  "_comment": "对应 QuantBrew scripts/evaluate_and_notify.sh：跑一次 quantbrew evaluate 把裁决表输出并按 scripts/notify_config.json.template 配置的通道通知（M15）。依赖 paper_daily：需要今天的模拟盘账本先落地才有东西可评估。recommendations.json 路径与脚本文档里的用法示例一致（scripts/evaluate_and_notify.sh 头部注释）。",
+  "command": ["/usr/bin/env", "bash", "/Users/4ge0/Desktop/code/Project/QuantBrew/scripts/evaluate_and_notify.sh", "recommendations.json"],
+  "dir": "/Users/4ge0/Desktop/code/Project/QuantBrew",
+  "depends_on": ["paper_daily"],
+  "schedule_interval_seconds": 86400,
+  "max_retries": 1,
+  "retry_backoff_seconds": 300
+}

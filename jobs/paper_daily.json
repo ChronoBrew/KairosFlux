@@ -1,0 +1,9 @@
+{
+  "name": "paper_daily",
+  "_comment": "对应 QuantBrew scripts/paper_daily.sh：daily_update.py && quantbrew paper step 的串联（SPEC-M6-增量.md §3），非交易日自动跳过（脚本内部逻辑，退出码 0）。",
+  "command": ["/usr/bin/env", "bash", "/Users/4ge0/Desktop/code/Project/QuantBrew/scripts/paper_daily.sh", "/Users/4ge0/Desktop/code/Project/QuantBrew/configs/paper_10.toml"],
+  "dir": "/Users/4ge0/Desktop/code/Project/QuantBrew",
+  "schedule_interval_seconds": 86400,
+  "max_retries": 2,
+  "retry_backoff_seconds": 600
+}
