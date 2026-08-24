@@ -1,0 +1,9 @@
+{
+  "name": "scout_daily",
+  "_comment": "占位声明：QuantBrew 侧目前没有 scout_daily 对应的可执行脚本（对照 scripts/paper_daily.sh、scripts/evaluate_and_notify.sh 的既有命名约定占了这个位置），按任务书裁决\"声明命令但让它在执行时失败，不发明一个假装存在的路径、也不丢弃这个 job\"——apply 这份 spec 后 reconcile 会在执行时因脚本不存在而失败，进入 failed/alerting，这是预期行为，不是 bug。等 QuantBrew 侧真的有这个脚本了，改这一份 spec 重新 apply 即可，不需要改 Go 代码。",
+  "command": ["/usr/bin/env", "bash", "/Users/4ge0/Desktop/code/Project/QuantBrew/scripts/scout_daily.sh"],
+  "dir": "/Users/4ge0/Desktop/code/Project/QuantBrew",
+  "schedule_interval_seconds": 86400,
+  "max_retries": 2,
+  "retry_backoff_seconds": 900
+}
