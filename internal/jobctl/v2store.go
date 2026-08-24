@@ -174,6 +174,57 @@ func (s *V2Store) ListVersions(logicalKey string) ([]proto.VersionEntryView, err
 	return versions, nil
 }
 
+// GetAsOf 实现 M4 AI 数据平面（internal/aiplane）依赖的 as-of 读接口：与
+// GetLatest 同一个 opcode（GET_AS_OF），区别是 asOfNanos 由调用方显式传入而
+// 不是取 time.Now()——Context API 的"同请求两次调用逐字节相同"验收要求
+// as-of 时间点由请求本身固定，不能让两次调用因为墙钟前进而读到不同版本。
+// 刻意不让 GetLatest 复用本函数（而是保留 GetLatest 原有实现不动）：这是
+// 本仓库 CLAUDE.md 第 2 条"外科手术式修改"的直接体现——GetLatest 是
+// Reconciler 热路径依赖的既有实现，本次任务不改它一个字符，只在旁边新增
+// 一个参数化版本。两者身体相同是这条 opcode 语义本身如此，不是刻意的代码
+// 复用决策。
+func (s *V2Store) GetAsOf(logicalKey string, asOfNanos int64) ([]byte, bool, error) {
+	resp, err := s.roundTrip(codec.OpcodeGetAsOf, proto.EncodeAsOfFrame([]byte(logicalKey), asOfNanos))
+	if err != nil {
+		return nil, false, err
+	}
+	if resp.Header.Opcode != codec.OpcodeOK {
+		if _, reason, ok := proto.DecodeV2ErrPayload(resp.Payload); ok && reason == "notfound" {
+			return nil, false, nil
+		}
+		return nil, false, errFromErrResp(resp)
+	}
+	_, _, payload, _, ok := proto.DecodeVersionEntry(resp.Payload)
+	if !ok {
+		return nil, false, fmt.Errorf("响应负载无法解析")
+	}
+	return payload, true, nil
+}
+
+// ListPrefix 实现 M4 证据图谱查询依赖的前缀扫描：对既有 LIST_WRITES opcode
+// （0x0D，M2 时态内核审计查询新增，见 proto.EncodeListWritesRequest 文档）
+// 发起请求，asOfNanos 作为写入时间上界（tToNanos）——不新增 opcode，"BTree
+// 前缀扫描"直接复用 service.TemporalStore.ListWrites 已经实现的
+// [prefix, prefix+0xFF) 范围扫描。返回的是"该前缀下每个逻辑键的每一条历史
+// 版本"（与 LIST_WRITES 审计语义一致），调用方（internal/aiplane）自己按
+// (LogicalKey, Seq) 取最大值折叠到"每个逻辑键的最新版本"——折叠逻辑不下沉
+// 到这里，是因为 aiplane 包的 fakePrefixStore 测试替身需要产生与生产
+// 完全一致的折叠前语义，折叠只应该有一处实现（aiplane.LatestPerLogicalKey）。
+func (s *V2Store) ListPrefix(prefix string, asOfNanos int64) ([]proto.WriteEnvelopeView, error) {
+	resp, err := s.roundTrip(codec.OpcodeListWrites, proto.EncodeListWritesRequest([]byte(prefix), 0, asOfNanos, nil))
+	if err != nil {
+		return nil, err
+	}
+	if resp.Header.Opcode != codec.OpcodeOK {
+		return nil, errFromErrResp(resp)
+	}
+	entries, _, ok := proto.DecodeListWritesResponse(resp.Payload)
+	if !ok {
+		return nil, fmt.Errorf("响应负载无法解析")
+	}
+	return entries, nil
+}
+
 // Close 关闭底层连接（进程退出前清理）。
 func (s *V2Store) Close() error {
 	s.mu.Lock()
