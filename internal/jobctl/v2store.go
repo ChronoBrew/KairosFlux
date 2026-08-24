@@ -154,6 +154,26 @@ func (s *V2Store) GetLatest(logicalKey string) ([]byte, bool, error) {
 	return payload, true, nil
 }
 
+// ListVersions 实现对 LIST_VERSIONS opcode 的调用（既有 opcode，不是新增；
+// 只在审计/测试路径用，Reconciler 的热路径只用 PutVersioned/GetLatest）。
+// 供集成测试直接对真实账本断言版本数——"结果与账本一致"这条验收标准要求
+// 验证的是 service.TemporalStore 的真实版本序列，不是 Store 接口某个内存
+// 模拟实现之下的版本序列。
+func (s *V2Store) ListVersions(logicalKey string) ([]proto.VersionEntryView, error) {
+	resp, err := s.roundTrip(codec.OpcodeListVersions, proto.EncodeKeyOnlyFrame([]byte(logicalKey)))
+	if err != nil {
+		return nil, err
+	}
+	if resp.Header.Opcode != codec.OpcodeOK {
+		return nil, errFromErrResp(resp)
+	}
+	versions, ok := proto.DecodeListVersionsResponse(resp.Payload)
+	if !ok {
+		return nil, fmt.Errorf("响应负载无法解析")
+	}
+	return versions, nil
+}
+
 // Close 关闭底层连接（进程退出前清理）。
 func (s *V2Store) Close() error {
 	s.mu.Lock()

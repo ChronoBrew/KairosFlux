@@ -110,10 +110,18 @@ func TestV2Store_PutVersionedThenGetLatestRoundTrip(t *testing.T) {
 	}
 }
 
-// TestReconciler_OverRealV2Store 端到端跑一次完整的 Reconciler.Reconcile：
-// 真实 v2 协议 + 真实 TemporalStore 语义 + 假 Clock/Executor（不需要真的
-// 起子进程）。证明 reconciler.go 的读写路径与真实 opcode 字节格式对得上，
-// 不是只在 fakeStore 的内存模拟里"看起来幂等"。
+// TestReconciler_OverRealV2Store 是"同一 Job 重跑一万次，结果与账本一致"
+// 这条验收标准对真实账本的版本：真实 v2 协议 + 真实 service.TemporalStore
+// 语义（seqCache/seqLocks/两写崩溃安全顺序/:current 指针）+ 假 Clock/
+// Executor（不需要真的起子进程）。TestReconcile_TenThousandRerunsAreIdempotent
+// 用 fakeStore 证明的是"reconcile 决策逻辑本身幂等"；本测试额外证明"这套
+// 决策接到真实 PUT_VERSIONED/GET_AS_OF/LIST_VERSIONS opcode 上、真实账本
+// 的版本数不随重跑次数增长"——不是只对着自己写的内存模拟看起来幂等。
+//
+// 用 LIST_VERSIONS（既有 opcode，只在这里做审计断言，Reconciler 热路径
+// 仍然只用 PutVersioned/GetLatest）直接查真实账本的版本数，而不是只看
+// Executor 调用次数——调用次数相同也可能账本背后多写了空版本，两件事要
+// 分别断言。
 func TestReconciler_OverRealV2Store(t *testing.T) {
 	addr := startTestKairosFluxServer(t)
 	store := NewV2Store(addr, 3*time.Second)
@@ -124,12 +132,39 @@ func TestReconciler_OverRealV2Store(t *testing.T) {
 	r := &Reconciler{Store: store, Executor: exec, Clock: clock, AlertSink: &nullAlertSink{}}
 	spec := testSpec("real_proto_job")
 
-	for i := 0; i < 50; i++ { // 真实网络往返较慢，50 次足够证明幂等，不需要一万次
+	const reruns = 10000
+	start := time.Now()
+	for i := 0; i < reruns; i++ {
 		if _, err := r.Reconcile(spec); err != nil {
 			t.Fatalf("第 %d 次 Reconcile 出错: %v", i, err)
 		}
 	}
+	elapsed := time.Since(start)
+	t.Logf("对真实 v2 协议服务端重跑 %d 次真实耗时: %s", reruns, elapsed)
+
 	if got := exec.callCount(); got != 1 {
 		t.Fatalf("Executor 应只被调用 1 次，实际 %d 次", got)
 	}
+
+	statusVersions, err := store.ListVersions(StatusKey(spec.Name))
+	if err != nil {
+		t.Fatalf("LIST_VERSIONS(job:status) 出错: %v", err)
+	}
+	if len(statusVersions) != 1 {
+		t.Fatalf("真实账本里 job:status:%s 应恰好 1 条版本，实际 %d 条", spec.Name, len(statusVersions))
+	}
+	eventVersions, err := store.ListVersions(EventsKey(spec.Name))
+	if err != nil {
+		t.Fatalf("LIST_VERSIONS(job:events) 出错: %v", err)
+	}
+	if len(eventVersions) != 1 {
+		t.Fatalf("真实账本里 job:events:%s 应恰好 1 条版本，实际 %d 条", spec.Name, len(eventVersions))
+	}
+
+	// 键空间实测样例：把真实账本里存的那一条版本原样打进测试日志（不是
+	// 靠描述"应该长什么样"，是真的从 GET_AS_OF/LIST_VERSIONS 读回来的字节）。
+	t.Logf("键空间实测样例 job:status:%s seq=%d payload=%s",
+		spec.Name, statusVersions[0].Seq, statusVersions[0].Payload)
+	t.Logf("键空间实测样例 job:events:%s:v%020d payload=%s",
+		spec.Name, eventVersions[0].Seq, eventVersions[0].Payload)
 }
