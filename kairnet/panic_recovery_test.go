@@ -74,9 +74,16 @@ func TestHandlerPanicRecovered(t *testing.T) {
 	}
 	conn.Close()
 
-	// 轮询等 Handler 被调用（不能靠固定 sleep 猜时机，worker 池是异步分派的）。
+	// 轮询等 Handler 被调用且 panic 已被恢复（不能靠固定 sleep 猜时机，worker
+	// 池是异步分派的）。轮询目标必须是 metrics.PanicsRecovered 本身而不是
+	// h.calls：calls 在 Handle 入口自增、panic 恢复在同一个 goroutine 的栈
+	// 展开之后才记录 PanicsRecovered，两者之间存在微小窗口——此前只轮询
+	// calls 会在窗口内偶发地提前断言失败（并发 flaky 的根因）；calls 只用作
+	// "请求确实被分派过"的佐证。
+	var recovered bool
 	for i := 0; i < 100; i++ {
-		if h.calls.Load() > 0 {
+		if metrics.PanicsRecovered.Load() > before {
+			recovered = true
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -88,8 +95,8 @@ func TestHandlerPanicRecovered(t *testing.T) {
 	// 如果这一行能跑到，就证明进程在 Handler panic 之后仍然存活——这正是回归点：
 	// 修复前，上面那次 panic 会直接终止整个 go test 进程，这个测试函数本身
 	// 都不会有机会执行到这里报告失败，而是让整条测试运行连带崩溃。
-	if got := metrics.PanicsRecovered.Load() - before; got < 1 {
-		t.Fatalf("PanicsRecovered 应至少 +1（业务 Handler 的 panic 被 DoMsgHandle 捕获），得到增量 %d", got)
+	if !recovered {
+		t.Fatalf("PanicsRecovered 应至少 +1（业务 Handler 的 panic 被 DoMsgHandle 捕获），当前增量 %d", metrics.PanicsRecovered.Load()-before)
 	}
 
 	// 服务端应仍然接受新连接——不只是"没有整体崩溃"，是"还能正常服务"。
