@@ -98,6 +98,14 @@ const (
 	// 子码分配，所有 schema 校验失败共用这一个码，具体原因仍由人读的
 	// reason 字段承载。
 	ErrCodeSchemaValidation uint16 = 0x3001
+	// ErrCodeUnauthorizedRole 是新增的 0x4xxx 段（角色/权限校验，§10.3
+	// 表里此前只分配到 0x3xxx，本码是这套分类学的第一个 0x4xxx 段落地）：
+	// PUT_VERSIONED 请求帧解出的 source 按 internal/identity.SourceRole
+	// 判定为 RoleAgent，但目标 key 不在 internal/identity.IsProposalKey
+	// 判定的 Proposal 键空间内——"agent 身份只能写 Proposal 对象"这条规则
+	// 由 service/router_v2.go 的 handlePutVersioned 在协议层强制（M4
+	// WriteAsAgent 此前只是应用层 API 闸门，见 internal/aiplane/doc.go）。
+	ErrCodeUnauthorizedRole uint16 = 0x4001
 )
 
 // type（RFC §3.2），与 service/ingesthook/schema 的注册表对齐。

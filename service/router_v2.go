@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ChronoBrew/KairosFlux/config"
+	"github.com/ChronoBrew/KairosFlux/internal/identity"
 	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
 	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
@@ -430,6 +431,21 @@ func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+		return
+	}
+
+	// 协议层角色强制（M4 上报缺口：此前 internal/aiplane.WriteAsAgent 只是
+	// 应用层 API 的一道闸门，任何调用方仍可绕过它直接对这个 opcode 发起
+	// PUT_VERSIONED 写任意键，见 internal/aiplane/doc.go 已更新的"已知边界"
+	// 一节）。source 由请求帧显式携带（M2 操作元数据信封字段），不读系统
+	// 时钟/连接身份等隐式状态——与本仓库审计路径"确定性来源"的一贯要求
+	// 一致。agent 身份（identity.SourceRole 判定，见其文档的 agent: 前缀
+	// 约定）只允许写 Proposal 键空间（identity.IsProposalKey，与
+	// aiplane.ProposalKey 拼键用的是同一个前缀常量），其余一律结构化拒绝——
+	// 这条规则只覆盖 PUT_VERSIONED，不覆盖不携带 source 的字面量 PUT/DEL。
+	if identity.SourceRole(source) == identity.RoleAgent && !identity.IsProposalKey(string(key)) {
+		metrics.FramesDroppedUnauthorized.Add(1)
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeUnauthorizedRole, "agent_write_forbidden_kind")
 		return
 	}
 
