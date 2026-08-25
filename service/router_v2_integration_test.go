@@ -70,11 +70,11 @@ func startRouterV2TestServer(t *testing.T, windowN uint32) string {
 	srv := kairnet.NewServer()
 	srv.IP = host
 	srv.Port = port
-	srv.AddRouter(proto.MsgPut, router)
-	srv.AddRouter(proto.MsgGet, router)
-	srv.AddRouter(proto.MsgDelete, router)
-	srv.AddRouter(proto.MsgScan, router) // cmd/kairosflux-server 生产接线的四个 v1 opcode 本测试服务端应悉数具备，之前缺 SCAN 纯属遗漏
-	srv.AddRouterV2(routerV2)
+	srv.AddHandler(proto.MsgPut, router)
+	srv.AddHandler(proto.MsgGet, router)
+	srv.AddHandler(proto.MsgDelete, router)
+	srv.AddHandler(proto.MsgScan, router) // cmd/kairosflux-server 生产接线的四个 v1 opcode 本测试服务端应悉数具备，之前缺 SCAN 纯属遗漏
+	srv.SetV2Handler(routerV2)            // 与 Node（service/node.go）同走 kairnet 新路径 AddHandler/SetV2Handler
 	srv.SetConnStartFunc(router.OnConnStart)
 	srv.SetConnStopFunc(router.OnConnStop)
 	srv.Start()
