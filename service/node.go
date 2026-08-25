@@ -27,6 +27,8 @@ import (
 	"github.com/ChronoBrew/KairosFlux/service/ingesthook/schema"
 )
 
+// Node 持有服务器进程全部组件（见包顶注释）；Addr 在构造后即可读，
+// Serve 阻塞运行，Stop 幂等优雅关停。
 type Node struct {
 	kv     *KVServer
 	ha     *HA

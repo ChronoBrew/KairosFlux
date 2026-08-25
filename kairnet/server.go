@@ -17,6 +17,9 @@ import (
 	"github.com/ChronoBrew/KairosFlux/kairnet/transport"
 )
 
+// Server 是 KairNet 传输层服务端：管理监听/连接/协商/分派，业务处理器
+// 经 AddHandler/SetV2Handler 以 Handler/HandlerV2 接口注入（不持有任何
+// Router 类型，见 handler.go 顶部注释）。
 type Server struct {
 	IP        string
 	Port      int
@@ -58,6 +61,9 @@ func (s *Server) SetV2Handler(h HandlerV2) {
 	s.V2Handler = h
 }
 
+// NewServer 按 config.G 构造一个默认 Server（IP/Name/Port 取全局配置，
+// worker 池/连接管理器/关停信号通道就绪，尚未绑定监听——绑定发生在
+// Start）。
 func NewServer() *Server {
 	return &Server{
 		ipVersion: "tcp4",
