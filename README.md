@@ -327,11 +327,25 @@ what remains on the roadmap is the network-visible agent plane over the wire.
 
 ## Performance
 
-In our benchmarks, the Kair wire protocol is measurably faster than the
-bundled gRPC endpoint on the read path (2.7x on GET at 50 concurrent
-clients; writes are roughly on par since both share the same fsync-bound
-persistence path). Reproduce with `bash scripts/bench.sh` and the commands
-in [docs/Kair-协议规范.md](docs/Kair-协议规范.md).
+发布口径基准（2026-08-25 实测，darwin/arm64 8 核，本机 fsync 地板约 250–530 次/s；完整
+矩阵与已知测量缺陷见 [`docs/bench/01.md`](docs/bench/01.md)）：
+
+- **载入**：100w 版本化写入 16 并发载入耗时 19m8.61s（871 w/s），载入后
+  `REPLAY_FINGERPRINT` 对账零不一致（逻辑键=100000，对账不一致=0）
+- **写路径**（数据量=1000000，每行 50000 采样，全 0 错误）：
+  - server v2 `PUT_VERSIONED`（ack=every/window/none）：**QPS 460–474，p50 约 16ms**——
+    standalone 模式每次写 2 次 WAL append + fsync，吞吐被磁盘 fsync 速率钉住
+  - embedded 进程内直调：**QPS 452**（与网络路径同一 fsync 地板，进程内 vs 网络无吞吐差）
+  - server v1 `PUT`：**QPS 931** ≈ 2×v2（1 次 append vs 2 次，物理自洽检查通过）
+- **读路径**：`GET_AS_OF` 100w 档 p50 **2.66 ms（embedded）/ 3.01 ms（server）**，10w 档
+  数百微秒级；前缀扫描与 `LIST_WRITES` 完整行以 10w 档为准（100w 档扫描路径因引擎读路径
+  文件句柄耗尽未能测——已知缺陷，转 M5-C）
+- **耐久**：kill -9 复验恢复数 ≥ 已 ack 数（ack-after-fsync 契约在代码审查与 kill 复验中
+  均未破坏）
+
+Reproduce with the stage B harness in
+[`cmd/kairosflux-bench`](cmd/kairosflux-bench)（perf / footprint / adversarial / soak100
+四个子命令）。
 
 ## Robustness
 
