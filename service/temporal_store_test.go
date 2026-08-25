@@ -489,3 +489,163 @@ func TestTemporalStore_ReplayResultConsistentAcrossProcessRestart(t *testing.T) 
 		}
 	}
 }
+
+// —— M5 分页（方案 §C.1）：ListWritesPage 的游标/limit 语义 ——
+
+// pageKeys 把 ListWritesPage 结果折叠成 "logicalKey@seq" 字符串序列，便于
+// 与期望值逐条比对（payload/hash 等字段与 ListWrites 共享同一编码路径，
+// 由既有测试覆盖，这里聚焦分页的顺序与分界）。
+func pageKeys(t *testing.T, res ListWritesResult) []string {
+	t.Helper()
+	out := make([]string, len(res.Entries))
+	for i, e := range res.Entries {
+		out[i] = fmt.Sprintf("%s@%d", e.LogicalKey, e.Seq)
+	}
+	return out
+}
+
+// pageQuery 用 (after, limit) 参数查询并把结果拼成
+// {keys, hasMore, bySource} 三元的可读形态。
+func pageQuery(t *testing.T, ts *TemporalStore, after *ListWritesCursor, limit uint32) ([]string, bool, []SourceCount) {
+	t.Helper()
+	res, hasMore, err := ts.ListWritesPage("q:", 0, 0, "", after, limit)
+	if err != nil {
+		t.Fatalf("ListWritesPage 失败: %v", err)
+	}
+	return pageKeys(t, res), hasMore, res.BySource
+}
+
+func TestTemporalStore_ListWritesPagePaginatesInTotalOrder(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	// 交错写入 3 个逻辑键 × 3 版本：seq 分配序（a1,b1,c1,a2,...）与
+	// (LogicalKey, Seq) 总序（a1,a2,a3,b1,...）不同，分页必须按后者推进。
+	for i := 1; i <= 3; i++ {
+		for _, k := range []string{"q:a", "q:b", "q:c"} {
+			if _, err := ts.PutVersioned(k, []byte(fmt.Sprintf("v%d", i)), int64(100*i), "job", 1); err != nil {
+				t.Fatalf("写入失败: %v", err)
+			}
+		}
+	}
+
+	// 无分页对照：全部 9 条，按 (LogicalKey, Seq) 升序。
+	full, err := ts.ListWrites("q:", 0, 0, "")
+	if err != nil {
+		t.Fatalf("ListWrites 失败: %v", err)
+	}
+	fullKeys := pageKeys(t, full)
+	if len(fullKeys) != 9 {
+		t.Fatalf("应有 9 条: %v", fullKeys)
+	}
+
+	// 第一页：limit=3 从起点开始，恰好 3 条、有更多。
+	page1, hasMore1, _ := pageQuery(t, ts, nil, 3)
+	if hasMore1 != true || len(page1) != 3 {
+		t.Fatalf("第一页应为 3 条且有更多: keys=%v hasMore=%v", page1, hasMore1)
+	}
+	if page1[0] != "q:a@1" || page1[2] != "q:a@3" {
+		t.Fatalf("第一页应从 q:a@1 到 q:a@3: %v", page1)
+	}
+
+	// 第二页：游标 = 第一页最后一条 (q:a, 3)。
+	page2, hasMore2, _ := pageQuery(t, ts, &ListWritesCursor{LogicalKey: "q:a", Seq: 3}, 3)
+	if hasMore2 != true || len(page2) != 3 || page2[0] != "q:b@1" || page2[2] != "q:b@3" {
+		t.Fatalf("第二页应从 q:b@1 到 q:b@3 且有更多: keys=%v hasMore=%v", page2, hasMore2)
+	}
+
+	// 第三页：游标 = (q:b, 3)，最后一页 3 条、无更多。
+	page3, hasMore3, _ := pageQuery(t, ts, &ListWritesCursor{LogicalKey: "q:b", Seq: 3}, 3)
+	if hasMore3 != false || len(page3) != 3 || page3[0] != "q:c@1" || page3[2] != "q:c@3" {
+		t.Fatalf("第三页应到 q:c@3 为止且无更多: keys=%v hasMore=%v", page3, hasMore3)
+	}
+
+	// 逐页拼接 == 无分页全量结果：顺序一致、无遗漏、无重复。
+	var collected []string
+	collected = append(collected, page1...)
+	collected = append(collected, page2...)
+	collected = append(collected, page3...)
+	if fmt.Sprint(collected) != fmt.Sprint(fullKeys) {
+		t.Fatalf("分页拼接应与全量逐条一致\n  分页: %v\n  全量: %v", collected, fullKeys)
+	}
+
+	// 游标边界：after=(q:a,2) 应跳过 q:a@1/q:a@2，从 q:a@3 开始。
+	fromA3, _, _ := pageQuery(t, ts, &ListWritesCursor{LogicalKey: "q:a", Seq: 2}, 0)
+	if len(fromA3) != 7 || fromA3[0] != "q:a@3" {
+		t.Fatalf("after=(q:a,2) 应跳过 q:a@1/q:a@2 从 q:a@3 起: %v", fromA3)
+	}
+}
+
+func TestTemporalStore_ListWritesPageLimitZeroIsUnbounded(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	for _, k := range []string{"q:a", "q:b"} {
+		if _, err := ts.PutVersioned(k, []byte("v"), 100, "job", 1); err != nil {
+			t.Fatalf("写入失败: %v", err)
+		}
+	}
+
+	keys, hasMore, counts := pageQuery(t, ts, nil, 0)
+	if hasMore || len(keys) != 2 {
+		t.Fatalf("limit=0 应返回全部且无更多: keys=%v hasMore=%v", keys, hasMore)
+	}
+	if len(counts) != 1 || counts[0].Source != "job" || counts[0].Count != 2 {
+		t.Fatalf("limit=0 的 BySource 应统计全部条目: %+v", counts)
+	}
+}
+
+func TestTemporalStore_ListWritesPageCountsOnlyPageEntries(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	// 两个来源各 2 条，limit=1：第一页只有 1 条，BySource 只反映本页。
+	for i := 0; i < 2; i++ {
+		if _, err := ts.PutVersioned("q:a", []byte("x"), int64(100+i), "job-a", 1); err != nil {
+			t.Fatalf("写入失败: %v", err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := ts.PutVersioned("q:b", []byte("y"), int64(200+i), "job-b", 1); err != nil {
+			t.Fatalf("写入失败: %v", err)
+		}
+	}
+
+	_, hasMore, counts := pageQuery(t, ts, nil, 1)
+	if !hasMore {
+		t.Fatal("limit=1 时应有更多")
+	}
+	if len(counts) != 1 || counts[0].Source != "job-a" || counts[0].Count != 1 {
+		t.Fatalf("分页模式的 BySource 只统计本页条目: %+v", counts)
+	}
+}
+
+func TestTemporalStore_ListWritesPageAppliesFiltersWithCursor(t *testing.T) {
+	kv := setupTemporalTest(t)
+	ts := NewTemporalStore(kv)
+
+	// q:a 三条：job-a@100/job-b@200/job-a@300。按来源过滤 + 分页：
+	// limit=1 过滤 source=job-a 后只有 q:a@1、q:a@3 两条，hasMore 由过滤
+	// 后的命中数决定，而不是原始扫描条数。
+	for i, src := range []string{"job-a", "job-b", "job-a"} {
+		if _, err := ts.PutVersioned("q:a", []byte("v"), int64(100*(i+1)), src, 1); err != nil {
+			t.Fatalf("写入失败: %v", err)
+		}
+	}
+
+	res, hasMore, err := ts.ListWritesPage("q:", 0, 0, "job-a", nil, 1)
+	if err != nil {
+		t.Fatalf("ListWritesPage 失败: %v", err)
+	}
+	if !hasMore || len(res.Entries) != 1 || res.Entries[0].Seq != 1 {
+		t.Fatalf("过滤后第一页应只有 q:a@1 且有更多: %+v hasMore=%v", res.Entries, hasMore)
+	}
+
+	res2, hasMore2, err := ts.ListWritesPage("q:", 0, 0, "job-a", &ListWritesCursor{LogicalKey: "q:a", Seq: 1}, 1)
+	if err != nil {
+		t.Fatalf("ListWritesPage 失败: %v", err)
+	}
+	if hasMore2 || len(res2.Entries) != 1 || res2.Entries[0].Seq != 3 {
+		t.Fatalf("过滤后第二页应只有 q:a@3 且无更多: %+v hasMore=%v", res2.Entries, hasMore2)
+	}
+}

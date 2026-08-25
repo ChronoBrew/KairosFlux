@@ -402,3 +402,104 @@ func (s *TemporalStore) ListWrites(prefix string, tFromNanos, tToNanos int64, so
 
 	return ListWritesResult{Entries: entries, BySource: counts}, nil
 }
+
+// ListWritesCursor 是 ListWritesPage 的续查游标：上次返回的最后一条
+// (LogicalKey, Seq)（即 ListWrites 确定性输出总序中的位置）。Seq 是写入
+// 总序（同一 logical key 内严格递增），LogicalKey 用于在总序里唯一定位——
+// 排序是 key 优先，纯 seq 无法表达"下一页从哪条 key 之后开始"。
+type ListWritesCursor struct {
+	LogicalKey string
+	Seq        uint64
+}
+
+// ListWritesPage 是 ListWrites 的分页形态（M5 方案 §C.1：LIST_WRITES 无界
+// 结果超帧被 result_too_large 拒绝的修复）：与 ListWrites 同一扫描与过滤
+// 语义（prefix 下的全部版本键、[tFromNanos, tToNanos] 时间窗、source 过滤、
+// 按 (LogicalKey, Seq) 升序的确定性输出），但把返回条数钉在 limit 内——
+// 响应体量有界，不再可能因单帧超长被拒。
+//
+// after != nil 时跳过总序中 (LogicalKey, Seq) 不大于游标的条目（续查）；
+// after == nil 从总序起点开始（第一页）。limit=0 表示不限量（与 ListWrites
+// 同语义，但调用方走的是分页响应格式）。返回的 hasMore=true 表示在 limit
+// 条之外仍存在命中（扫描到第 limit+1 条命中即提前终止），调用方据此决定
+// 是否带 next_cursor 续查——"还有下一页"与"恰好填满"由这一位显式区分。
+//
+// 成本模型与 ListWrites 相同：一次 ScanRaw 覆盖整个 prefix 的版本键
+// （O(prefix 版本总数)），时间/来源过滤与游标跳过都是扫描后的内存筛选；
+// 与无分页版本的区别只在输出物化上限（entries 切片与 BySource 计数只统计
+// 本页返回的条目，不会为"算全量计数"把整个结果集物化进内存）。
+//
+// 并发写入的语义：seq 是单调写入总序，遍历期间的新写入带更大的 seq 或
+// 落在尚未到达的 key 上，会出现在其所属的后续页；游标已越过的 (key, seq)
+// 不会回头——分页遍历是逐页推进的快照式近似，不是严格一致快照（对审计
+// 导出这类"尽力而为的全量"用途是可接受的，且与无分页时单次全扫的行为
+// 可对比：那同样不冻结并发写入）。
+func (s *TemporalStore) ListWritesPage(prefix string, tFromNanos, tToNanos int64, sourceFilter string, after *ListWritesCursor, limit uint32) (ListWritesResult, bool, error) {
+	upper := append([]byte(prefix), 0xFF)
+	raw := s.store.ScanRaw([]byte(prefix), upper)
+
+	var entries []WriteEnvelope
+	bySource := make(map[string]uint32)
+	hasMore := false
+	for _, e := range raw {
+		key := string(e.Key)
+		if temporal.IsCurrentStorageKey(key) {
+			continue // 只看版本键本身，:current 指针不是一次"写入"记录
+		}
+		logical, seq, ok := temporal.ParseVersionStorageKey(key)
+		if !ok {
+			continue
+		}
+		rec, ok := temporal.DecodeVersionRecord(e.Value)
+		if !ok {
+			continue
+		}
+		if tFromNanos > 0 && rec.WriteNanos < tFromNanos {
+			continue
+		}
+		if tToNanos > 0 && rec.WriteNanos > tToNanos {
+			continue
+		}
+		if sourceFilter != "" && rec.Source != sourceFilter {
+			continue
+		}
+		if after != nil && (logical < after.LogicalKey || (logical == after.LogicalKey && seq <= after.Seq)) {
+			continue // 游标（含边界）之前的命中：续查跳过
+		}
+		if limit > 0 && uint32(len(entries)) >= limit {
+			hasMore = true // 第 limit+1 条命中：页面已满且仍有更多
+			break
+		}
+		hashOK := rec.PersistedHash == "" || rec.PersistedHash == temporal.HashPayload(rec.Payload)
+		entries = append(entries, WriteEnvelope{
+			LogicalKey:    logical,
+			Seq:           seq,
+			WriteNanos:    rec.WriteNanos,
+			Source:        rec.Source,
+			SchemaVer:     rec.SchemaVer,
+			PersistedHash: rec.PersistedHash,
+			Payload:       rec.Payload,
+			HashOK:        hashOK,
+		})
+		bySource[rec.Source]++
+	}
+
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].LogicalKey != entries[j].LogicalKey {
+			return entries[i].LogicalKey < entries[j].LogicalKey
+		}
+		return entries[i].Seq < entries[j].Seq
+	})
+
+	sourceNames := make([]string, 0, len(bySource))
+	for src := range bySource {
+		sourceNames = append(sourceNames, src)
+	}
+	sort.Strings(sourceNames) // 禁止依赖 map 迭代序：显式排序后再输出
+	counts := make([]SourceCount, 0, len(sourceNames))
+	for _, src := range sourceNames {
+		counts = append(counts, SourceCount{Source: src, Count: bySource[src]})
+	}
+
+	return ListWritesResult{Entries: entries, BySource: counts}, hasMore, nil
+}

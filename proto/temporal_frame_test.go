@@ -180,6 +180,130 @@ func TestListWritesRequestUnboundedNoSourceFilter(t *testing.T) {
 	}
 }
 
+func TestListWritesCursorRoundTrip(t *testing.T) {
+	payload := EncodeListWritesCursor("quote:2026-08-17:600000", 42)
+	lk, seq, ok := DecodeListWritesCursor(payload)
+	if !ok || lk != "quote:2026-08-17:600000" || seq != 42 {
+		t.Fatalf("round trip 失败: logicalKey=%q seq=%d ok=%v", lk, seq, ok)
+	}
+}
+
+func TestDecodeListWritesCursor_TooShort(t *testing.T) {
+	if _, _, ok := DecodeListWritesCursor([]byte{1, 2, 3}); ok {
+		t.Fatal("长度不足 4 的负载不应解析成功")
+	}
+}
+
+func TestDecodeListWritesCursor_BadLength(t *testing.T) {
+	// logicalKeyLen 声明与实际不符
+	if _, _, ok := DecodeListWritesCursor([]byte{9, 0, 0, 0, 'a'}); ok {
+		t.Fatal("长度声明与实际不符的负载不应解析成功")
+	}
+}
+
+func TestListWritesRequestV2RoundTripWithPagination(t *testing.T) {
+	cursor := EncodeListWritesCursor("quote:2026-08-17:600000", 7)
+	frame := EncodeListWritesRequestV2([]byte("quote:2026-08-17:"), 100, 200, []byte("job-a"), cursor, 500)
+	prefix, tFrom, tTo, source, after, limit, ok := DecodeListWritesRequestV2(frame)
+	if !ok || string(prefix) != "quote:2026-08-17:" || tFrom != 100 || tTo != 200 ||
+		string(source) != "job-a" || string(after) != string(cursor) || limit != 500 {
+		t.Fatalf("round trip 失败: prefix=%q tFrom=%d tTo=%d source=%q after=%q limit=%d ok=%v",
+			prefix, tFrom, tTo, source, after, limit, ok)
+	}
+	lk, seq, curOK := DecodeListWritesCursor(after)
+	if !curOK || lk != "quote:2026-08-17:600000" || seq != 7 {
+		t.Fatalf("游标内容不符: logicalKey=%q seq=%d ok=%v", lk, seq, curOK)
+	}
+}
+
+func TestListWritesRequestV2FirstPageNoCursor(t *testing.T) {
+	frame := EncodeListWritesRequestV2([]byte("p"), 0, 0, nil, nil, 100)
+	prefix, tFrom, tTo, source, after, limit, ok := DecodeListWritesRequestV2(frame)
+	if !ok || string(prefix) != "p" || tFrom != 0 || tTo != 0 || len(source) != 0 ||
+		len(after) != 0 || limit != 100 {
+		t.Fatalf("round trip 失败: prefix=%q tFrom=%d tTo=%d source=%q after=%q limit=%d ok=%v",
+			prefix, tFrom, tTo, source, after, limit, ok)
+	}
+}
+
+func TestListWritesRequestV2NoPaginationMatchesLegacyByteForByte(t *testing.T) {
+	// 空游标 + limit=0 的 V2 编码必须与 M2 时期 EncodeListWritesRequest
+	// 逐字节相同——"只追加向量、既有向量字节不变"红线的请求侧落地。
+	legacy := EncodeListWritesRequest([]byte("p"), 1, 2, []byte("s"))
+	v2 := EncodeListWritesRequestV2([]byte("p"), 1, 2, []byte("s"), nil, 0)
+	if string(legacy) != string(v2) {
+		t.Fatalf("V2 无分页编码应与旧格式逐字节一致\n  旧: %x\n  V2: %x", legacy, v2)
+	}
+}
+
+func TestDecodeListWritesRequestV2_LegacyRequestDecodesAsNoPagination(t *testing.T) {
+	legacy := EncodeListWritesRequest([]byte("p"), 1, 2, []byte("s"))
+	prefix, tFrom, tTo, source, after, limit, ok := DecodeListWritesRequestV2(legacy)
+	if !ok || string(prefix) != "p" || tFrom != 1 || tTo != 2 || string(source) != "s" ||
+		after != nil || limit != 0 {
+		t.Fatalf("旧格式请求应解出 after=nil limit=0: prefix=%q tFrom=%d tTo=%d source=%q after=%q limit=%d ok=%v",
+			prefix, tFrom, tTo, source, after, limit, ok)
+	}
+}
+
+func TestDecodeListWritesRequestV2_TruncatedTailIsMalformed(t *testing.T) {
+	base := EncodeListWritesRequest([]byte("p"), 1, 2, []byte("s"))
+	// 尾段只有 7 字节（缺 limit 的 4 字节），精确长度判定必须拒绝。
+	bad := append(append([]byte{}, base...), 0, 0, 0, 0, 1, 2, 3)
+	if _, _, _, _, _, _, ok := DecodeListWritesRequestV2(bad); ok {
+		t.Fatal("截断的尾段不应解析成功")
+	}
+}
+
+func TestListWritesResponseV2RoundTripWithNextCursor(t *testing.T) {
+	entries := [][]byte{
+		EncodeWriteEnvelopeEntry("k1", 1, 100, "job-a", 1, "h1", []byte("v1"), true),
+		EncodeWriteEnvelopeEntry("k2", 2, 200, "job-b", 1, "h2", []byte("v2"), false),
+	}
+	next := EncodeListWritesCursor("k2", 2)
+	body := EncodeListWritesResponseV2(entries, []string{"job-a", "job-b"}, []uint32{1, 1}, next)
+	gotEntries, gotCounts, gotNext, ok := DecodeListWritesResponseV2(body)
+	if !ok || len(gotEntries) != 2 || len(gotCounts) != 2 || string(gotNext) != string(next) {
+		t.Fatalf("round trip 失败: entries=%d counts=%d next=%q ok=%v", len(gotEntries), len(gotCounts), gotNext, ok)
+	}
+	lk, seq, curOK := DecodeListWritesCursor(gotNext)
+	if !curOK || lk != "k2" || seq != 2 {
+		t.Fatalf("next_cursor 内容不符: logicalKey=%q seq=%d ok=%v", lk, seq, curOK)
+	}
+}
+
+func TestListWritesResponseV2EmptyNextCursor(t *testing.T) {
+	entries := [][]byte{EncodeWriteEnvelopeEntry("k1", 1, 100, "", 1, "h1", []byte("v1"), true)}
+	body := EncodeListWritesResponseV2(entries, nil, nil, nil)
+	gotEntries, gotCounts, gotNext, ok := DecodeListWritesResponseV2(body)
+	if !ok || len(gotEntries) != 1 || len(gotCounts) != 0 || len(gotNext) != 0 {
+		t.Fatalf("空 next_cursor 应解出零长度游标: entries=%d counts=%d next=%q ok=%v",
+			len(gotEntries), len(gotCounts), gotNext, ok)
+	}
+}
+
+func TestDecodeListWritesResponseV2_LegacyBodyDecodesWithoutTail(t *testing.T) {
+	entries := [][]byte{EncodeWriteEnvelopeEntry("k1", 1, 100, "job-a", 1, "h1", []byte("v1"), true)}
+	legacy := EncodeListWritesResponse(entries, []string{"job-a"}, []uint32{1})
+	gotEntries, gotCounts, gotNext, ok := DecodeListWritesResponseV2(legacy)
+	if !ok || len(gotEntries) != 1 || len(gotCounts) != 1 || gotNext != nil {
+		t.Fatalf("旧格式响应体应解出 nextCursor=nil: entries=%d counts=%d next=%q ok=%v",
+			len(gotEntries), len(gotCounts), gotNext, ok)
+	}
+}
+
+func TestDecodeListWritesResponseV2_LegacyDecoderIgnoresTail(t *testing.T) {
+	// 反向兼容：M2 时期老解码器（DecodeListWritesResponse）解 V2 响应体，
+	// 应照常解出 entries/counts、忽略尾段（老解码器按字段精确消费）。
+	entries := [][]byte{EncodeWriteEnvelopeEntry("k1", 1, 100, "job-a", 1, "h1", []byte("v1"), true)}
+	next := EncodeListWritesCursor("k1", 1)
+	body := EncodeListWritesResponseV2(entries, []string{"job-a"}, []uint32{1}, next)
+	gotEntries, gotCounts, ok := DecodeListWritesResponse(body)
+	if !ok || len(gotEntries) != 1 || len(gotCounts) != 1 || gotEntries[0].LogicalKey != "k1" {
+		t.Fatalf("老解码器应忽略 next_cursor 尾段照常解析: entries=%+v counts=%+v ok=%v", gotEntries, gotCounts, ok)
+	}
+}
+
 func TestWriteEnvelopeEntryRoundTrip(t *testing.T) {
 	entry := EncodeWriteEnvelopeEntry("quote:2026-08-17:600000", 3, 999, "job-a", 2, "deadbeef", []byte("payload"), true)
 	got, consumed, ok := DecodeWriteEnvelopeEntry(entry)
