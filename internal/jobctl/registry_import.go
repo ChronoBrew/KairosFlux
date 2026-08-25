@@ -8,12 +8,20 @@ import (
 	"io"
 )
 
-// registryFingerprintKey 是"对象索引"里策略/实验记录的键空间前缀。任务书
-// 第 4 项："M31 注册表迁入 KairosFlux 对象索引：本任务只做 KairosFlux 侧
-// 能力（对象索引 kind + 从 registry.jsonl 一次性导入工具，文件仍是 git
+// registryFingerprintKey 是"对象索引"里实验/verdict 记录的键空间前缀。
+// 任务书第 4 项："M31 注册表迁入 KairosFlux 对象索引：本任务只做 KairosFlux
+// 侧能力（对象索引 kind + 从 registry.jsonl 一次性导入工具，文件仍是 git
 // 审计源，双写过渡）；QuantBrew 侧写入接线另排，不在本任务改对方仓。"——
 // 本函数只读 QuantBrew 的 registry.jsonl（路径来自调用方传入的配置/CLI flag，
 // 不硬编码对方仓路径），只写本仓库自己的键空间，不回写对方仓文件。
+//
+// 键名与内容不对齐（M5 遗留修正，留档）：前缀叫 "strategy:index:"，但这里
+// 存的是 QuantBrew 实验/verdict 记录（registry.jsonl 的行原样入账），不是
+// 方案 §3.2 对象模型表里定义的 "Strategy 策略库存档"对象。选择"改文档不改
+// 键名"：键空间已被 internal/aiplane（Evidence 图谱的 Experiment 节点，见
+// aiplane/doc.go 已知边界一节）与已导入的数据共同消费，改名要动两包、还要
+// 迁移存量键，破坏面大于收益；语义上把它当作"Evidence 图谱里的 Experiment
+// 节点索引"使用即正确。
 func registryFingerprintKey(fingerprint string) string {
 	return "strategy:index:" + fingerprint
 }
