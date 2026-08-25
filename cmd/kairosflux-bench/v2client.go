@@ -23,6 +23,10 @@ type benchV2Conn struct {
 
 const v2DialTimeout = 5 * time.Second
 
+// listWritesTimeout：LIST_WRITES 有界窗口/无界全扫均需扫描全时态索引再
+// 过滤，单次可达数秒至数十秒，独立于常规 op 的 5s 截止。
+const listWritesTimeout = 90 * time.Second
+
 // dialV2 拨号并按指定 ack 档位协商 v2 连接。
 func dialV2(addr string, ack negotiate.AckTier) (*benchV2Conn, error) {
 	conn, err := net.DialTimeout("tcp", addr, v2DialTimeout)
@@ -51,18 +55,25 @@ func (c *benchV2Conn) Close() error { return c.conn.Close() }
 // 响应；ack=none 下服务端仍回 OK——handlePutVersioned 与 ack 档位无关地
 // 逐帧应答，见 service/router_v2.go，客户端统一读响应保持口径一致）。
 func (c *benchV2Conn) roundTrip(opcode uint8, payload []byte) (*codec.MessageV2, error) {
+	return c.roundTripTimeout(opcode, payload, v2DialTimeout)
+}
+
+// roundTripTimeout：LIST_WRITES 全库扫描类查询单次可达数秒（有界窗口也
+// 需扫描全时态索引后过滤），默认 5s 单次截止会误报 i/o timeout，故超时
+// 可调；其余 op 继续用 v2DialTimeout。
+func (c *benchV2Conn) roundTripTimeout(opcode uint8, payload []byte, timeout time.Duration) (*codec.MessageV2, error) {
 	msg := codec.NewMessageV2(codec.HeaderV2{Opcode: opcode, Type: codec.TypeUnspecified, CorrID: 1}, payload)
 	frame, err := codec.NewDataPackV2().Pack(msg)
 	if err != nil {
 		return nil, fmt.Errorf("编帧失败: %w", err)
 	}
-	if err := c.conn.SetWriteDeadline(time.Now().Add(v2DialTimeout)); err != nil {
+	if err := c.conn.SetWriteDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
 	if _, err := c.conn.Write(frame); err != nil {
 		return nil, fmt.Errorf("写帧失败: %w", err)
 	}
-	if err := c.conn.SetReadDeadline(time.Now().Add(v2DialTimeout)); err != nil {
+	if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, err
 	}
 	resp, err := codec.NewDataPackV2().Decode(c.conn, 0, nil)
@@ -106,7 +117,7 @@ func (c *benchV2Conn) getAsOf(key []byte, asOfNanos int64) ([]byte, bool, error)
 // listWrites 走 LIST_WRITES（审计扫描），返回信封条数。
 func (c *benchV2Conn) listWrites(prefix []byte, tFrom, tTo int64) (int, error) {
 	frame := proto.EncodeListWritesRequest(prefix, tFrom, tTo, nil)
-	resp, err := c.roundTrip(codec.OpcodeListWrites, frame)
+	resp, err := c.roundTripTimeout(codec.OpcodeListWrites, frame, listWritesTimeout)
 	if err != nil {
 		return 0, err
 	}
