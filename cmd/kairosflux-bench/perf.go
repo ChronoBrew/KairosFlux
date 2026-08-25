@@ -99,6 +99,8 @@ func cmdPerf(args []string) error {
 		}
 		writeRow(f, fmt.Sprintf("server v2 PUT_VERSIONED ack=%v", ackName(ack)), stats)
 	}
+	// v1 PUT 不产生时态账本条目：有界 LIST_WRITES 窗口须锚定最后一次版本化写。
+	lastV2End := time.Now()
 
 	// v1 PUT（client.New v1 客户端）
 	stats, err = measureV1Put(addr, *measureWorkers, *samples)
@@ -141,7 +143,7 @@ func cmdPerf(args []string) error {
 
 	// server LIST_WRITES：有界时间窗（最近 1%，跨度=载入写入跨度 1%）；无界
 	// 全扫在 100w+ 会被 16MiB 帧长上限拒绝——单独实测并如实记录。
-	tFrom := time.Now().UnixNano() - int64(*vol)*10_000 // 载入跨度 1% 的时间窗（vol 条 ÷ ~1000 w/s × 1%）
+	tFrom := lastV2End.UnixNano() - int64(*vol)*10_000 // 锚定最后一次版本化写；窗口跨度=载入跨度 1%
 	stats, boundedErr := measureV2ListWrites(addr, *measureWorkers, 20, tFrom)
 	if boundedErr != nil {
 		fmt.Fprintf(f, "| server v2 LIST_WRITES（最近1%%窗口） | 失败: %v |\n", boundedErr)
