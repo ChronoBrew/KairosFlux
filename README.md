@@ -60,8 +60,10 @@ storage layer and the property a plain key-value store cannot give it:
   queryable via audit commands — "who wrote this key, and how many times, in
   this window" is an answered question, not a log-grepping exercise.
 - **A data plane an agent can call directly is the direction, not a shipped
-  feature yet.** See [Roadmap](#roadmap) — a `Context` (read) / `Proposal`
-  (write) surface for agents is designed but has no code today.
+  wire feature yet.** The embedded API ([service/kairosflux.go](service/kairosflux.go))
+  already exposes it: `BuildContext` (deterministic read bundles for agent
+  research) and `SubmitProposal` (agent writes go through the same
+  versioned/audited path). A network-visible agent plane remains [roadmap](#roadmap).
 
 ## Quick Start
 
@@ -151,6 +153,68 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 
 </details>
 
+## Samples — deploy-as-code
+
+KairosFlux is a library first: the same API surface
+(`service.NewEmbedded` / `service.Open` / `service.Serve` in
+[service/kairosflux.go](service/kairosflux.go)) runs in-process or as a
+network shell. Three capability samples, each an independent `main`, each
+one command to run (all outputs below were captured by running them):
+
+**1. Embedded — in-process full flow.** No network listener; put three
+versioned writes, read as-of a point strictly between versions (must see
+v1 only), list versions, replay the ledger fingerprint (self-check against
+`:current`, zero mismatches), then list audit writes.
+
+```console
+$ go run ./cmd/kairosflux-sample-embedded -data-dir /tmp/kf-demo-data
+写入版本 seq=1: {"code":"510300",...}
+写入版本 seq=2: {"code":"510300",...}
+写入版本 seq=3: {"code":"510300",...}
+GET_AS_OF(9:30:00.5) → seq=1 payload={"code":"510300",...}
+LIST_VERSIONS → 3 个版本（seq 升序）
+REPLAY_FINGERPRINT → 逻辑键=1 指纹=26ae2bc46b88a30a4095810af8bed7002fcbf7d907ed64a1b0bf268f3dbbe668 对账不一致=0
+LIST_WRITES → 3 条写入，按来源: sample-demo x3
+[sample-embedded] 全链路通过（指纹对账零不一致）
+```
+
+**2. Server + Python client — cross-language.** `service.Serve` opens a
+real listening port; the Go leg does `PUT_VERSIONED → GET_AS_OF` over the
+wire via a thin v2 client, then the Python leg (repo
+[client/python/bandb_client.py](client/python/bandb_client.py)) does a v1
+put/get round trip and a v2 ack=window batch write with FLUSH reconciliation
+and STAT counter check.
+
+```console
+$ go run ./cmd/kairosflux-sample-server -port 19090 -data-dir /tmp/kf-demo-srv
+[sample-server] 服务已就绪: 127.0.0.1:19090（数据目录 /tmp/kf-demo-srv）
+[sample-server] Go 腿：PUT_VERSIONED 成功 seq=1
+[sample-server] Go 腿：GET_AS_OF 成功 seq=1 payload={"code":"510300",...}
+[sample-server] Python v1 腿: put/get 往返 OK, value = b'{"code":"600519",...}'
+[sample-server] Python v2 腿: FLUSH/WINDOW_ACK received=3 accepted=3 rejected=0
+[sample-server] Python v2 腿: STAT 累计 received=3 accepted=3
+[sample-server] Python 腿全部通过
+[sample-server] 两条腿全部通过
+```
+
+`-python=off` skips the Python leg (and a missing `python3` skips it
+automatically with an honest note); exit code 0 means both legs passed.
+
+**3. Audit export.** Multi-source writes, then a `LIST_WRITES` export to an
+append-only JSONL file with per-envelope hash self-check and a manifest
+line carrying a deterministic `export_fingerprint` (same shape as
+`kairosflux-cli export-writes`).
+
+```console
+$ go run ./cmd/kairosflux-sample-audit -data-dir /tmp/kf-demo-audit -out /tmp/kf-audit.jsonl
+[sample-audit] LIST_WRITES → 5 条写入，按来源: jobctl-reconcile x2 quantscout-crawler x3
+[sample-audit] 导出完成: 5 条 → /tmp/kf-audit.jsonl（export_fingerprint=68d79402e6e431c578b992dfb1955faa1180c486c13473a3147874974f87910e，全部信封 hash 自检通过）
+```
+
+All three exit 0 on success, 1 on any failed step or detected inconsistency
+(e.g. an as-of read returning the wrong version, a fingerprint mismatch, a
+failed envelope hash check).
+
 ## Architecture
 
 ```
@@ -169,7 +233,8 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
                                     ▼                                              ▼
                         Deliver (file / ClickHouse sink)                 AI Agent data plane
                         — existing v1 ingest pipeline,                   Context (read) / Proposal (write)
-                          independent of the temporal opcodes            — roadmap (M4), no code yet
+                          independent of the temporal opcodes            — embedded API shipped, wire surface
+                                                                           remains roadmap
 ```
 
 Two subsystems — a Multi-Raft sharded KV and a dubbo-go-inspired delivery
@@ -186,7 +251,7 @@ Temporal key-space and semantics: [docs/架构与语义总览.md](docs/架构与
 | **Implemented — M1** | Machine-readable per-record-type contracts (`contracts/*.schema.json`: key layout, PIT semantics, idempotency key, validation rules), fail-fast contract loading, structured validation sub-codes (`0x3001`–`0x3004`), timestamp-monotonicity checks dispatched by a declared time-kind instead of a colon-position heuristic on the key string. |
 | **Merged — M2** | `LIST_WRITES` audit query (opcode 0x0D) and a per-version operation envelope (`seq`, `write_ts`, `source`, `schema_ver`, `payload_hash`) with an envelope version tag and lazily-migrated reads for pre-M2 records; `COUNT`-by-source aggregation; append-only, deterministically-ordered JSONL export; `REPLAY_FINGERPRINT` upgraded to a dataset/as-of-scoped callable service. Full test suite and race detector green (merged 2026-08-25). |
 | **Merged — M3** | A declarative Job control plane (`job:spec:{name}` / `job:status:{name}` / `job:events:{name}:v{seq}`) built on the existing versioned opcodes, a single-process reconcile loop (`internal/jobctl` + `cmd/kairosflux-jobctl`), and an explicit strategy lifecycle state machine (Hypothesis → Gate → Candidate → Paper → Live/Retired). Verified by a 10,000-rerun idempotency test against a live server. |
-| **Roadmap — M4** | An AI-native data plane: a `Context` surface for agents to *read* point-in-time state and a `Proposal` surface to *write* through the same versioned/audited path. Not designed in detail yet, no code. |
+| **Implemented — M4 (embedded API)** | An AI-native data plane: a `Context` surface for agents to *read* point-in-time state and a `Proposal` surface to *write* through the same versioned/audited path — implemented as `internal/aiplane` and exposed via `service.Engine.SubmitProposal` / `BuildContext`. A network-visible agent plane over the wire remains roadmap. |
 
 ## Deployment Notes
 
@@ -254,9 +319,10 @@ behavior.
 The full four-milestone plan (M0–M4) lives in QuantBrew's
 [`方案-BanDB-时态内核与AI数据平面.md`](https://github.com/ChronoBrew/QuantBrew/blob/main/docs/方案-BanDB-时态内核与AI数据平面.md).
 In short: M0/M1 are shipped (see [Features](#features)); M2 (replay-as-a-
-service, the audit envelope, `LIST_WRITES`) and M3 (declarative Job control plane) are merged; M4
-(the declarative Job control plane) is scoped but not started; M4 (the
-`Context`/`Proposal` AI data plane) is a direction, not a design yet.
+service, the audit envelope, `LIST_WRITES`), M3 (declarative Job control
+plane) and M4 (the `Context`/`Proposal` AI data plane, `internal/aiplane`,
+exposed via `service.Engine.SubmitProposal`/`BuildContext`) are implemented;
+what remains on the roadmap is the network-visible agent plane over the wire.
 
 ## Performance
 
