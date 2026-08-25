@@ -14,7 +14,9 @@ import (
 	"time"
 )
 
-// seededRand 返回固定种子 42 的随机源。
+// seededRand 返回固定种子 42 的随机源。注意：rand.Rand 非并发安全——并发
+// 测量路径严禁共享单个实例（100w 档实测共享导致 index out of range [-1]
+// 崩溃），并发 worker 必须各持 42+w 派生的独立流。
 func seededRand() *rand.Rand { return rand.New(rand.NewSource(42)) }
 
 // genKey 生成确定性键：quote:2026-08-17:<5 位 code>，code 空间 10 万

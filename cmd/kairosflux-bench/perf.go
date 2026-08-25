@@ -18,6 +18,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math/rand"
 	"net"
 	"os"
 	"sync"
@@ -254,15 +255,16 @@ type row struct {
 }
 
 // measure 通用并发采样器：workers 个 goroutine 各持自己的连接（或直调），
-// 每个做 n/workers 次 op，耗时入 stats。
-func runSamples(workers, total int, op func() error) *Stats {
+// 每个做 n/workers 次 op，耗时入 stats。op 收到 worker 下标 w——并发体需要
+// 确定性随机源时用 42+w 派生各自流（rand.Rand 非并发安全，共享会竞态崩溃）。
+func runSamples(workers, total int, op func(w int) error) *Stats {
 	s := NewStats()
 	s.Start()
 	var wg sync.WaitGroup
 	var next atomic.Int64
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func() {
+		go func(w int) {
 			defer wg.Done()
 			for {
 				i := int(next.Add(1))
@@ -270,10 +272,10 @@ func runSamples(workers, total int, op func() error) *Stats {
 					return
 				}
 				start := time.Now()
-				err := op()
+				err := op(w)
 				s.Record(time.Since(start), err)
 			}
-		}()
+		}(w)
 	}
 	wg.Wait()
 	s.Stop()
@@ -281,7 +283,7 @@ func runSamples(workers, total int, op func() error) *Stats {
 }
 
 // runSamplesErr 同 runSamples，另返回首个采样错误（供读路径如实上报失败）。
-func runSamplesErr(workers, total int, op func() error) (*Stats, error) {
+func runSamplesErr(workers, total int, op func(w int) error) (*Stats, error) {
 	s := NewStats()
 	s.Start()
 	var wg sync.WaitGroup
@@ -290,7 +292,7 @@ func runSamplesErr(workers, total int, op func() error) (*Stats, error) {
 	var firstErr error
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
-		go func() {
+		go func(w int) {
 			defer wg.Done()
 			for {
 				i := int(next.Add(1))
@@ -298,7 +300,7 @@ func runSamplesErr(workers, total int, op func() error) (*Stats, error) {
 					return
 				}
 				start := time.Now()
-				err := op()
+				err := op(w)
 				s.Record(time.Since(start), err)
 				if err != nil {
 					firstErrMu.Lock()
@@ -308,7 +310,7 @@ func runSamplesErr(workers, total int, op func() error) (*Stats, error) {
 					firstErrMu.Unlock()
 				}
 			}
-		}()
+		}(w)
 	}
 	wg.Wait()
 	s.Stop()
@@ -325,15 +327,17 @@ func nextMeasureKey() string {
 
 func measureEmbeddedWrite(e *kairosflux.Engine, workers, samples int) *Stats {
 	base := time.Now().UnixNano()
-	r := seededRand()
-	return runSamples(workers, samples, func() error {
-		_, err := e.PutVersioned(nextMeasureKey(), genPayload(r), base, "bench-write", 2)
+	randoms := make([]*rand.Rand, workers)
+	for w := range randoms {
+		randoms[w] = rand.New(rand.NewSource(42 + int64(w)))
+	}
+	return runSamples(workers, samples, func(w int) error {
+		_, err := e.PutVersioned(nextMeasureKey(), genPayload(randoms[w]), base, "bench-write", 2)
 		return err
 	})
 }
 
 func measureV2Write(addr string, ack negotiate.AckTier, workers, samples int) (*Stats, error) {
-	r := seededRand()
 	conns := make([]*benchV2Conn, workers)
 	for i := range conns {
 		c, err := dialV2(addr, ack)
@@ -353,6 +357,7 @@ func measureV2Write(addr string, ack negotiate.AckTier, workers, samples int) (*
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
+			r := rand.New(rand.NewSource(42 + int64(w)))
 			c := conns[w]
 			for {
 				i := int(next.Add(1))
@@ -389,7 +394,6 @@ func measureV1Put(addr string, workers, samples int) (*Stats, error) {
 		clients[i] = c
 		defer c.Close()
 	}
-	r := seededRand()
 	s := NewStats()
 	s.Start()
 	var wg sync.WaitGroup
@@ -400,6 +404,7 @@ func measureV1Put(addr string, workers, samples int) (*Stats, error) {
 		wg.Add(1)
 		go func(w int) {
 			defer wg.Done()
+			r := rand.New(rand.NewSource(42 + int64(w)))
 			c := clients[w]
 			for {
 				i := int(next.Add(1))
@@ -426,7 +431,7 @@ func measureV1Put(addr string, workers, samples int) (*Stats, error) {
 
 func measureEmbeddedAsOf(e *kairosflux.Engine, workers, samples int) (*Stats, error) {
 	now := time.Now().UnixNano()
-	return runSamplesErr(workers, samples, func() error {
+	return runSamplesErr(workers, samples, func(w int) error {
 		_, found, err := e.GetAsOf(genKey(int(time.Now().UnixNano()%100000)), now)
 		if err != nil {
 			return err
@@ -531,7 +536,7 @@ func measureV1Scan(addr string, workers, samples int) (*Stats, error) {
 }
 
 func measureEmbeddedListWrites(e *kairosflux.Engine, workers, samples int) (*Stats, error) {
-	return runSamplesErr(workers, samples, func() error {
+	return runSamplesErr(workers, samples, func(w int) error {
 		res, err := e.ListWrites("quote:", 0, 0, "")
 		if err != nil {
 			return err
