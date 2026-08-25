@@ -9,12 +9,13 @@ import (
 
 	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/handler"
 	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // countingHandler 记录被分派到的请求数，用于断言超限帧未进入业务处理。
 type countingHandler struct {
-	kairnet.BaseRouter
+	handler.BaseRouter
 	handled chan struct{}
 }
 

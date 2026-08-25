@@ -3,10 +3,17 @@ package kairnet
 import "github.com/ChronoBrew/KairosFlux/kairnet/handler"
 
 // 本文件是重构第二步（拆 handler 包，见 docs/rfc/bannet-重构.md C.7 步骤 2）的
-// 门面：Conn/Request/Handler/HookAction/BaseRouter 的实现已经搬进
-// kairnet/handler，这里用类型别名（非包装类型）把根包的公开标识符原样保留——
-// 已有调用方（service/router.go、service/ingesthook/filter.go 等）不需要
-// 改一行代码或 import 路径。
+// 门面：Conn/Request/Handler/HookAction 的实现已经搬进 kairnet/handler，这里
+// 用类型别名（非包装类型）把根包的公开标识符原样保留——已有调用方
+// （service/router.go、service/ingesthook/filter.go 等）不需要改一行代码或
+// import 路径。
+//
+// 分层收缩（五层重构，docs/调研-架构调整-分层与Node门面.md）：传输层公共 API
+// 只暴露 Handler/HandlerV2 接口，不带任何 Router 概念——BaseRouter 别名已
+// 随本次重构从根包撤出（kairnet/handler.BaseRouter 仍在 handler 包内，
+// kairnet 自身的测试需要空实现时直接 import 该包），Server 的注册方法
+// 相应换成 AddHandler/SetV2Handler（AddRouter/AddRouterV2 只作 deprecated
+// 过渡别名）。
 //
 // Conn 相对 RFC 迁移映射表有一处记录在案的偏差（见 kairnet/handler/handler.go
 // 顶部注释）：表里写的是"迁入 transport"，实际迁入了 handler，以避免
@@ -40,5 +47,3 @@ const (
 	HookDrop = handler.HookDrop
 )
 
-// BaseRouter 是 Handler 的默认空实现，参见 kairnet/handler.BaseRouter。
-type BaseRouter = handler.BaseRouter

@@ -16,6 +16,7 @@ import (
 
 	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/handler"
 	"github.com/ChronoBrew/KairosFlux/kairnet/lifecycle"
 	"github.com/ChronoBrew/KairosFlux/proto"
 )
@@ -93,7 +94,7 @@ func waitConnState(t *testing.T, conn *kairnet.Connection, want lifecycle.State,
 // （io.EOF）——连接的状态机应该收敛到 Closed（途经 Closing，见
 // lifecycle 包自己的单元测试对 Closing 转换规则的覆盖）。
 func TestLifecycleConverges_EOF(t *testing.T) {
-	h := &kairnet.BaseRouter{}
+	h := &handler.BaseRouter{}
 	srv, addr := startTestServer(t, h)
 	t.Cleanup(srv.Stop)
 
@@ -116,7 +117,7 @@ func TestLifecycleConverges_ReadTimeout(t *testing.T) {
 	config.G.ConnReadTimeoutMs = 100 // 100ms，让测试能快速跑完
 	t.Cleanup(func() { config.G.ConnReadTimeoutMs = oldTimeout })
 
-	h := &kairnet.BaseRouter{}
+	h := &handler.BaseRouter{}
 	srv, addr := startTestServer(t, h)
 	t.Cleanup(srv.Stop)
 
@@ -130,7 +131,7 @@ func TestLifecycleConverges_ReadTimeout(t *testing.T) {
 // TestLifecycleConverges_ExplicitStop 覆盖第三种终止诱因：显式调用 Stop——
 // 直接对服务端已注册的连接调用 Stop，状态应立即收敛到 Closed。
 func TestLifecycleConverges_ExplicitStop(t *testing.T) {
-	h := &kairnet.BaseRouter{}
+	h := &handler.BaseRouter{}
 	srv, addr := startTestServer(t, h)
 	t.Cleanup(srv.Stop)
 

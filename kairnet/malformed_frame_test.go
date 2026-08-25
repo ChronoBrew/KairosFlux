@@ -17,13 +17,14 @@ import (
 
 	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/handler"
 	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // echoHandler 记录收到的每一帧（msgID + data 快照）供断言，并回一个固定 OK 响应
 // 证明请求确实走到了业务层、且业务层处理之后连接仍然完好可用。
 type echoHandler struct {
-	kairnet.BaseRouter
+	handler.BaseRouter
 	mu   sync.Mutex
 	seen []seenFrame
 }

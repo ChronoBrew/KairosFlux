@@ -13,11 +13,12 @@ import (
 
 	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/handler"
 	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 type panickingHandler struct {
-	kairnet.BaseRouter
+	handler.BaseRouter
 	calls atomic.Int32
 }
 

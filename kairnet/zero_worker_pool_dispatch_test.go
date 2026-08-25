@@ -28,13 +28,14 @@ import (
 
 	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
+	"github.com/ChronoBrew/KairosFlux/kairnet/handler"
 	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // blockingHandler 的 Handle 会把执行卡在 release 被 close 之前，同时记录
 // "同时有多少个 Handle 调用正在阻塞里"的峰值，用于证明请求是否被串行处理。
 type blockingHandler struct {
-	kairnet.BaseRouter
+	handler.BaseRouter
 	release   chan struct{}
 	inFlight  atomic.Int32
 	peak      atomic.Int32

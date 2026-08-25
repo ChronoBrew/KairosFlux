@@ -46,8 +46,16 @@ type Server struct {
 	stopOnce sync.Once
 }
 
-func (s *Server) AddRouter(msgID string, router Handler) {
-	s.MsgHandle.AddRouter(msgID, router)
+// AddHandler 注册 v1 业务处理器：msgID（proto.MsgPut/MsgGet/...）→ Handler。
+// 与 dispatch.Dispatcher 的键名直接对应，Handler 由业务层（service.Router）
+// 实现并注入——传输层只认识 Handler 接口，不持有任何 Router 类型。
+func (s *Server) AddHandler(msgID string, h Handler) {
+	s.MsgHandle.AddRouter(msgID, h)
+}
+
+// SetV2Handler 注册 v2 业务处理器（见 V2Handler 字段注释）。
+func (s *Server) SetV2Handler(h HandlerV2) {
+	s.V2Handler = h
 }
 
 func NewServer() *Server {
@@ -115,9 +123,16 @@ func (s *Server) onFrameV2(msg *codec.MessageV2, conn Conn) {
 	s.V2Handler.HandleV2(req)
 }
 
-// AddRouterV2 注册 v2 业务处理器（见 V2Handler 字段注释）。
+// Deprecated: AddRouter 是 AddHandler 的过渡别名（分层重构期间旧调用方仍可用，
+// 新代码一律走 AddHandler——"Router" 概念已从传输层公共 API 撤出，见
+// handler.go 顶部注释）。main 与 service.Node 必须走新路径。
+func (s *Server) AddRouter(msgID string, router Handler) {
+	s.AddHandler(msgID, router)
+}
+
+// Deprecated: AddRouterV2 是 SetV2Handler 的过渡别名，同上。
 func (s *Server) AddRouterV2(h HandlerV2) {
-	s.V2Handler = h
+	s.SetV2Handler(h)
 }
 
 func (s *Server) Start() {

@@ -20,11 +20,12 @@ import (
 
 	"github.com/ChronoBrew/KairosFlux/kairnet"
 	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
+	"github.com/ChronoBrew/KairosFlux/kairnet/handler"
 	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 type blockingUntilReleaseHandler struct {
-	kairnet.BaseRouter
+	handler.BaseRouter
 	release  chan struct{}
 	entered  chan struct{}
 	respID   string
