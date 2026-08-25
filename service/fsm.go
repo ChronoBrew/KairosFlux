@@ -54,25 +54,35 @@ type KVServer struct {
 // standalone：构建存储层 WAL 并重放到 memtable，不启动 Raft。
 // raft：启动 Raft，写经其日志，不使用存储层 WAL。
 func NewKVServer() *KVServer {
-	// 初始化存储
+	kv, err := newKVServer(config.G)
+	if err != nil {
+		slog.Error("failed to open storage WAL", "path", config.G.WALPath, "error", err)
+		panic("failed to open storage WAL: " + err.Error())
+	}
+	return kv
+}
+
+// newKVServer 与 NewKVServer 同构，只是配置来自显式参数而不是包级 config.G
+// ——kairosflux 引擎（service/kairosflux.go）为每个实例构造独立数据目录时用
+// 它，WAL 打开失败以 error 返回而不是 panic（嵌入方可以选择如何处理）。
+func newKVServer(cfg *config.GlobalConfig) (*KVServer, error) {
 	kv := &KVServer{
-		storage: storage.NewEngine(storage.DefaultOptions()),
+		storage: storage.NewEngine(storage.OptionsFromConfig(cfg)),
 	}
 
-	if config.G.Mode == config.ModeStandalone {
-		wal, err := storage.NewWAL(config.G.WALPath)
+	if cfg.Mode == config.ModeStandalone {
+		wal, err := storage.NewWAL(cfg.WALPath)
 		if err != nil {
-			slog.Error("failed to open storage WAL", "path", config.G.WALPath, "error", err)
-			panic("failed to open storage WAL: " + err.Error())
+			return nil, err
 		}
 		kv.wal = wal
 		kv.replayWAL()
-		return kv
+		return kv, nil
 	}
 
 	// raft 模式：写经 Raft 日志
-	kv.raft = raft.NewRaft(config.G.Peers, config.G.Me)
-	return kv
+	kv.raft = raft.NewRaft(cfg.Peers, cfg.Me)
+	return kv, nil
 }
 
 // replayWAL 启动时把 WAL 中的记录重放进 memtable（幂等盲写）。

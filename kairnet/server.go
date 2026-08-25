@@ -65,11 +65,18 @@ func (s *Server) SetV2Handler(h HandlerV2) {
 // worker 池/连接管理器/关停信号通道就绪，尚未绑定监听——绑定发生在
 // Start）。
 func NewServer() *Server {
+	return NewServerWithConfig(config.G)
+}
+
+// NewServerWithConfig 与 NewServer 同构，只是监听地址/名称来自显式配置——
+// kairosflux 引擎的 server 模式（service/kairosflux.go 的 Serve）用它构造
+// 可嵌入的网络壳，不依赖进程级 config.G 的监听设置。
+func NewServerWithConfig(cfg *config.GlobalConfig) *Server {
 	return &Server{
 		ipVersion: "tcp4",
-		IP:        config.G.Host,
-		Name:      config.G.Name,
-		Port:      config.G.Port,
+		IP:        cfg.Host,
+		Name:      cfg.Name,
+		Port:      cfg.Port,
 		exitCh:    make(chan os.Signal, 1), // 缓冲 1：signal.Notify 不阻塞、不丢信号
 		MsgHandle: NewMsgHandle(),
 		ConnMgr:   NewConnManager(),

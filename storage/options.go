@@ -35,14 +35,22 @@ type Options struct {
 // 这是全局配置进入存储层的唯一入口：调用方在构造时读一次，此后引擎只认自己那份参数，
 // 不再受 config.G 后续变动影响。
 func DefaultOptions() Options {
+	return OptionsFromConfig(config.G)
+}
+
+// OptionsFromConfig 从一份显式配置构造 Options——与 DefaultOptions 的唯一区别
+// 是数据来源（显式 cfg 而不是包级 config.G）。kairosflux 引擎
+// （service/kairosflux.go）为每个实例使用独立数据目录构造存储时走这里，
+// 与 DefaultOptions 保持同一份字段映射，不另抄一遍。
+func OptionsFromConfig(cfg *config.GlobalConfig) Options {
 	return Options{
-		Dir:               config.G.SSTablePath,
-		MaxMemTableSize:   config.G.MaxMemTableSize,
-		MaxCompactionSize: config.G.MaxCompactionSize,
-		MaxInflightBytes:  config.G.MemTableMaxInflightBytes,
-		BlockCacheBytes:   config.G.BlockCacheBytes,
-		SkipListMaxLevel:  config.G.MaxMemTableLevel,
-		SkipListP:         config.G.MaxMemTableP,
+		Dir:               cfg.SSTablePath,
+		MaxMemTableSize:   cfg.MaxMemTableSize,
+		MaxCompactionSize: cfg.MaxCompactionSize,
+		MaxInflightBytes:  cfg.MemTableMaxInflightBytes,
+		BlockCacheBytes:   cfg.BlockCacheBytes,
+		SkipListMaxLevel:  cfg.MaxMemTableLevel,
+		SkipListP:         cfg.MaxMemTableP,
 	}
 }
 
