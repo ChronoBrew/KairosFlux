@@ -1,6 +1,6 @@
-package service_test
+package kairosflux_test
 
-// kairosflux 双模式引擎（service/kairosflux.go）的验收测试：embedded 全流程、
+// kairosflux 双模式引擎（仓库根 kairosflux.go）的验收测试：embedded 全流程、
 // Open 重启恢复、server 网络壳（真实 v2 线协议往返）、Proposal/Context 访问口。
 //
 // 测试全部用独立临时数据目录，不触碰进程级 config.G 与仓库 log/ 目录。
@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
+	kairosflux "github.com/ChronoBrew/KairosFlux"
 	"github.com/ChronoBrew/KairosFlux/internal/jobctl"
-	"github.com/ChronoBrew/KairosFlux/service"
 )
 
 // mustDataDir 建一个本测试独占的临时数据目录。
@@ -27,7 +27,7 @@ func mustDataDir(t *testing.T) string {
 // GET_AS_OF（含 as-of 定点语义）→ LIST_VERSIONS → REPLAY_FINGERPRINT（无界
 // 对账 + 确定性）→ LIST_WRITES（审计 + 按来源计数）。
 func TestEngineEmbeddedFullFlow(t *testing.T) {
-	e, err := service.NewEmbedded(service.Options{DataDir: mustDataDir(t)})
+	e, err := kairosflux.NewEmbedded(kairosflux.Options{DataDir: mustDataDir(t)})
 	if err != nil {
 		t.Fatalf("NewEmbedded: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestEngineEmbeddedFullFlow(t *testing.T) {
 func TestEngineOpenRestartRecoversData(t *testing.T) {
 	dir := mustDataDir(t)
 
-	e1, err := service.NewEmbedded(service.Options{DataDir: dir})
+	e1, err := kairosflux.NewEmbedded(kairosflux.Options{DataDir: dir})
 	if err != nil {
 		t.Fatalf("NewEmbedded: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestEngineOpenRestartRecoversData(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
-	e2, err := service.Open(service.Options{DataDir: dir})
+	e2, err := kairosflux.Open(kairosflux.Options{DataDir: dir})
 	if err != nil {
 		t.Fatalf("Open 同一数据目录: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestEngineOpenRestartRecoversData(t *testing.T) {
 // TestEngineOpenRequiresExistingDir 验证 Open 对"目录不存在"的结构化拒绝。
 func TestEngineOpenRequiresExistingDir(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "does-not-exist")
-	if _, err := service.Open(service.Options{DataDir: missing}); err == nil {
+	if _, err := kairosflux.Open(kairosflux.Options{DataDir: missing}); err == nil {
 		t.Fatal("Open 不存在的目录应报错")
 	}
 }
@@ -171,7 +171,7 @@ func freePort(t *testing.T) int {
 // embedded 模式同数据、同语义。
 func TestEngineServeNetworkShell(t *testing.T) {
 	port := freePort(t)
-	e, err := service.Serve(service.Options{DataDir: mustDataDir(t), Port: port})
+	e, err := kairosflux.Serve(kairosflux.Options{DataDir: mustDataDir(t), Port: port})
 	if err != nil {
 		t.Fatalf("Serve: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestEngineServeNetworkShell(t *testing.T) {
 
 // TestEngineServeRejectsNonPositivePort 验证 Serve 对 Port<=0 的拒绝。
 func TestEngineServeRejectsNonPositivePort(t *testing.T) {
-	if _, err := service.Serve(service.Options{DataDir: mustDataDir(t)}); err == nil {
+	if _, err := kairosflux.Serve(kairosflux.Options{DataDir: mustDataDir(t)}); err == nil {
 		t.Fatal("Serve 无端口应报错")
 	}
 }
@@ -216,14 +216,14 @@ func TestEngineServeRejectsNonPositivePort(t *testing.T) {
 // （角色强制 + 指纹确定性），随后组装确定性上下文包（契约文件 + 红线文件
 // 摘要 + 策略状态读取全走 as-of）。
 func TestEngineProposalAndContext(t *testing.T) {
-	e, err := service.NewEmbedded(service.Options{DataDir: mustDataDir(t)})
+	e, err := kairosflux.NewEmbedded(kairosflux.Options{DataDir: mustDataDir(t)})
 	if err != nil {
 		t.Fatalf("NewEmbedded: %v", err)
 	}
 	defer e.Close()
 
-	fp, seq, err := e.SubmitProposal(service.Proposal{
-		Kind:        service.ProposalFactor,
+	fp, seq, err := e.SubmitProposal(kairosflux.Proposal{
+		Kind:        kairosflux.ProposalFactor,
 		SubmittedBy: "quantscout-researcher-v1",
 		FactorName:  "amihud_illiq",
 		Summary:     "流动性因子复测提议",
@@ -254,7 +254,7 @@ func TestEngineProposalAndContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req := service.ContextRequest{AsOfNanos: time.Now().UnixNano() + 1e9}
+	req := kairosflux.ContextRequest{AsOfNanos: time.Now().UnixNano() + 1e9}
 	b1, err := e.BuildContext(req, contractsDir, redlinesPath)
 	if err != nil {
 		t.Fatalf("BuildContext: %v", err)

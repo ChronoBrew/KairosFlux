@@ -2,7 +2,7 @@
 // （发布批次阶段 A）：把 KairosFlux 当库嵌进进程，跑通
 // 合成数据 → PUT_VERSIONED 版本化写入 → GET_AS_OF 定点读取 → LIST_VERSIONS
 // 版本清单 → REPLAY_FINGERPRINT 重放指纹（:current 对账）→ LIST_WRITES 审计
-// 全链路，全部走 service/kairosflux.go 的可导入 API，不开任何网络监听。
+// 全链路，全部走 kairosflux.go（仓库根）的可导入 API，不开任何网络监听。
 //
 // 用法（README"一条命令跑通"）：
 //
@@ -17,14 +17,14 @@ import (
 	"os"
 	"time"
 
-	"github.com/ChronoBrew/KairosFlux/service"
+	kairosflux "github.com/ChronoBrew/KairosFlux"
 )
 
 func main() {
 	dataDir := flag.String("data-dir", "/tmp/kairosflux-sample-embedded", "数据目录（不存在会自动创建）")
 	flag.Parse()
 
-	e, err := service.NewEmbedded(service.Options{DataDir: *dataDir})
+	e, err := kairosflux.NewEmbedded(kairosflux.Options{DataDir: *dataDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[sample-embedded] 启动失败:", err)
 		os.Exit(1)

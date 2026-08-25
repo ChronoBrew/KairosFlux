@@ -22,8 +22,8 @@ import (
 	"sort"
 	"time"
 
+	kairosflux "github.com/ChronoBrew/KairosFlux"
 	"github.com/ChronoBrew/KairosFlux/internal/temporal"
-	"github.com/ChronoBrew/KairosFlux/service"
 )
 
 // exportWriteRecord 是 JSONL 每行记录（与 kairosflux-cli 的 export-writes
@@ -51,7 +51,7 @@ func main() {
 	outPath := flag.String("out", "/tmp/kairosflux-audit.jsonl", "JSONL 导出路径（追加写入）")
 	flag.Parse()
 
-	e, err := service.NewEmbedded(service.Options{DataDir: *dataDir})
+	e, err := kairosflux.NewEmbedded(kairosflux.Options{DataDir: *dataDir})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[sample-audit] 启动失败:", err)
 		os.Exit(1)
@@ -139,8 +139,8 @@ func main() {
 // computeExportFingerprint 计算导出内容的确定性指纹：与 kairosflux-cli 的
 // export-writes 同一算法（按 (LogicalKey, Seq) 排序后的
 // internal/temporal.Fingerprint），保证两条导出路径产出同值，可互相校验。
-func computeExportFingerprint(entries []service.WriteEnvelope) string {
-	sorted := make([]service.WriteEnvelope, len(entries))
+func computeExportFingerprint(entries []kairosflux.WriteEnvelope) string {
+	sorted := make([]kairosflux.WriteEnvelope, len(entries))
 	copy(sorted, entries)
 	sort.Slice(sorted, func(i, j int) bool {
 		if sorted[i].LogicalKey != sorted[j].LogicalKey {

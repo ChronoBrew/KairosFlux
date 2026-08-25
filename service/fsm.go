@@ -62,8 +62,16 @@ func NewKVServer() *KVServer {
 	return kv
 }
 
+// NewKVServerWithConfig 与 NewKVServer 同构，只是配置来自显式参数而不是
+// 包级 config.G——kairosflux 引擎（仓库根 kairosflux.go）为每个实例构造独立
+// 数据目录时用它，WAL 打开失败以 error 返回而不是 panic（嵌入方可以选择
+// 如何处理）。
+func NewKVServerWithConfig(cfg *config.GlobalConfig) (*KVServer, error) {
+	return newKVServer(cfg)
+}
+
 // newKVServer 与 NewKVServer 同构，只是配置来自显式参数而不是包级 config.G
-// ——kairosflux 引擎（service/kairosflux.go）为每个实例构造独立数据目录时用
+// ——kairosflux 引擎（仓库根 kairosflux.go）为每个实例构造独立数据目录时用
 // 它，WAL 打开失败以 error 返回而不是 panic（嵌入方可以选择如何处理）。
 func newKVServer(cfg *config.GlobalConfig) (*KVServer, error) {
 	kv := &KVServer{

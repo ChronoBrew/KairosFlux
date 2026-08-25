@@ -1,5 +1,5 @@
 // 命令 kairosflux-sample-server 是"server 模式 + Python 客户端"能力样例
-// （发布批次阶段 A）：service.Serve 起一个真实监听端口，同一套 API 作为
+// （发布批次阶段 A）：kairosflux.Serve 起一个真实监听端口，同一套 API 作为
 // 网络壳对外服务——先由 Go 侧 v2 瘦客户端（kairnet/codec + negotiate +
 // proto 拼帧，与 kairosflux-cli 同一模式）经真实线协议完成
 // PUT_VERSIONED → GET_AS_OF 往返，再由 Python 客户端（仓库
@@ -25,10 +25,10 @@ import (
 	"strings"
 	"time"
 
+	kairosflux "github.com/ChronoBrew/KairosFlux"
 	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
 	"github.com/ChronoBrew/KairosFlux/kairnet/negotiate"
 	"github.com/ChronoBrew/KairosFlux/proto"
-	"github.com/ChronoBrew/KairosFlux/service"
 )
 
 func main() {
@@ -37,7 +37,7 @@ func main() {
 	pythonFlag := flag.String("python", "python3", "python3 可执行文件路径；=off 跳过 Python 腿")
 	flag.Parse()
 
-	e, err := service.Serve(service.Options{DataDir: *dataDir, Port: *port})
+	e, err := kairosflux.Serve(kairosflux.Options{DataDir: *dataDir, Port: *port})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "[sample-server] 启动失败:", err)
 		os.Exit(1)

@@ -60,7 +60,7 @@ storage layer and the property a plain key-value store cannot give it:
   queryable via audit commands — "who wrote this key, and how many times, in
   this window" is an answered question, not a log-grepping exercise.
 - **A data plane an agent can call directly is the direction, not a shipped
-  wire feature yet.** The embedded API ([service/kairosflux.go](service/kairosflux.go))
+  wire feature yet.** The embedded API ([kairosflux.go](kairosflux.go))
   already exposes it: `BuildContext` (deterministic read bundles for agent
   research) and `SubmitProposal` (agent writes go through the same
   versioned/audited path). A network-visible agent plane remains [roadmap](#roadmap).
@@ -156,10 +156,11 @@ $ python3 client/python/examples/write_quote.py --addr 127.0.0.1:8080 \
 ## Samples — deploy-as-code
 
 KairosFlux is a library first: the same API surface
-(`service.NewEmbedded` / `service.Open` / `service.Serve` in
-[service/kairosflux.go](service/kairosflux.go)) runs in-process or as a
-network shell. Three capability samples, each an independent `main`, each
-one command to run (all outputs below were captured by running them):
+(`kairosflux.NewEmbedded` / `kairosflux.Open` / `kairosflux.Serve` in
+[kairosflux.go](kairosflux.go), the module-root top-level package) runs
+in-process or as a network shell. Three capability samples, each an
+independent `main`, each one command to run (all outputs below were
+captured by running them):
 
 **1. Embedded — in-process full flow.** No network listener; put three
 versioned writes, read as-of a point strictly between versions (must see
@@ -178,7 +179,7 @@ LIST_WRITES → 3 条写入，按来源: sample-demo x3
 [sample-embedded] 全链路通过（指纹对账零不一致）
 ```
 
-**2. Server + Python client — cross-language.** `service.Serve` opens a
+**2. Server + Python client — cross-language.** `kairosflux.Serve` opens a
 real listening port; the Go leg does `PUT_VERSIONED → GET_AS_OF` over the
 wire via a thin v2 client, then the Python leg (repo
 [client/python/bandb_client.py](client/python/bandb_client.py)) does a v1
@@ -251,7 +252,7 @@ Temporal key-space and semantics: [docs/架构与语义总览.md](docs/架构与
 | **Implemented — M1** | Machine-readable per-record-type contracts (`contracts/*.schema.json`: key layout, PIT semantics, idempotency key, validation rules), fail-fast contract loading, structured validation sub-codes (`0x3001`–`0x3004`), timestamp-monotonicity checks dispatched by a declared time-kind instead of a colon-position heuristic on the key string. |
 | **Merged — M2** | `LIST_WRITES` audit query (opcode 0x0D) and a per-version operation envelope (`seq`, `write_ts`, `source`, `schema_ver`, `payload_hash`) with an envelope version tag and lazily-migrated reads for pre-M2 records; `COUNT`-by-source aggregation; append-only, deterministically-ordered JSONL export; `REPLAY_FINGERPRINT` upgraded to a dataset/as-of-scoped callable service. Full test suite and race detector green (merged 2026-08-25). |
 | **Merged — M3** | A declarative Job control plane (`job:spec:{name}` / `job:status:{name}` / `job:events:{name}:v{seq}`) built on the existing versioned opcodes, a single-process reconcile loop (`internal/jobctl` + `cmd/kairosflux-jobctl`), and an explicit strategy lifecycle state machine (Hypothesis → Gate → Candidate → Paper → Live/Retired). Verified by a 10,000-rerun idempotency test against a live server. |
-| **Implemented — M4 (embedded API)** | An AI-native data plane: a `Context` surface for agents to *read* point-in-time state and a `Proposal` surface to *write* through the same versioned/audited path — implemented as `internal/aiplane` and exposed via `service.Engine.SubmitProposal` / `BuildContext`. A network-visible agent plane over the wire remains roadmap. |
+| **Implemented — M4 (embedded API)** | An AI-native data plane: a `Context` surface for agents to *read* point-in-time state and a `Proposal` surface to *write* through the same versioned/audited path — implemented as `internal/aiplane` and exposed via `kairosflux.Engine.SubmitProposal` / `BuildContext`. A network-visible agent plane over the wire remains roadmap. |
 
 ## Deployment Notes
 
@@ -321,7 +322,7 @@ The full four-milestone plan (M0–M4) lives in QuantBrew's
 In short: M0/M1 are shipped (see [Features](#features)); M2 (replay-as-a-
 service, the audit envelope, `LIST_WRITES`), M3 (declarative Job control
 plane) and M4 (the `Context`/`Proposal` AI data plane, `internal/aiplane`,
-exposed via `service.Engine.SubmitProposal`/`BuildContext`) are implemented;
+exposed via `kairosflux.Engine.SubmitProposal`/`BuildContext`) are implemented;
 what remains on the roadmap is the network-visible agent plane over the wire.
 
 ## Performance

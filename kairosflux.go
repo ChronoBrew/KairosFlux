@@ -1,8 +1,9 @@
-package service
-
-// kairosflux.go 是 KairosFlux 的可导入双模式引擎 API（发布批次阶段 A）：
-// embedded（纯进程内）与 server（同一套 API 的网络壳）共用同一个 Engine，
-// 时态内核五操作 + 审计 + Context/Proposal 访问口在两种模式下逐字节同语义。
+// Package kairosflux 是 KairosFlux 的可导入双模式引擎 API（顶层包，发布批次
+// 阶段 A）：embedded（纯进程内）与 server（同一套 API 的网络壳）共用同一个
+// Engine，时态内核五操作 + 审计 + Context/Proposal 访问口在两种模式下逐字节
+// 同语义。跨仓调用方（ChronoBrew/ChronoBrew 的 sample 与 E2E 测试）用
+// `import kairosflux "github.com/ChronoBrew/KairosFlux"` 即可获得全部能力，
+// 不需要 import 任何 internal 包。
 //
 // 三种构造形态：
 //
@@ -26,20 +27,22 @@ package service
 //
 // 已知边界（诚实标注，不是遗漏）：
 //   - Engine 的进程内写路径（PutVersioned）不经过协议层角色强制
-//     （router_v2.go 的 handlePutVersioned 对 source 的 agent 身份校验只覆盖
-//     PUT_VERSIONED 线协议帧）——进程内调用方本身就是可信代码，角色强制是
-//     "线协议上防越权"的机制，不适用于同进程直调。server 模式下经网络的
-//     写入仍受完整协议层强制。
+//     （service/router_v2.go 的 handlePutVersioned 对 source 的 agent 身份
+//     校验只覆盖 PUT_VERSIONED 线协议帧）——进程内调用方本身就是可信代码，
+//     角色强制是"线协议上防越权"的机制，不适用于同进程直调。server 模式下
+//     经网络的写入仍受完整协议层强制。
 //   - kairnet.Server 的连接数上限（config.G.MaxConn）仍读进程级全局配置
 //     （kairnet/server.go 的 acceptLoop，改动会牵动既有行为，未在本批次触碰）：
 //     Engine 的 server 模式沿用进程默认值 1000。
-//   - Engine 不加载 contracts/*.schema.json（Node 的 schema.LoadContractsDefault
+//   - Engine 不加载 contracts/*.schema.json（service 的 schema.LoadContractsDefault
 //     是生产契约校验的前提；Engine 的采集过滤钩子对未注册前缀走默认放行
 //     回退路径——见 service/ingesthook/filter.go 的 validate 回退），嵌入式
 //     场景不需要仓库内契约文件即可运行。
 //   - 存储引擎无独立 Close（flush/compaction 工作协程随进程退出）；Engine.Close
 //     负责排空并关闭 WAL 文件句柄与（server 模式下）网络壳，保证同进程内
 //     Open 复用同一数据目录安全。
+package kairosflux
+
 import (
 	"errors"
 	"fmt"
@@ -53,6 +56,7 @@ import (
 	"github.com/ChronoBrew/KairosFlux/internal/temporal"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
 	"github.com/ChronoBrew/KairosFlux/proto"
+	"github.com/ChronoBrew/KairosFlux/service"
 	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
 )
 
@@ -80,8 +84,8 @@ type Options struct {
 // 在两种模式下逐字节同语义——这是"server 模式 = 同一 API 的网络壳"的落点。
 type Engine struct {
 	cfg      *config.GlobalConfig
-	kv       *KVServer
-	temporal *TemporalStore
+	kv       *service.KVServer
+	temporal *service.TemporalStore
 	server   *kairnet.Server // server 模式非 nil；embedded 模式 nil
 	rw       engineReadWriter
 }
@@ -110,6 +114,19 @@ type (
 	// ContextBundle 是 BuildContext 的输出（确定性上下文包，字段契约见
 	// contracts/aiplane/context.schema.json）。
 	ContextBundle = aiplane.ContextBundle
+
+	// WriteEnvelope 是 LIST_WRITES 返回的单条审计信封
+	// （LogicalKey/Seq/WriteNanos/Source/SchemaVer/PersistedHash/Payload/
+	// HashOK，见 service.WriteEnvelope）。
+	WriteEnvelope = service.WriteEnvelope
+
+	// ReplayResult 是 REPLAY_FINGERPRINT 的结果（KeyCount/Fingerprint/
+	// Mismatches/Bounded，见 service.ReplayResult）。
+	ReplayResult = service.ReplayResult
+
+	// ListWritesResult 是 LIST_WRITES 的结果（Entries + BySource 聚合，
+	// 见 service.ListWritesResult）。
+	ListWritesResult = service.ListWritesResult
 )
 
 // ProposalKind 常量（值即 aiplane 的枚举值，跨仓调用方不需要 import
@@ -181,13 +198,13 @@ func newEngine(opts Options, requireDir bool) (*Engine, error) {
 		config.WithSSTablePath(opts.DataDir),
 	)
 
-	kv, err := newKVServer(cfg)
+	kv, err := service.NewKVServerWithConfig(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("kairosflux: 打开存储失败: %w", err)
 	}
 	kv.Run() // standalone 模式无 apply 循环，直接返回
 
-	t := NewTemporalStore(kv)
+	t := service.NewTemporalStore(kv)
 	e := &Engine{
 		cfg:      cfg,
 		kv:       kv,
@@ -209,9 +226,9 @@ func newEngine(opts Options, requireDir bool) (*Engine, error) {
 // 与 Node（service/node.go）的 handler 接线同构。
 func (e *Engine) attachNetworkShell(opts Options) error {
 	filter := ingesthook.NewFilter([]string{"gps", "user_id"}, 0, true)
-	router := NewRouter(e.kv)
+	router := service.NewRouter(e.kv)
 	router.SetPreHandle(filter.Handle)
-	routerV2 := NewRouterV2(e.kv, filter, opts.WindowSafetyValveN)
+	routerV2 := service.NewRouterV2(e.kv, filter, opts.WindowSafetyValveN)
 
 	srv := kairnet.NewServerWithConfig(e.cfg)
 	srv.AddHandler(proto.MsgPut, router)
@@ -302,17 +319,15 @@ func (e *Engine) Addr() string {
 }
 
 // Close 优雅关停引擎（幂等）：server 模式先按 kairnet 三段式排空在途请求并
-// 关闭监听，随后排空并关闭 WAL 文件句柄——此后同进程内用同一 DataDir 重新
-// Open 是安全的（WAL 文件唯一写者不变量恢复）。存储引擎的 flush/compaction
-// 工作协程随进程退出，无需也不存在单独的关闭入口（见 storage.Engine 文档）。
+// 关闭监听，随后排空并关闭 WAL 文件句柄（service.KVServer.Close 负责）——
+// 此后同进程内用同一 DataDir 重新 Open 是安全的（WAL 文件唯一写者不变量
+// 恢复）。存储引擎的 flush/compaction 工作协程随进程退出，无需也不存在单独
+// 的关闭入口（见 storage.Engine 文档）。
 func (e *Engine) Close() error {
 	if e.server != nil {
 		e.server.Stop()
 	}
-	if e.kv.wal != nil {
-		return e.kv.wal.Close()
-	}
-	return nil
+	return e.kv.Close()
 }
 
 // engineReadWriter 是 Engine 面向 aiplane 的 ReadWriter 适配器：以进程内
@@ -321,7 +336,7 @@ func (e *Engine) Close() error {
 // 输出形状（ListPrefix 返回全部历史版本，折叠是 aiplane.LatestPerLogicalKey
 // 的职责），只是不经网络。
 type engineReadWriter struct {
-	t *TemporalStore
+	t *service.TemporalStore
 }
 
 // PutVersioned 实现 aiplane.Writer：write_ts 用当前时间，schema_ver=0
