@@ -112,26 +112,32 @@ func cmdPerf(args []string) error {
 	fmt.Fprintf(f, "| 路径 | 采样 | p50 | p95 | p99 | 均值 | max |\n|---|---|---|---|---|---|---|\n")
 
 	// embedded as-of
-	stats = measureEmbeddedAsOf(e, *measureWorkers, *samples)
-	readRow(f, "embedded GET_AS_OF（进程内）", stats)
+	if stats, rerr := measureEmbeddedAsOf(e, *measureWorkers, *samples); rerr != nil {
+		fmt.Fprintf(f, "| embedded GET_AS_OF（进程内） | 失败: %v |\n", rerr)
+	} else {
+		readRow(f, "embedded GET_AS_OF（进程内）", stats)
+	}
 
 	// server v2 as-of
-	stats, err = measureV2AsOf(addr, *measureWorkers, *samples)
-	if err != nil {
-		return err
+	if stats, rerr := measureV2AsOf(addr, *measureWorkers, *samples); rerr != nil {
+		fmt.Fprintf(f, "| server v2 GET_AS_OF | 失败: %v |\n", rerr)
+	} else {
+		readRow(f, "server v2 GET_AS_OF", stats)
 	}
-	readRow(f, "server v2 GET_AS_OF", stats)
 
 	// server v1 SCAN 全前缀（100k 个当前值）
-	stats, err = measureV1Scan(addr, *measureWorkers, *samples)
-	if err != nil {
-		return err
+	if stats, rerr := measureV1Scan(addr, *measureWorkers, *samples); rerr != nil {
+		fmt.Fprintf(f, "| server v1 SCAN quote: 全前缀 | 失败: %v |\n", rerr)
+	} else {
+		readRow(f, "server v1 SCAN quote: 全前缀", stats)
 	}
-	readRow(f, "server v1 SCAN quote: 全前缀", stats)
 
 	// embedded LIST_WRITES 全前缀无界
-	stats = measureEmbeddedListWrites(e, *measureWorkers, 20)
-	readRow(f, "embedded LIST_WRITES 全前缀无界（进程内）", stats)
+	if stats, rerr := measureEmbeddedListWrites(e, *measureWorkers, 20); rerr != nil {
+		fmt.Fprintf(f, "| embedded LIST_WRITES 全前缀无界（进程内） | 失败: %v |\n", rerr)
+	} else {
+		readRow(f, "embedded LIST_WRITES 全前缀无界（进程内）", stats)
+	}
 
 	// server LIST_WRITES：有界时间窗（最近 1%，跨度=载入写入跨度 1%）；无界
 	// 全扫在 100w+ 会被 16MiB 帧长上限拒绝——单独实测并如实记录。
@@ -272,6 +278,41 @@ func runSamples(workers, total int, op func() error) *Stats {
 	return s
 }
 
+// runSamplesErr 同 runSamples，另返回首个采样错误（供读路径如实上报失败）。
+func runSamplesErr(workers, total int, op func() error) (*Stats, error) {
+	s := NewStats()
+	s.Start()
+	var wg sync.WaitGroup
+	var next atomic.Int64
+	var firstErrMu sync.Mutex
+	var firstErr error
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				i := int(next.Add(1))
+				if i > total {
+					return
+				}
+				start := time.Now()
+				err := op()
+				s.Record(time.Since(start), err)
+				if err != nil {
+					firstErrMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					firstErrMu.Unlock()
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	s.Stop()
+	return s, firstErr
+}
+
 // keySeq 记录测量阶段写到的键下标（从载入量之后继续，保证不重写同 seq
 // 归属——版本化写本来也不覆盖，只是让键分布更真实）。
 var measureSeq atomic.Int64
@@ -381,9 +422,9 @@ func measureV1Put(addr string, workers, samples int) (*Stats, error) {
 	return s, nil
 }
 
-func measureEmbeddedAsOf(e *kairosflux.Engine, workers, samples int) *Stats {
+func measureEmbeddedAsOf(e *kairosflux.Engine, workers, samples int) (*Stats, error) {
 	now := time.Now().UnixNano()
-	return runSamples(workers, samples, func() error {
+	return runSamplesErr(workers, samples, func() error {
 		_, found, err := e.GetAsOf(genKey(int(time.Now().UnixNano()%100000)), now)
 		if err != nil {
 			return err
@@ -410,6 +451,8 @@ func measureV2AsOf(addr string, workers, samples int) (*Stats, error) {
 	s.Start()
 	var wg sync.WaitGroup
 	var next atomic.Int64
+	var firstErrMu sync.Mutex
+	var firstErr error
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
@@ -426,12 +469,19 @@ func measureV2AsOf(addr string, workers, samples int) (*Stats, error) {
 					err = fmt.Errorf("as-of 未命中")
 				}
 				s.Record(time.Since(start), err)
+				if err != nil {
+					firstErrMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					firstErrMu.Unlock()
+				}
 			}
 		}(w)
 	}
 	wg.Wait()
 	s.Stop()
-	return s, nil
+	return s, firstErr
 }
 
 func measureV1Scan(addr string, workers, samples int) (*Stats, error) {
@@ -448,6 +498,8 @@ func measureV1Scan(addr string, workers, samples int) (*Stats, error) {
 	s.Start()
 	var wg sync.WaitGroup
 	var next atomic.Int64
+	var firstErrMu sync.Mutex
+	var firstErr error
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
@@ -461,16 +513,23 @@ func measureV1Scan(addr string, workers, samples int) (*Stats, error) {
 				start := time.Now()
 				_, err := c.Scan(context.Background(), []byte("quote:2026-08-17:"), []byte("quote:2026-08-17:\xff\xff"), predicate.Predicate{})
 				s.Record(time.Since(start), err)
+				if err != nil {
+					firstErrMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					firstErrMu.Unlock()
+				}
 			}
 		}(w)
 	}
 	wg.Wait()
 	s.Stop()
-	return s, nil
+	return s, firstErr
 }
 
-func measureEmbeddedListWrites(e *kairosflux.Engine, workers, samples int) *Stats {
-	return runSamples(workers, samples, func() error {
+func measureEmbeddedListWrites(e *kairosflux.Engine, workers, samples int) (*Stats, error) {
+	return runSamplesErr(workers, samples, func() error {
 		res, err := e.ListWrites("quote:", 0, 0, "")
 		if err != nil {
 			return err
@@ -498,6 +557,8 @@ func measureV2ListWrites(addr string, workers, samples int, tFrom int64) (*Stats
 	s.Start()
 	var wg sync.WaitGroup
 	var next atomic.Int64
+	var firstErrMu sync.Mutex
+	var firstErr error
 	for w := 0; w < workers; w++ {
 		wg.Add(1)
 		go func(w int) {
@@ -514,12 +575,19 @@ func measureV2ListWrites(addr string, workers, samples int, tFrom int64) (*Stats
 					err = fmt.Errorf("LIST_WRITES 空结果")
 				}
 				s.Record(time.Since(start), err)
+				if err != nil {
+					firstErrMu.Lock()
+					if firstErr == nil {
+						firstErr = err
+					}
+					firstErrMu.Unlock()
+				}
 			}
 		}(w)
 	}
 	wg.Wait()
 	s.Stop()
-	return s, nil
+	return s, firstErr
 }
 
 // —— 表格输出 ——
