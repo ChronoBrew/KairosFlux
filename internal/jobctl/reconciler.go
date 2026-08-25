@@ -54,7 +54,7 @@ func (r *Reconciler) Reconcile(spec JobSpec) (JobStatus, error) {
 	}
 
 	now := r.Clock.Now()
-	slot := Slot(now, spec.ScheduleIntervalSeconds)
+	slot := spec.Slot(now) // 声明了 schedule 锚点走本地墙钟时槽，否则纪元锚定（M3 遗留修正）
 	fp := spec.Fingerprint()
 	nowNanos := now.UnixNano()
 

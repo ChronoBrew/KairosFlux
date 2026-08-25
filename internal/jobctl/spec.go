@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // JobSpec 是 job:spec:{name} 的期望状态。协调者裁决：spec 声明格式用 JSON
@@ -43,6 +46,13 @@ type JobSpec struct {
 	// 的具体纳秒值——同一时间片内重跑多少次，slot 不变，幂等键不变。
 	ScheduleIntervalSeconds int64 `json:"schedule_interval_seconds"`
 
+	// Schedule 是可选的可配置锚点（M3 遗留修正：此前的 slot 边界锚定在
+	// Unix 纪元，daily job 即 UTC 零点切分，对非 UTC 用户不友好）。格式：
+	// "daily@HH:MM <IANA时区>"，如 "daily@16:10 Asia/Shanghai"——slot 边界
+	// 对齐到该时区每天 16:10 的本地墙钟时刻。空字符串 = 旧行为（纪元锚定，
+	// 零回归）。幂等键语义不变：slot 仍是墙钟的确定性函数，同 slot 同键。
+	Schedule string `json:"schedule,omitempty"`
+
 	// MaxRetries 是失败后的最大重试次数（不含首次执行）。
 	MaxRetries int `json:"max_retries"`
 
@@ -77,6 +87,11 @@ func (s JobSpec) Validate() error {
 	}
 	if s.ScheduleIntervalSeconds <= 0 {
 		return &ValidationError{Field: "schedule_interval_seconds", Reason: "必须为正整数"}
+	}
+	if s.Schedule != "" {
+		if _, _, _, err := ParseSchedule(s.Schedule); err != nil {
+			return &ValidationError{Field: "schedule", Reason: err.Error()}
+		}
 	}
 	if s.MaxRetries < 0 {
 		return &ValidationError{Field: "max_retries", Reason: "不能为负数"}
@@ -130,6 +145,7 @@ func (s JobSpec) CanonicalJSON() []byte {
 		ScheduleIntervalSeconds int64             `json:"schedule_interval_seconds"`
 		MaxRetries              int               `json:"max_retries"`
 		RetryBackoffSeconds     int64             `json:"retry_backoff_seconds"`
+		Schedule                string            `json:"schedule,omitempty"`
 	}{
 		Name:                    s.Name,
 		Command:                 s.Command,
@@ -139,6 +155,7 @@ func (s JobSpec) CanonicalJSON() []byte {
 		ScheduleIntervalSeconds: s.ScheduleIntervalSeconds,
 		MaxRetries:              s.MaxRetries,
 		RetryBackoffSeconds:     s.RetryBackoffSeconds,
+		Schedule:                s.Schedule,
 	}
 	// 规范化编码不可能失败（所有字段都是 JSON 原生可编码类型），忽略 error
 	// 与本仓库其它"编码函数不返回 error"的既有先例一致（如 temporal 包的
@@ -155,4 +172,50 @@ func (s JobSpec) CanonicalJSON() []byte {
 func (s JobSpec) Fingerprint() string {
 	sum := sha256.Sum256(s.CanonicalJSON())
 	return hex.EncodeToString(sum[:])
+}
+
+// ParseSchedule 解析可配置锚点的声明语法："daily@HH:MM <IANA时区>"。
+// 目前只支持 daily 一个调度种类（YAGNI，不做 weekly/hourly 等未声明的
+// 种类；遇到未知种类给明确错误而不是悄悄当 daily 处理）。时区必须是
+// Go 标准库能识别的 IANA 名称（time.LoadLocation，标准库自带 tzdata 时
+// 不依赖系统时区库）。返回该锚点每天的本地时刻与所在时区。
+func ParseSchedule(s string) (hour, min int, loc *time.Location, err error) {
+	kindRest, ok := strings.CutPrefix(s, "daily@")
+	if !ok {
+		return 0, 0, nil, fmt.Errorf("格式应为 daily@HH:MM <IANA时区>，got %q", s)
+	}
+	timeStr, zone, ok := strings.Cut(kindRest, " ")
+	if !ok || zone == "" {
+		return 0, 0, nil, fmt.Errorf("缺少 IANA 时区（如 Asia/Shanghai），got %q", s)
+	}
+	hStr, mStr, ok := strings.Cut(timeStr, ":")
+	if !ok {
+		return 0, 0, nil, fmt.Errorf("时刻格式应为 HH:MM，got %q", timeStr)
+	}
+	h, err := strconv.Atoi(hStr)
+	if err != nil || h < 0 || h > 23 {
+		return 0, 0, nil, fmt.Errorf("小时非法（00-23）：%q", hStr)
+	}
+	m, err := strconv.Atoi(mStr)
+	if err != nil || m < 0 || m > 59 {
+		return 0, 0, nil, fmt.Errorf("分钟非法（00-59）：%q", mStr)
+	}
+	loc, err = time.LoadLocation(zone)
+	if err != nil {
+		return 0, 0, nil, fmt.Errorf("未知 IANA 时区 %q: %v", zone, err)
+	}
+	return h, m, loc, nil
+}
+
+// Slot 计算本 spec 的当前逻辑时间片：声明了 Schedule 锚点走
+// AnchoredSlot（边界对齐本地墙钟时刻），否则保持既有语义（Unix 纪元
+// 锚定，零回归）。Validate 保证 Schedule 合法时 ParseSchedule 不会失败
+// ——失败回退旧路径只是防御性的（不可达）。
+func (s JobSpec) Slot(now time.Time) int64 {
+	if s.Schedule != "" {
+		if h, m, loc, err := ParseSchedule(s.Schedule); err == nil {
+			return AnchoredSlot(now, s.ScheduleIntervalSeconds, loc, h, m)
+		}
+	}
+	return Slot(now, s.ScheduleIntervalSeconds)
 }
