@@ -25,7 +25,7 @@ func TestSSTableIteratorStopsAtDataEnd(t *testing.T) {
 	}
 	path := ss.Metas()[0].Filepath
 
-	it, err := newSSTableIterator(path)
+	it, err := newSSTableIterator(ss, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,7 +185,7 @@ func TestSSTableTombstoneRoundTrip(t *testing.T) {
 		}
 	}
 
-	it, err := newSSTableIterator(path)
+	it, err := newSSTableIterator(ss, path)
 	if err != nil {
 		t.Fatal(err)
 	}

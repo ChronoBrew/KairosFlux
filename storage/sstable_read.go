@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"io"
 	"os"
+	"sync/atomic"
 )
 
 func (bi *blockIndex) blockExtent(i int) (int64, int64) {
@@ -18,34 +19,95 @@ func (bi *blockIndex) blockExtent(i int) (int64, int64) {
 
 func (ss *SSTable) openFile(path string) *os.File {
 	ss.fdMu.RLock()
-	f, ok := ss.fdCache[path]
+	e, ok := ss.fdCache[path]
+	if ok && !e.removed {
+		ss.fdMu.RUnlock()
+		return e.f
+	}
 	ss.fdMu.RUnlock()
-	if ok {
-		return f
-	}
 
-	ss.fdMu.Lock()
-	defer ss.fdMu.Unlock()
-	if f, ok := ss.fdCache[path]; ok { // 双检：并发者可能已填入
-		return f
-	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil
 	}
-	ss.fdCache[path] = f
+	ss.fdMu.Lock()
+	defer ss.fdMu.Unlock()
+	if e, ok := ss.fdCache[path]; ok { // 双检：并发者可能已填入
+		if e.removed {
+			f.Close() // 打开期间文件被删：丢弃新句柄，行为同 ENOENT
+			return nil
+		}
+		f.Close()
+		return e.f
+	}
+	ss.fdCache[path] = &fdEntry{f: f}
 	return f
 }
 
-// closeFile 关闭并剔除该路径的常驻句柄（文件被删除时调用）。
+// openRef 取该路径的常驻句柄并增加一个引用（扫描/归并迭代器持有）。返回错误表示
+// 打开失败（含文件已删除的情形）。调用方必须保证每个成功返回都对应一次 closeRef，
+// 错误路径同样——句柄生命周期下沉到 fdCache 的引用计数，正是 #52 的修复点。
+func (ss *SSTable) openRef(path string) (*os.File, error) {
+	ss.fdMu.RLock()
+	e, ok := ss.fdCache[path]
+	if ok && !e.removed {
+		atomic.AddInt32(&e.refs, 1) // 快路径只持 RLock：refs 必须是原子（见 fdEntry 注释）
+		ss.fdMu.RUnlock()
+		return e.f, nil
+	}
+	ss.fdMu.RUnlock()
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	ss.fdMu.Lock()
+	defer ss.fdMu.Unlock()
+	if e, ok := ss.fdCache[path]; ok { // 双检：并发者可能已填入
+		if e.removed {
+			f.Close() // 打开期间文件被删：与 os.Open 的 ENOENT 行为一致
+			return nil, &os.PathError{Op: "open", Path: path, Err: os.ErrNotExist}
+		}
+		atomic.AddInt32(&e.refs, 1)
+		return e.f, nil
+	}
+	ss.fdCache[path] = &fdEntry{f: f, refs: 1}
+	return f, nil
+}
+
+// closeRef 释放一次引用。引用归零且文件已标记删除时关闭句柄并剔除缓存；否则句柄
+// 继续常驻（供点读与后续迭代复用）。
+func (ss *SSTable) closeRef(path string) {
+	ss.fdMu.Lock()
+	defer ss.fdMu.Unlock()
+	e, ok := ss.fdCache[path]
+	if !ok {
+		return // 早已在 refs 归零时被关闭剔除
+	}
+	n := atomic.AddInt32(&e.refs, -1)
+	if n <= 0 && e.removed {
+		delete(ss.fdCache, path)
+		e.f.Close()
+	}
+}
+
+// closeFile 关闭并剔除该路径的常驻句柄（文件被删除时调用）。若仍有迭代器引用
+// （并发扫描/归并正在读该文件），仅标记 removed，待最后一个引用释放后才真正关闭
+// ——保持「unlink 后已打开的 fd 仍可读」的 POSIX 语义，与修复前各迭代器持独立
+// 句柄时的行为等价。
 func (ss *SSTable) closeFile(path string) {
 	ss.fdMu.Lock()
-	f, ok := ss.fdCache[path]
-	delete(ss.fdCache, path)
-	ss.fdMu.Unlock()
-	if ok {
-		f.Close()
+	e, ok := ss.fdCache[path]
+	if !ok {
+		ss.fdMu.Unlock()
+		return
 	}
+	e.removed = true
+	if atomic.LoadInt32(&e.refs) == 0 {
+		delete(ss.fdCache, path)
+		e.f.Close()
+	}
+	ss.fdMu.Unlock()
 }
 
 func (ss *SSTable) ReadAllFromSSTable(filepath string) ([]*LogEntry, error) {

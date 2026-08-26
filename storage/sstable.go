@@ -71,12 +71,30 @@ type SSTable struct {
 	// 读路径一律使用 ReadAt：其不依赖文件内偏移，故同一句柄可被任意多个并发读者共享。
 	// 缓存规模由 SSTable 文件数界定（compaction 持续收敛文件数）；句柄在 DeleteSSTable
 	// 中关闭并剔除，否则每轮 compaction 泄漏一个 fd。
-	fdCache map[string]*os.File
+	//
+	// refs 是持有该句柄的扫描/归并迭代器计数：删除路径（closeFile）只标记 removed，
+	// 待最后一个引用释放后才真正 close——并发扫描与 compaction 删除交错时，扫描仍能
+	// 读完已打开的文件（unlink 后已打开的 fd 仍可读），与「每迭代器独立 open」的
+	// 旧行为等价。扫描/归并自身不再 open 新句柄，进程句柄峰值由表数界定而非
+	// 表数×并发扫描数（100w 档 2963 表 × 8 并发曾冲破 macOS kern.maxfilesperproc
+	// 上限 10240 而 EMFILE，#52）。
+	fdCache map[string]*fdEntry
 	fdMu    sync.RWMutex
 
 	// blocks 缓存已读取的数据块，使热数据点查不再触达磁盘、也不再逐次分配整块缓冲。
 	// 预算取自 config.BlockCacheBytes（<=0 关闭，此时为 nil，读路径退化为每次 ReadAt）。
 	blocks *blockCache
+}
+
+// fdEntry 一个常驻句柄及其引用计数。removed 表示文件已删除：refs 归零后由 closeFile
+// 关闭句柄并剔除缓存；在此之前对已删路径的 open 一律失败（与 os.Open 的 ENOENT 等价）。
+//
+// refs 用原子计数：openRef 的快路径只持 fdMu 的 RLock（读路径热点，逐迭代器一次），
+// 并发递增必须经原子操作，否则与 closeRef/closeFile 的递减构成数据竞争。
+type fdEntry struct {
+	f       *os.File
+	refs    int32
+	removed bool
 }
 
 // NewSSTable 按 opts 构造 SSTable 集合的管理者。
@@ -87,7 +105,7 @@ func NewSSTable(opts Options) *SSTable {
 		metas:      make([]*SSTableMeta, 0),
 		indexCache: make(map[string]*blockIndex),
 		bloomCache: make(map[string]*PartitionedBloom),
-		fdCache:    make(map[string]*os.File),
+		fdCache:    make(map[string]*fdEntry),
 		blocks:     newBlockCache(opts.BlockCacheBytes),
 	}
 	ss.publishMetas()

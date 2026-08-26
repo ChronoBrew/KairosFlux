@@ -31,7 +31,7 @@ func TestIteratorScanThroughput(t *testing.T) {
 	// 全量迭代三次取最好成绩，减少页缓存冷热的影响。
 	best := time.Duration(1 << 62)
 	for round := 0; round < 3; round++ {
-		it, err := newSSTableIterator(path)
+		it, err := newSSTableIterator(ss, path)
 		if err != nil {
 			t.Fatalf("newSSTableIterator: %v", err)
 		}

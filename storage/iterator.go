@@ -13,8 +13,19 @@ import (
 // 不变量：每次 Next 都为 key/value 分配**新**切片（不复用缓冲区），因此调用方
 // 可以安全持有上一次 Next 返回的 key/value——K 路归并的最小堆依赖此性质。
 // 若未来为了性能改成复用单个缓冲区，会静默破坏堆中已入队的元素。
+//
+// 句柄生命周期（#52）：迭代器不拥有文件句柄。它经 openRef 复用 fdCache 的常驻
+// 共享句柄并在 Close 时 closeRef 释放；文件本身的关闭由 fdCache 的删除路径负责。
+// 共享句柄安全的前提是迭代只经 ReadAt 读（见 readAtReader）：ReadAt 不依赖也不
+// 修改文件内偏移，故任意多个并发扫描可同读一个句柄，进程句柄峰值由表数界定，
+// 不再随并发扫描数倍增。
 type sstableIterator struct {
-	f *os.File
+	// f 是 fdCache 的常驻共享句柄；ss/path 供 Close 释放引用。
+	f    *os.File
+	ss   *SSTable
+	path string
+	// rr 把 ReadAt 包装成 io.Reader 供 r 顺序流式读取，位置自持（见其 Read）。
+	rr *readAtReader
 	// r 是带缓冲的读取器。此前逐字段直接从 *os.File 读（键长、键、值长、值），每条记录
 	// 约四次 read syscall；一层缓冲即把它摊薄到每若干条一次内核往返。
 	r *bufio.Reader
@@ -32,15 +43,32 @@ type sstableIterator struct {
 // iterReadBufSize 是迭代器的读缓冲大小。取值需覆盖若干条记录，使内核往返次数与记录数解耦。
 const iterReadBufSize = 64 << 10
 
-// newSSTableIteratorFrom 打开文件并借块索引直接跳到可能含 start 的那一块，避免从文件头
-// 顺序跳过。
+// readAtReader 把 ReadAt 包装成 io.Reader 供 bufio 使用：每次 Read 从自持的 pos
+// 偏移读起并推进 pos。它不依赖也不修改 *os.File 的共享偏移，因此基于常驻共享句柄
+// 的并发迭代器彼此无干扰（点读 searchBlock 的 ReadAt 早已依赖同一性质）。
+type readAtReader struct {
+	f   *os.File
+	pos int64
+}
+
+func (r *readAtReader) Read(p []byte) (int, error) {
+	n, err := r.f.ReadAt(p, r.pos)
+	r.pos += int64(n)
+	if n > 0 && err == io.EOF {
+		return n, nil // 尾块读尽：下次 Read 才上报 EOF
+	}
+	return n, err
+}
+
+// newSSTableIteratorFrom 取得共享句柄引用并借块索引直接跳到可能含 start 的那一块，
+// 避免从文件头顺序跳过。
 //
 // 这对按游标推进的扫描是决定性的：投递每取一批就以新游标再扫一次，若每次都从头顺序跳到
 // 游标处，总代价随数据量平方增长。二分块索引后每次只从目标块开始读。
 //
 // 无块索引（老格式或尾部残缺）时退回从头读，由调用方的范围裁剪保证正确性。
 func newSSTableIteratorFrom(ss *SSTable, path string, start []byte) (*sstableIterator, error) {
-	it, err := newSSTableIterator(path)
+	it, err := newSSTableIterator(ss, path)
 	if err != nil {
 		return nil, err
 	}
@@ -66,45 +94,48 @@ func newSSTableIteratorFrom(ss *SSTable, path string, start []byte) (*sstableIte
 		it.exhausted = true
 		return it, nil
 	}
+	// 从目标块开始读：句柄共享，禁止 Seek；直接设置读位置即可（构造后尚无字节被读）。
 	off := bi.entries[lo].BlockOffset
-	if _, err := it.f.Seek(off, io.SeekStart); err != nil {
-		it.Close()
-		return nil, err
-	}
-	it.r.Reset(it.f) // 缓冲里可能已预读了 seek 前的字节，必须丢弃
 	it.pos = off
+	it.rr.pos = off
 	return it, nil
 }
 
-// newSSTableIterator 打开文件并定位到数据区起点。
-func newSSTableIterator(path string) (*sstableIterator, error) {
-	f, err := os.Open(path)
+// newSSTableIterator 取得共享句柄引用并定位到数据区起点。
+func newSSTableIterator(ss *SSTable, path string) (*sstableIterator, error) {
+	f, err := ss.openRef(path)
 	if err != nil {
 		return nil, err
 	}
-	dataEnd := sstableDataEnd(f)
-	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		f.Close()
-		return nil, err
-	}
-	return &sstableIterator{f: f, r: bufio.NewReaderSize(f, iterReadBufSize), dataEnd: dataEnd}, nil
+	rr := &readAtReader{f: f}
+	return &sstableIterator{
+		f:       f,
+		ss:      ss,
+		path:    path,
+		rr:      rr,
+		r:       bufio.NewReaderSize(rr, iterReadBufSize),
+		dataEnd: sstableDataEnd(f),
+	}, nil
 }
 
 // sstableDataEnd 读 Footer 返回数据区结束偏移；老格式或异常返回 -1（读到 EOF）。
+//
+// 用 Stat + ReadAt 实现（都不依赖文件内偏移）：传入的句柄可能是被并发共享的常驻
+// 句柄（#52 后扫描迭代器一律复用 fdCache），Seek 会与其它读者的位置纠缠。
 func sstableDataEnd(f *os.File) int64 {
 	info, err := f.Stat()
 	if err != nil || info.Size() < indexFooterSize {
 		return -1
 	}
-	if _, err := f.Seek(-indexFooterSize, io.SeekEnd); err != nil {
+	var footer [indexFooterSize]byte
+	n, err := f.ReadAt(footer[:], info.Size()-indexFooterSize)
+	if err != nil || n != len(footer) {
 		return -1
 	}
-	var blockCount uint32
-	var indexOffset int64
-	var magic uint32
-	binary.Read(f, binary.BigEndian, &blockCount)
-	binary.Read(f, binary.BigEndian, &indexOffset)
-	binary.Read(f, binary.BigEndian, &magic)
+	// Footer 布局：BlockCount(4B) + IndexOffset(8B) + Magic(4B)，BigEndian。
+	blockCount := binary.BigEndian.Uint32(footer[0:4])
+	indexOffset := int64(binary.BigEndian.Uint64(footer[4:12]))
+	magic := binary.BigEndian.Uint32(footer[12:16])
 	if magic == indexFooterMagic && blockCount > 0 && indexOffset > 0 {
 		return indexOffset
 	}
@@ -159,7 +190,17 @@ func (it *sstableIterator) Next() bool {
 func (it *sstableIterator) Key() []byte   { return it.key }
 func (it *sstableIterator) Value() []byte { return it.value }
 func (it *sstableIterator) Err() error    { return it.err }
-func (it *sstableIterator) Close() error  { return it.f.Close() }
+
+// Close 释放共享句柄引用（不关闭文件——文件归 fdCache 拥有）。所有结束路径
+// （正常耗尽、调用方提前停止、归并出错）都必须走到这里，否则句柄引用不归还、
+// 已删除文件的句柄会被无限期延迟关闭。
+func (it *sstableIterator) Close() error {
+	if it.f != nil {
+		it.ss.closeRef(it.path)
+		it.f = nil // 幂等：重复 Close 不再释放
+	}
+	return nil
+}
 
 // sliceIterator 在一份已排序的条目切片上迭代，供内存表参与归并。
 //
