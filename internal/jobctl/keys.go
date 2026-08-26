@@ -1,8 +1,9 @@
 // Package jobctl 实现 M3 对象模型与声明式 Job 控制面（docs/方案-BanDB-
 // 时态内核与AI数据平面.md §M3）：daily 流水线从 shell 串联升级为"声明式
 // 任务 + 本地 reconcile 循环"。Job 对象长在 KairosFlux 键空间里（job:spec/
-// job:status/job:events 三段），走既有 v2 opcode（PUT_VERSIONED/GET_AS_OF），
-// 不新增 opcode、不引入 k8s/Ray/cron 库。
+// job:status/job:events 三段），走既有 v2 opcode（PUT_VERSIONED/GET_AS_OF/
+// LIST_VERSIONS——后者只用于启动恢复扫描读取事件账本），不新增 opcode、
+// 不引入 k8s/Ray/cron 库。
 package jobctl
 
 import "fmt"
