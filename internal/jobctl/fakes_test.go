@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // fakeStore 是 Store 的内存实现，语义与 service.TemporalStore 对齐（每次
@@ -49,6 +51,20 @@ func (s *fakeStore) versionCount(logicalKey string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.versions[logicalKey])
+}
+
+// ListVersions 实现 Store 接口：按版本序（seq 升序）返回完整历史，语义与
+// service.TemporalStore 的 LIST_VERSIONS 一致。供启动恢复扫描测试
+// （recovery_test.go）读取事件账本。
+func (s *fakeStore) ListVersions(logicalKey string) ([]proto.VersionEntryView, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	vs := s.versions[logicalKey]
+	out := make([]proto.VersionEntryView, 0, len(vs))
+	for i, payload := range vs {
+		out = append(out, proto.VersionEntryView{Seq: uint64(i + 1), Payload: payload})
+	}
+	return out, nil
 }
 
 // fixedTestTime 是测试用的固定时刻，避免每个测试文件各自拼一个

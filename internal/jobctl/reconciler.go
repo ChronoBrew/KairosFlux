@@ -6,6 +6,8 @@ import (
 	"log"
 	"sort"
 	"time"
+
+	"github.com/ChronoBrew/KairosFlux/proto"
 )
 
 // AlertSink 是"重试仍失败后的告警"出口。告警先落 job:events（Reconcile
@@ -48,6 +50,12 @@ func NewReconciler(store Store) *Reconciler {
 // （succeeded/alerting）直接返回、不产生新的 status 版本也不产生新事件；
 // 退避未到期的 failed 状态同样直接返回。这是一万次重跑验收标准的实现基础：
 // 用固定 Clock 反复调用本方法，Store 里的版本数不会随调用次数增长。
+//
+// 真正执行一次的写序（M3 已知局限"写 event 然后写 status 两次独立调用"
+// 的修复，M4 裁决"状态=事件的函数"）：①status→running 落盘（崩溃恢复的
+// 锚点）→ ②执行 → ③event 落盘 → ④status→终态（由刚落盘的 event 派生，
+// 见 jobStatusFromEvent）。每次执行因此写两条 status 版本（running + 终态）、
+// 一条 event 版本，都是固定次数、不随重跑次数增长。
 func (r *Reconciler) Reconcile(spec JobSpec) (JobStatus, error) {
 	if err := spec.Validate(); err != nil {
 		return JobStatus{}, err
@@ -104,23 +112,46 @@ func (r *Reconciler) Reconcile(spec JobSpec) (JobStatus, error) {
 	}
 
 	// 到这里：依赖已满足（或本来就不需要检查）。要么是第一次真正执行
-	// （attempt=1），要么是退避已到期的重试（attempt=prev.Attempt+1）。
+	// （attempt=1），要么是退避已到期的重试（attempt=prev.Attempt+1）；
+	// 唯一例外是 prev 本身就是 running——上次执行悬空、终态未落，这里补完
+	// 同一次尝试（attempt=prev.Attempt），不消耗新的重试预算（重执行是安全
+	// 语义：幂等键 (slot, fingerprint) 保证业务重复无害，见 Recover）。
 	attempt := 1
 	if sameTrack {
-		attempt = prev.Attempt + 1
+		if prev.Phase == PhaseRunning {
+			attempt = prev.Attempt
+		} else {
+			attempt = prev.Attempt + 1
+		}
+	}
+
+	// 写序第①步：status→running 先落盘。崩溃后重启时，启动恢复扫描
+	// （Recover）以它为锚判断"上次执行是否悬空"——没有对应 event 就按幂等
+	// 键重执行并补 event。写入发生在真正执行之前：终态 status 是事件账本的
+	// 派生视图，执行侧事实必须先于它要派生的视图落盘。running 没有对应事件
+	// （事件在执行后才写），verdict 留空是准确语义。
+	running := JobStatus{
+		Phase:           PhaseRunning,
+		Slot:            slot,
+		SpecFingerprint: fp,
+		Attempt:         attempt,
+		LastAttemptTime: nowNanos,
+		LastExitCode:    0,
+		LastVerdict:     "",
+		Message:         "执行中",
+	}
+	if err := r.writeStatusIfChanged(spec.Name, prev, prevFound, running); err != nil {
+		return JobStatus{}, err
 	}
 
 	result := r.Executor.Run(context.Background(), spec)
 
-	var status JobStatus
+	// ②执行 ③event 落盘 ④status→终态。终态 status 不单独构造，而是由刚落
+	// 盘的 event 派生（jobStatusFromEvent）——写与恢复两条路径共用同一个
+	// 派生函数，"状态=事件的函数"不会在写/修之间产生分歧。
 	var ev Event
 	switch {
 	case result.Succeeded():
-		status = JobStatus{
-			Phase: PhaseSucceeded, Slot: slot, SpecFingerprint: fp,
-			Attempt: attempt, LastAttemptTime: nowNanos, LastExitCode: 0,
-			LastVerdict: EventSucceeded, Message: "ok",
-		}
 		ev = Event{Slot: slot, Attempt: attempt, SpecFingerprint: fp, Outcome: EventSucceeded, ExitCode: 0, WriteNanos: nowNanos}
 
 	case attempt >= spec.MaxRetries+1:
@@ -129,29 +160,20 @@ func (r *Reconciler) Reconcile(spec JobSpec) (JobStatus, error) {
 		// 情况理论上不会出现（见下一分支不会再重试），大于号只是纵深防御：
 		// 状态被外部直接改写这种输入异常也要有确定的处理路径，不能 panic。
 		msg := execFailureMessage(result)
-		status = JobStatus{
-			Phase: PhaseAlerting, Slot: slot, SpecFingerprint: fp,
-			Attempt: attempt, LastAttemptTime: nowNanos, LastExitCode: result.ExitCode,
-			LastVerdict: EventAlert, Message: msg,
-		}
 		ev = Event{Slot: slot, Attempt: attempt, SpecFingerprint: fp, Outcome: EventAlert, ExitCode: result.ExitCode, Message: msg, WriteNanos: nowNanos}
 
 	default:
 		msg := execFailureMessage(result)
-		status = JobStatus{
-			Phase: PhaseFailed, Slot: slot, SpecFingerprint: fp,
-			Attempt: attempt, LastAttemptTime: nowNanos, LastExitCode: result.ExitCode,
-			LastVerdict: EventFailed, Message: msg,
-		}
 		ev = Event{Slot: slot, Attempt: attempt, SpecFingerprint: fp, Outcome: EventFailed, ExitCode: result.ExitCode, Message: msg, WriteNanos: nowNanos}
 	}
 
 	if _, err := r.Store.PutVersioned(EventsKey(spec.Name), encodeEvent(ev), EngineSource); err != nil {
 		return JobStatus{}, fmt.Errorf("写事件账本失败: %w", err)
 	}
-	if status.Phase == PhaseAlerting && r.AlertSink != nil {
+	if ev.Outcome == EventAlert && r.AlertSink != nil {
 		r.AlertSink.Alert(spec.Name, ev)
 	}
+	status := jobStatusFromEvent(ev)
 	if _, err := r.Store.PutVersioned(StatusKey(spec.Name), encodeJobStatus(status), EngineSource); err != nil {
 		return JobStatus{}, fmt.Errorf("写状态失败: %w", err)
 	}
@@ -200,6 +222,92 @@ func (r *Reconciler) writeStatusIfChanged(name string, prev JobStatus, prevFound
 		return fmt.Errorf("写状态失败: %w", err)
 	}
 	return nil
+}
+
+// Recover 是启动恢复扫描：进程启动后、tick 循环之前，对每个已知 job 各调用
+// 一次（见 Loop.Recover）。原理是 M4 裁决的"状态=事件的函数"：status 是
+// 事件账本的派生视图，这里把 status 重建为账本推出的事实。恢复过程只写
+// status、不产生新 event 副本——"修复而非重跑"（悬空执行的重跑由随后的
+// Reconcile 完成，见下）。Recover 幂等：重复调用不会产生额外写入。
+//
+// 四种情况：
+//
+//   - status=running 且账本里没有同 (slot, spec_fingerprint) 的 event：
+//     上次执行悬空（①running 已写、③event 未落），status 原样保留，由随后
+//     的 Reconcile 按幂等键 (slot, fingerprint) 重执行一次并补 event——
+//     重执行是安全语义：幂等键保证业务重复无害。
+//   - status=running 且有同 (slot, fp) 的 event（崩溃发生在 event 落盘后、
+//     终态 status 写前）：按该 event 重建 status，不重执行、不补 event。
+//     status=failed 但账本已有更新的匹配 event（崩溃发生在 failed 的 status
+//     写前）同样按最新匹配 event 重建——退避锚点跟着账本走。
+//   - status 是终态但账本最新 event 与之不符：以 event 为准重建 status。
+//     这是 M3 原文崩溃窗口（"写 event 然后写 status 两次独立调用,中途崩溃
+//     →status 陈旧"）的遗留现场——旧代码崩溃留下的陈旧终态在此修复，重启
+//     后不再重执行、不再产生重复 event。
+//   - status 不存在但账本有 event（旧代码首次执行崩溃的遗留）：以最新
+//     event 重建，同样避免重启后把已执行过的 slot 再执行一遍。
+//
+// PhasePending 不修：依赖未满足的等待态，尚无对应事件，属于正常状态。
+func (r *Reconciler) Recover(name string) error {
+	status, found, err := r.readStatus(name)
+	if err != nil {
+		return err
+	}
+	versions, err := r.Store.ListVersions(EventsKey(name))
+	if err != nil {
+		return fmt.Errorf("读事件账本失败: %w", err)
+	}
+	events, err := decodeEvents(versions)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return nil // 没有账本事实可派生：无事可修
+	}
+	var rebuilt JobStatus
+	switch {
+	case !found:
+		rebuilt = jobStatusFromEvent(events[len(events)-1])
+	case status.Phase == PhaseRunning || status.Phase == PhaseFailed:
+		ev, ok := latestMatchingEvent(events, status.Slot, status.SpecFingerprint)
+		if !ok {
+			// running 无匹配 = 悬空执行，留给 Reconcile 重执行；
+			// failed 无匹配 = 异常输入，保守不修（Reconcile 的重试路径会收敛）。
+			return nil
+		}
+		rebuilt = jobStatusFromEvent(ev)
+	case status.Phase.Terminal():
+		rebuilt = jobStatusFromEvent(events[len(events)-1])
+	default: // PhasePending：等待态，不修
+		return nil
+	}
+	return r.writeStatusIfChanged(name, status, found, rebuilt)
+}
+
+// decodeEvents 把 ListVersions 返回的版本负载按版本序解成 Event 列表。
+// 任一条解不出就整体失败：账本里出现无法解析的 payload 是数据损坏，恢复
+// 扫描不该在坏数据上继续推导状态。
+func decodeEvents(versions []proto.VersionEntryView) ([]Event, error) {
+	events := make([]Event, 0, len(versions))
+	for _, v := range versions {
+		ev, ok := decodeEvent(v.Payload)
+		if !ok {
+			return nil, fmt.Errorf("事件账本版本 seq=%d 无法解析", v.Seq)
+		}
+		events = append(events, ev)
+	}
+	return events, nil
+}
+
+// latestMatchingEvent 从事件账本（版本序升序）里找与 (slot, fp) 匹配的最新
+// 一条事件——同 (slot, fp) 的重试会产生多条事件，决定 status 的是最后一条。
+func latestMatchingEvent(events []Event, slot int64, fp string) (Event, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Slot == slot && events[i].SpecFingerprint == fp {
+			return events[i], true
+		}
+	}
+	return Event{}, false
 }
 
 // depsSatisfied 按 spec.DependsOn 声明的顺序（不是 map，天然确定）检查每个

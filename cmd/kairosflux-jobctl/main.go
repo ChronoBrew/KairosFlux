@@ -6,8 +6,9 @@
 // 子命令：
 //
 //	apply <spec.json>              把一份 JSON job spec 写入 job:spec:{name}
-//	tick <name...>                 对给定的 job 名跑一次 reconcile（读 spec、
-//	                                执行/判断、写 status+events）
+//	tick <name...>                 对给定的 job 名先跑启动恢复扫描、再跑一次
+//	                                reconcile（读 spec、执行/判断、写
+//	                                status+events）
 //	run <name...>                  常驻 reconcile loop，按 -tick-period 周期跑 tick
 //	import-registry <jsonl路径>    一次性把 QuantBrew 的 registry.jsonl
 //	                                导入 strategy:index 对象索引（M31）
@@ -102,7 +103,10 @@ func cmdTick(addr string, timeout time.Duration, names []string) int {
 	store := newStore(addr, timeout)
 	defer store.Close()
 	loop := jobctl.NewLoop(store, jobctl.NewReconciler(store), names, 0)
-	errs := loop.Tick()
+	// 先跑启动恢复扫描（崩溃遗留的状态修复，只写 status），再正常 tick——
+	// 与 run 子命令的 Loop.Run 行为一致（Run 内部也是先 Recover 再进循环）。
+	errs := loop.Recover()
+	errs = append(errs, loop.Tick()...)
 	for _, e := range errs {
 		fmt.Fprintf(os.Stderr, "错误: %v\n", e)
 	}
