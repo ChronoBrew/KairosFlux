@@ -19,8 +19,9 @@ func testSpec(name string, deps ...string) JobSpec {
 // TestReconcile_TenThousandRerunsAreIdempotent 是任务书的核心验收标准："同一
 // Job 重跑一万次，结果与账本一致"。固定 Clock（同一个 slot）、固定 spec、
 // 一直成功的 Executor，反复调用 Reconcile 一万次：只应该真正执行一次、
-// 只应该往 job:status/job:events 各写一条版本——用幂等键（slot + spec
-// 指纹）证明其余 9999 次调用都是纯粹的读、不产生任何新副作用。
+// 只应该往 job:events 写一条版本、job:status 写两条版本（①running + ④终态
+// ——写序修复后的固定两段，见 reconciler.go 的 Reconcile 文档）——用幂等键
+// （slot + spec 指纹）证明其余 9999 次调用都是纯粹的读、不产生任何新副作用。
 func TestReconcile_TenThousandRerunsAreIdempotent(t *testing.T) {
 	store := newFakeStore()
 	clock := newFakeClock(time.Date(2026, 8, 24, 6, 0, 0, 0, time.UTC))
@@ -47,8 +48,8 @@ func TestReconcile_TenThousandRerunsAreIdempotent(t *testing.T) {
 	if got := store.versionCount(EventsKey(spec.Name)); got != 1 {
 		t.Fatalf("job:events 应只有 1 条版本，实际 %d 条", got)
 	}
-	if got := store.versionCount(StatusKey(spec.Name)); got != 1 {
-		t.Fatalf("job:status 应只有 1 条版本，实际 %d 条", got)
+	if got := store.versionCount(StatusKey(spec.Name)); got != 2 {
+		t.Fatalf("job:status 应有 2 条版本（①running + ④终态），实际 %d 条", got)
 	}
 	if lastStatus.Phase != PhaseSucceeded {
 		t.Fatalf("最终 phase 应为 succeeded，实际 %s", lastStatus.Phase)

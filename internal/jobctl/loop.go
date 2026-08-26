@@ -44,6 +44,20 @@ func NewLoop(store Store, reconciler *Reconciler, jobNames []string, tickPeriod 
 	return &Loop{Store: store, Reconciler: reconciler, JobNames: names, TickPeriod: tickPeriod}
 }
 
+// Recover 对 JobNames 里的每个 job 跑一次启动恢复扫描（见 Reconciler.
+// Recover），返回按 job 记录的错误。必须在进入 tick 循环之前调用一次——
+// 进程崩溃重启后，上次执行悬空/账本不一致的问题在这里修复（只写 status、
+// 不产生新 event），修复后 Reconcile 的幂等判定才有正确的输入。
+func (l *Loop) Recover() []TickError {
+	var errs []TickError
+	for _, name := range l.JobNames {
+		if err := l.Reconciler.Recover(name); err != nil {
+			errs = append(errs, TickError{JobName: name, Err: err})
+		}
+	}
+	return errs
+}
+
 // Tick 对 JobNames 里的每个 job 读 job:spec:{name}、解析、调用一次
 // Reconciler.Reconcile。按字典序处理（Loop.JobNames 已排序），任何一个
 // job 读 spec 失败或 reconcile 失败都记进返回的 []TickError、不中断后续
@@ -72,10 +86,15 @@ func (l *Loop) Tick() []TickError {
 	return errs
 }
 
-// Run 按 TickPeriod 周期性调用 Tick，直到 ctx 被取消。onTick（可为 nil）
-// 在每次 Tick 后被调用一次，供调用方（cmd 入口）把 []TickError 打日志——
-// Loop 自身不做任何 I/O 之外的副作用假设，日志/告警渠道全部由调用方注入。
+// Run 先跑一次启动恢复扫描（Recover，崩溃遗留的状态修复），再按 TickPeriod
+// 周期性调用 Tick，直到 ctx 被取消。onTick（可为 nil）在每次 Tick 后被调用
+// 一次（首次调用携带的是 Recover 的错误），供调用方（cmd 入口）把 []TickError
+// 打日志——Loop 自身不做任何 I/O 之外的副作用假设，日志/告警渠道全部由
+// 调用方注入。
 func (l *Loop) Run(ctx context.Context, onTick func([]TickError)) {
+	if errs := l.Recover(); len(errs) > 0 && onTick != nil {
+		onTick(errs)
+	}
 	ticker := time.NewTicker(l.TickPeriod)
 	defer ticker.Stop()
 	for {

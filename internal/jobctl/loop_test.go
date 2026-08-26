@@ -86,8 +86,8 @@ func TestLoop_RepeatedTicksAfterApplyRoundTripAreIdempotent(t *testing.T) {
 	if got := exec.callCount(); got != 1 {
 		t.Fatalf("no_deps_job 应只被真正执行 1 次（spec 往返后指纹应保持稳定），实际 %d 次", got)
 	}
-	if got := store.versionCount(StatusKey(noDeps.Name)); got != 1 {
-		t.Fatalf("no_deps_job 的 job:status 应只有 1 条版本，实际 %d 条", got)
+	if got := store.versionCount(StatusKey(noDeps.Name)); got != 2 {
+		t.Fatalf("no_deps_job 的 job:status 应有 2 条版本（①running + ④终态），实际 %d 条", got)
 	}
 	if got := store.versionCount(StatusKey(withDeps.Name)); got != 1 {
 		t.Fatalf("with_deps_job（依赖始终不满足）的 job:status 应只有 1 条 pending 版本，不应随 Tick 次数膨胀，实际 %d 条", got)

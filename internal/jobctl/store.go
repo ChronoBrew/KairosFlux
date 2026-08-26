@@ -1,5 +1,7 @@
 package jobctl
 
+import "github.com/ChronoBrew/KairosFlux/proto"
+
 // Store 是 reconcile loop 依赖的键空间读写能力，对应契约里"走既有 v2
 // opcode（PUT_VERSIONED/GET/GET_AS_OF）操作 job: 键空间"这一条：
 //   - PutVersioned 对应 PUT_VERSIONED opcode：每次调用产生一条新版本，
@@ -31,6 +33,13 @@ type Store interface {
 	// found=false、err=nil（"从未写过"不是错误，与 temporal.TemporalStore
 	// 的既有约定一致）。
 	GetLatest(logicalKey string) (payload []byte, found bool, err error)
+
+	// ListVersions 返回 logicalKey 的完整版本历史（seq 升序），供启动恢复
+	// 扫描（Reconciler.Recover）读取事件账本——"状态=事件的函数"要求 status
+	// 重建时能枚举账本里全部事件。Reconcile 热路径不用它（恢复扫描是启动期
+	// 一次性操作）；语义与 LIST_VERSIONS opcode 一致，V2Store 直通该 opcode，
+	// fakeStore 在测试里按同一语义实现。
+	ListVersions(logicalKey string) ([]proto.VersionEntryView, error)
 }
 
 // EngineSource 是 jobctl 包对外声明的写入方标识（PUT_VERSIONED 请求帧的

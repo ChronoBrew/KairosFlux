@@ -150,8 +150,8 @@ func TestReconciler_OverRealV2Store(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LIST_VERSIONS(job:status) 出错: %v", err)
 	}
-	if len(statusVersions) != 1 {
-		t.Fatalf("真实账本里 job:status:%s 应恰好 1 条版本，实际 %d 条", spec.Name, len(statusVersions))
+	if len(statusVersions) != 2 {
+		t.Fatalf("真实账本里 job:status:%s 应恰好 2 条版本（①running + ④终态），实际 %d 条", spec.Name, len(statusVersions))
 	}
 	eventVersions, err := store.ListVersions(EventsKey(spec.Name))
 	if err != nil {
