@@ -39,6 +39,7 @@ func cmdPerf(args []string) error {
 	loadWorkers := fs.Int("load-workers", 16, "载入并发数")
 	measureWorkers := fs.Int("measure-workers", 8, "测量并发数")
 	samples := fs.Int("samples", 2000, "每行测量采样数")
+	skipLoad := fs.Bool("skip-load", false, "跳过载入/写路径,直接对既有 data-dir 做读路径测量(另补 1 条锚点版本化写)")
 	fs.Parse(args)
 
 	started := time.Now()
@@ -53,35 +54,41 @@ func cmdPerf(args []string) error {
 
 	// —— 载入 ——
 	dir := *dataDir
-	os.RemoveAll(dir)
+	if !*skipLoad {
+		os.RemoveAll(dir)
+	}
 	e, err := kairosflux.NewEmbedded(kairosflux.Options{DataDir: dir})
 	if err != nil {
 		return fmt.Errorf("载入引擎: %w", err)
 	}
-	loadStart := time.Now()
-	loadQPS := loadVolume(e, *vol, *loadWorkers)
-	loadDur := time.Since(loadStart)
-	fp, err := e.ReplayFingerprint("quote:", 0)
-	if err != nil {
-		return fmt.Errorf("载入后指纹: %w", err)
-	}
-	fmt.Fprintf(f, "## 载入阶段\n\n- 档位：%d 条版本化写入（%d 并发，固定种子 42）\n- 耗时：%s（载入吞吐 %.0f w/s）\n- 载入后 REPLAY_FINGERPRINT：逻辑键=%d 指纹=%s 对账不一致=%d\n\n",
-		*vol, *loadWorkers, loadDur.Round(time.Millisecond), loadQPS, fp.KeyCount, fp.Fingerprint, len(fp.Mismatches))
-
-	// —— 确定性验证（小档位双跑，避免耗时翻倍）——
-	if *vol <= 100_000 {
-		if err := determinismCheck(f); err != nil {
-			return err
+	if !*skipLoad {
+		loadStart := time.Now()
+		loadQPS := loadVolume(e, *vol, *loadWorkers)
+		loadDur := time.Since(loadStart)
+		fp, err := e.ReplayFingerprint("quote:", 0)
+		if err != nil {
+			return fmt.Errorf("载入后指纹: %w", err)
 		}
+		fmt.Fprintf(f, "## 载入阶段\n\n- 档位：%d 条版本化写入（%d 并发，固定种子 42）\n- 耗时：%s（载入吞吐 %.0f w/s）\n- 载入后 REPLAY_FINGERPRINT：逻辑键=%d 指纹=%s 对账不一致=%d\n\n",
+			*vol, *loadWorkers, loadDur.Round(time.Millisecond), loadQPS, fp.KeyCount, fp.Fingerprint, len(fp.Mismatches))
+
+		// —— 确定性验证（小档位双跑，避免耗时翻倍）——
+		if *vol <= 100_000 {
+			if err := determinismCheck(f); err != nil {
+				return err
+			}
+		}
+
+		// —— 写路径测量 ——
+		fmt.Fprintf(f, "## 写路径（数据量=%d 时实测）\n\n", *vol)
+		fmt.Fprintf(f, "| 路径 | QPS | p50 | p95 | p99 | 均值 | max | 错误 |\n|---|---|---|---|---|---|---|---|\n")
+
+		// embedded PUT_VERSIONED
+		stats := measureEmbeddedWrite(e, *measureWorkers, *samples)
+		writeRow(f, "embedded PUT_VERSIONED（进程内直调）", stats)
+	} else {
+		fmt.Fprintf(f, "> -skip-load 模式：跳过载入/写路径，对既有 data-dir 直接读路径测量（另补 1 条锚点版本化写）。\n\n")
 	}
-
-	// —— 写路径测量 ——
-	fmt.Fprintf(f, "## 写路径（数据量=%d 时实测）\n\n", *vol)
-	fmt.Fprintf(f, "| 路径 | QPS | p50 | p95 | p99 | 均值 | max | 错误 |\n|---|---|---|---|---|---|---|---|\n")
-
-	// embedded PUT_VERSIONED
-	stats := measureEmbeddedWrite(e, *measureWorkers, *samples)
-	writeRow(f, "embedded PUT_VERSIONED（进程内直调）", stats)
 
 	// server 各路径：Serve 网络壳
 	port := freePort()
@@ -92,23 +99,29 @@ func cmdPerf(args []string) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	defer srv.Close()
 
-	// v2 PUT_VERSIONED × ack 三档（每行各开 measureWorkers 条连接）
-	for _, ack := range []negotiate.AckTier{negotiate.AckEvery, negotiate.AckWindow, negotiate.AckNone} {
-		stats, err := measureV2Write(addr, ack, *measureWorkers, *samples)
-		if err != nil {
-			return fmt.Errorf("v2 ack=%d 测量: %w", ack, err)
+	if *skipLoad {
+		// 锚点版本化写（1 条）：有界 LIST_WRITES 窗口须锚定最后一次版本化写。
+		if _, err := measureV2Write(addr, negotiate.AckEvery, 1, 1); err != nil {
+			return fmt.Errorf("锚点写: %w", err)
 		}
-		writeRow(f, fmt.Sprintf("server v2 PUT_VERSIONED ack=%v", ackName(ack)), stats)
+	} else {
+		// v2 PUT_VERSIONED × ack 三档（每行各开 measureWorkers 条连接）
+		for _, ack := range []negotiate.AckTier{negotiate.AckEvery, negotiate.AckWindow, negotiate.AckNone} {
+			stats, err := measureV2Write(addr, ack, *measureWorkers, *samples)
+			if err != nil {
+				return fmt.Errorf("v2 ack=%d 测量: %w", ack, err)
+			}
+			writeRow(f, fmt.Sprintf("server v2 PUT_VERSIONED ack=%v", ackName(ack)), stats)
+		}
+		// v1 PUT（client.New v1 客户端）
+		stats, err := measureV1Put(addr, *measureWorkers, *samples)
+		if err != nil {
+			return fmt.Errorf("v1 PUT 测量: %w", err)
+		}
+		writeRow(f, "server v1 PUT（v1 协议客户端）", stats)
 	}
 	// v1 PUT 不产生时态账本条目：有界 LIST_WRITES 窗口须锚定最后一次版本化写。
 	lastV2End := time.Now()
-
-	// v1 PUT（client.New v1 客户端）
-	stats, err = measureV1Put(addr, *measureWorkers, *samples)
-	if err != nil {
-		return fmt.Errorf("v1 PUT 测量: %w", err)
-	}
-	writeRow(f, "server v1 PUT（v1 协议客户端）", stats)
 
 	// —— 读路径测量 ——
 	fmt.Fprintf(f, "\n## 读路径（数据量=%d 时实测）\n\n", *vol)
