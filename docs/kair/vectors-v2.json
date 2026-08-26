@@ -151,6 +151,26 @@
       "corr_id": 4,
       "data_hex": "01000000020000006c6b07000000000000006400000000000000010000006a020000000200616202000000706c0100000000",
       "frame_hex": "02ba00800000040000003200000001000000020000006c6b07000000000000006400000000000000010000006a020000000200616202000000706c0100000000"
+    },
+    {
+      "name": "v2_list_writes_request_paginated",
+      "description": "时态内核 M5 新增：LIST_WRITES(0x0D) 分页请求（proto.EncodeListWritesRequestV2）。payload 布局 = M2 基段 [prefixLen u32 LE][prefix][tFromNanos i64 LE][tToNanos i64 LE][sourceLen u32 LE][source] 之后追加 [cursorLen u32 LE][cursor][limit u32 LE]：prefix=\"p\"; tFromNanos=1; tToNanos=2; source=\"s\"; cursor=encode_list_writes_cursor(\"lk\",7)=[2 u32][\"lk\"][7 u64]（14 字节）; limit=500。corr_id=11，type=0x0000。cursor 为空且 limit=0 时不追加尾段、逐字节退回 M2 老格式（不单独立向量）。",
+      "flags": 0,
+      "opcode": 13,
+      "type": 0,
+      "corr_id": 11,
+      "data_hex": "01000000700100000000000000020000000000000001000000730e000000020000006c6b0700000000000000f4010000",
+      "frame_hex": "02ba000d00000b0000003000000001000000700100000000000000020000000000000001000000730e000000020000006c6b0700000000000000f4010000"
+    },
+    {
+      "name": "v2_list_writes_response_page_with_next_cursor",
+      "description": "时态内核 M5 新增：LIST_WRITES 的 OK(0x80) 分页响应体（proto.EncodeListWritesResponseV2）。payload 布局 = M2 基段（matchCount + entries + sourceCountN + 按来源计数，与 v2_list_writes_response_one_entry_no_source_breakdown 逐字节相同）之后追加 [nextCursorLen u32 LE][nextCursor]：nextCursor=encode_list_writes_cursor(\"lk\",7)（14 字节，= 本页最后一条 (LogicalKey,Seq)）。corr_id=12，type=0x0000。无尾段的 M2 老响应体仍可被 DecodeListWritesResponseV2 解出 nextCursor 为空。",
+      "flags": 0,
+      "opcode": 128,
+      "type": 0,
+      "corr_id": 12,
+      "data_hex": "01000000020000006c6b07000000000000006400000000000000010000006a020000000200616202000000706c01000000000e000000020000006c6b0700000000000000",
+      "frame_hex": "02ba008000000c0000004400000001000000020000006c6b07000000000000006400000000000000010000006a020000000200616202000000706c01000000000e000000020000006c6b0700000000000000"
     }
   ],
 

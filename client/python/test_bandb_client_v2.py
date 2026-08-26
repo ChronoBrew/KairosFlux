@@ -39,13 +39,18 @@ from bandb_client import (
     decode_ack_body,
     decode_frame_header,
     decode_header_v2,
+    decode_list_writes_cursor,
     decode_list_writes_request,
+    decode_list_writes_request_v2,
     decode_list_writes_response,
+    decode_list_writes_response_v2,
     encode_ack_body,
     encode_frame,
     encode_frame_v2,
     encode_hello_probe_v2,
+    encode_list_writes_cursor,
     encode_list_writes_request,
+    encode_list_writes_request_v2,
     negotiate_client,
     sniff_version,
 )
@@ -139,6 +144,12 @@ class FrameVectorTests(unittest.TestCase):
 
     def test_list_writes_response_one_entry_no_source_breakdown(self):
         self._assert_frame_matches("v2_list_writes_response_one_entry_no_source_breakdown")
+
+    def test_list_writes_request_paginated(self):
+        self._assert_frame_matches("v2_list_writes_request_paginated")
+
+    def test_list_writes_response_page_with_next_cursor(self):
+        self._assert_frame_matches("v2_list_writes_response_page_with_next_cursor")
 
     def test_magic_byte_order_lock(self):
         """锁定 wire 上第 0 字节是 version、第 1 字节才是 magic——不通过
@@ -339,6 +350,50 @@ class TemporalM2VectorTests(unittest.TestCase):
         self.assertEqual(entry.payload_hash, "ab")
         self.assertEqual(entry.payload, b"pl")
         self.assertTrue(entry.hash_ok)
+
+    def test_list_writes_request_v2_payload_decodes_to_documented_fields(self):
+        v = self.frames["v2_list_writes_request_paginated"]
+        data = bytes.fromhex(v["data_hex"])
+        prefix, t_from, t_to, source, cursor, limit = decode_list_writes_request_v2(data)
+        self.assertEqual(prefix, b"p")
+        self.assertEqual(t_from, 1)
+        self.assertEqual(t_to, 2)
+        self.assertEqual(source, b"s")
+        self.assertEqual(decode_list_writes_cursor(cursor), (b"lk", 7))
+        self.assertEqual(limit, 500)
+
+        # 反向：encode_list_writes_request_v2 用同样的字段应重新生成一致的
+        # data_hex——双向验证，不止是"能解析"。
+        got = encode_list_writes_request_v2(b"p", 1, 2, b"s", cursor, limit)
+        self.assertEqual(got.hex(), v["data_hex"])
+
+        # 无尾段退化：cursor=b"" limit=0 时输出与 M2 老格式逐字节一致。
+        legacy = bytes.fromhex(self.frames["v2_list_writes_request"]["data_hex"])
+        self.assertEqual(encode_list_writes_request_v2(b"p", 1, 2, b"s"), legacy)
+
+    def test_list_writes_response_v2_payload_decodes_to_documented_fields(self):
+        v = self.frames["v2_list_writes_response_page_with_next_cursor"]
+        data = bytes.fromhex(v["data_hex"])
+        entries, source_counts, next_cursor = decode_list_writes_response_v2(data)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(source_counts, [])
+        entry = entries[0]
+        self.assertEqual(entry.logical_key, "lk")
+        self.assertEqual(entry.seq, 7)
+        self.assertEqual(entry.write_nanos, 100)
+        self.assertEqual(entry.source, "j")
+        self.assertEqual(entry.schema_ver, 2)
+        self.assertEqual(entry.payload_hash, "ab")
+        self.assertEqual(entry.payload, b"pl")
+        self.assertTrue(entry.hash_ok)
+        self.assertEqual(decode_list_writes_cursor(next_cursor), (b"lk", 7))
+
+        # 老格式响应体（无尾段）也应能解出 next_cursor=b""。
+        legacy_body = bytes.fromhex(
+            self.frames["v2_list_writes_response_one_entry_no_source_breakdown"]["data_hex"]
+        )
+        _, _, nc = decode_list_writes_response_v2(legacy_body)
+        self.assertEqual(nc, b"")
 
 
 class NegotiateClientTests(unittest.TestCase):

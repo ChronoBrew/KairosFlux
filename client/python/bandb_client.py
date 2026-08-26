@@ -792,6 +792,63 @@ class BanDBClientV2:
             raise ProtocolError(f"BYE 收尾响应 opcode={header.opcode:#x}，期望 STAT_ACK({OPCODE_STAT_ACK:#x})")
         return window_ack, decode_ack_body(payload)
 
+    def list_writes(
+        self,
+        prefix: str,
+        t_from: int = 0,
+        t_to: int = 0,
+        source: str = "",
+        cursor: bytes = b"",
+        limit: int = 0,
+    ) -> Tuple[list, list, bytes]:
+        """LIST_WRITES 单页查询（时态内核 M2 审计查询 + M5 分页）：
+        返回 (entries, source_counts, next_cursor)。entries 是
+        WriteEnvelope 列表（按 (LogicalKey, Seq) 升序），source_counts 是
+        (source, count) 元组列表。next_cursor 非空表示还有更多命中——把它
+        原样作为下一次调用的 cursor 传入即可续查；为空表示页面已尽。
+
+        cursor=b""（默认）从总序起点开始；limit=0 表示不限量（M2 行为，
+        大结果集会像 M2 时期一样撞帧长上限被拒——需要遍历大结果集请用
+        list_writes_all）。v2 ERR 响应抛 V2Error(code, reason)。
+        对应服务端 service.RouterV2.handleListWrites 的分页路径。"""
+        self._send(
+            OPCODE_LIST_WRITES,
+            TYPE_UNSPECIFIED,
+            0,
+            encode_list_writes_request_v2(
+                prefix.encode("utf-8"), t_from, t_to, source.encode("utf-8"), cursor, limit
+            ),
+        )
+        header, payload = self._recv_frame()
+        if header.opcode == OPCODE_ERR:
+            code, reason = decode_v2_err_payload(payload)
+            raise V2Error(code, reason)
+        if header.opcode != OPCODE_OK:
+            raise ProtocolError(f"LIST_WRITES 响应 opcode={header.opcode:#x}，期望 OK({OPCODE_OK:#x})")
+        return decode_list_writes_response_v2(payload)
+
+    def list_writes_all(
+        self,
+        prefix: str,
+        t_from: int = 0,
+        t_to: int = 0,
+        source: str = "",
+        page_size: int = 1000,
+    ) -> list:
+        """LIST_WRITES 全量遍历助手（M5 方案 §C.1）：内部循环分页，返回
+        prefix 下全部命中的 WriteEnvelope 列表——对单帧放不下、M2 时期会被
+        result_too_large 拒绝的超大结果集在客户端透明分页，调用方无感知。
+        page_size 是每页条数（服务端据此限制单帧体量）。全部页面取完为止
+        （next_cursor 为空即止）。"""
+        all_entries = []
+        cursor = b""
+        while True:
+            entries, _, next_cursor = self.list_writes(prefix, t_from, t_to, source, cursor, page_size)
+            all_entries.extend(entries)
+            if not next_cursor:
+                return all_entries
+            cursor = next_cursor
+
 
 # ---------------------------------------------------------------------------
 # LIST_WRITES（时态内核 M2 新增 opcode 0x0D）请求/响应负载编解码。对应 Go：
@@ -965,3 +1022,132 @@ def decode_list_writes_response(body: bytes) -> Tuple[list, list]:
         off += 4
         source_counts.append((src, count))
     return entries, source_counts
+
+
+# ---------------------------------------------------------------------------
+# LIST_WRITES 分页（M5 方案 §C.1）：可选游标/limit 只追加在请求/响应尾段，
+# 基段字节布局与 M2 时期完全一致（encode/decode_list_writes_request /
+# decode_list_writes_response 未动一行），旧调用方的请求与响应逐字节不变。
+# 对应 Go: proto/temporal_frame.go 的 Encode/DecodeListWritesCursor、
+# Encode/DecodeListWritesRequestV2、Encode/DecodeListWritesResponseV2。
+# ---------------------------------------------------------------------------
+
+
+class V2Error(BanDBError):
+    """v2 ERR(opcode=0x81) 响应：机读错误码 + 人读原因。对应 Go:
+    client 侧对 proto.DecodeV2ErrPayload + codec.ErrCodeXxx 的处理。"""
+
+    def __init__(self, code: int, reason: str):
+        super().__init__(f"v2 服务端拒绝: code={code:#x} reason={reason!r}")
+        self.code = code
+        self.reason = reason
+
+
+def decode_v2_err_payload(payload: bytes) -> Tuple[int, str]:
+    """解析 v2 ERR 响应负载：[code u16 LE][reasonLen u16 LE][reason bytes]。
+    对应 Go: proto.DecodeV2ErrPayload。"""
+    if len(payload) < 4:
+        raise ProtocolError("v2 ERR payload too short")
+    code, reason_len = struct.unpack_from("<HH", payload, 0)
+    if 4 + reason_len > len(payload):
+        raise ProtocolError("v2 ERR payload reason length mismatch")
+    return code, payload[4 : 4 + reason_len].decode("utf-8", errors="replace")
+
+
+def encode_list_writes_cursor(logical_key: bytes, seq: int) -> bytes:
+    """分页游标负载：[logicalKeyLen u32 LE][logicalKey][seq u64 LE]。
+    游标 = 上次返回的最后一条 (LogicalKey, Seq)（ListWrites 确定性输出总序
+    中的位置）。对应 Go: proto.EncodeListWritesCursor。"""
+    return struct.pack("<I", len(logical_key)) + logical_key + struct.pack("<Q", seq)
+
+
+def decode_list_writes_cursor(payload: bytes) -> Tuple[bytes, int]:
+    """decode_list_writes_cursor 是 encode_list_writes_cursor 的逆操作。
+    对应 Go: proto.DecodeListWritesCursor。"""
+    if len(payload) < 4:
+        raise ProtocolError("LIST_WRITES cursor too short")
+    (logical_key_len,) = struct.unpack_from("<I", payload, 0)
+    if 4 + logical_key_len + 8 != len(payload):
+        raise ProtocolError("LIST_WRITES cursor length mismatch")
+    logical_key = payload[4 : 4 + logical_key_len]
+    (seq,) = struct.unpack_from("<Q", payload, 4 + logical_key_len)
+    return logical_key, seq
+
+
+def encode_list_writes_request_v2(
+    prefix: bytes,
+    t_from_nanos: int,
+    t_to_nanos: int,
+    source: bytes,
+    cursor: bytes = b"",
+    limit: int = 0,
+) -> bytes:
+    """LIST_WRITES 分页请求负载：基段与 encode_list_writes_request 逐字节相同
+    （prefix + tFrom/tTo + source），末尾追加 [cursorLen u32 LE][cursor]
+    [limit u32 LE]。cursor 为空表示从总序起点开始（第一页）；limit=0 表示
+    不限量。cursor 为空且 limit=0 时不追加尾段、输出与
+    encode_list_writes_request 逐字节一致（服务端据此返回旧格式响应）。
+    对应 Go: proto.EncodeListWritesRequestV2。"""
+    if not cursor and limit == 0:
+        return encode_list_writes_request(prefix, t_from_nanos, t_to_nanos, source)
+    base = encode_list_writes_request(prefix, t_from_nanos, t_to_nanos, source)
+    return base + struct.pack("<I", len(cursor)) + cursor + struct.pack("<I", limit)
+
+
+def decode_list_writes_request_v2(data: bytes) -> Tuple[bytes, int, int, bytes, bytes, int]:
+    """decode_list_writes_request_v2 是 encode_list_writes_request_v2 的逆操作；
+    无尾段（M2 老格式）请求也能解：返回 cursor=b""、limit=0，与
+    decode_list_writes_request 等价。对应 Go: proto.DecodeListWritesRequestV2。"""
+    if len(data) < 4:
+        raise ProtocolError("LIST_WRITES request too short")
+    (prefix_len,) = struct.unpack_from("<I", data, 0)
+    off = 4
+    if off + prefix_len + 8 + 8 + 4 > len(data):
+        raise ProtocolError("LIST_WRITES request truncated")
+    prefix = data[off : off + prefix_len]
+    off += prefix_len
+    t_from, t_to = struct.unpack_from("<qq", data, off)
+    off += 16
+    (source_len,) = struct.unpack_from("<I", data, off)
+    off += 4
+    if off + source_len > len(data):
+        raise ProtocolError("LIST_WRITES request source length mismatch")
+    source = data[off : off + source_len]
+    off += source_len
+    if off == len(data):
+        return prefix, t_from, t_to, source, b"", 0  # M2 老格式，无尾段
+    if len(data) < off + 4 + 4:
+        raise ProtocolError("LIST_WRITES request tail truncated")
+    (cursor_len,) = struct.unpack_from("<I", data, off)
+    off += 4
+    if off + cursor_len + 4 != len(data):
+        raise ProtocolError("LIST_WRITES request tail length mismatch")
+    cursor = data[off : off + cursor_len]
+    (limit,) = struct.unpack_from("<I", data, off + cursor_len)
+    return prefix, t_from, t_to, source, cursor, limit
+
+
+def decode_list_writes_response_v2(body: bytes) -> Tuple[list, list, bytes]:
+    """LIST_WRITES 分页响应体：基段与 decode_list_writes_response 相同
+    （matchCount + entries + sourceCountN + 按来源计数），末尾可选
+    [nextCursorLen u32 LE][nextCursor]。next_cursor 为空表示"没有更多结果"
+    （或查询未分页）。老格式响应体（无尾段）也能解：返回 next_cursor=b""。
+    对应 Go: proto.DecodeListWritesResponseV2。"""
+    entries, source_counts = decode_list_writes_response(body)
+    # 重新定位基段消费终点，判断尾段是否存在（decode_list_writes_response
+    # 不校验剩余字节——它本身对旧版响应体逐字节兼容，本函数在这之上叠加
+    # 尾段解析，兼容性与 Go 侧同一套"按精确剩余长度判定"的判据）。
+    off = 4
+    for _ in range(len(entries)):
+        _, consumed = decode_write_envelope_entry(body[off:])
+        off += consumed
+    off += 4  # sourceCountN
+    for _ in range(len(source_counts)):
+        (src_len,) = struct.unpack_from("<I", body, off)
+        off += 4 + src_len + 4
+    if off == len(body):
+        return entries, source_counts, b""  # M2 老格式，无尾段
+    (next_len,) = struct.unpack_from("<I", body, off)
+    if off + 4 + next_len != len(body):
+        raise ProtocolError("LIST_WRITES response next_cursor length mismatch")
+    return entries, source_counts, body[off + 4 : off + 4 + next_len]
