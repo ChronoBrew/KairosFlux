@@ -11,8 +11,9 @@ kairnet.Server + service.RouterV2，批量写入、FLUSH/STAT/BYE，把结果打
 客户端实现说得通"。
 
 用法：
-    python3 v2_window_probe.py window --addr host:port --count N [--corrid C]
-    python3 v2_window_probe.py none   --addr host:port --count N [--bad-count B]
+    python3 v2_window_probe.py window     --addr host:port --count N [--corrid C]
+    python3 v2_window_probe.py none       --addr host:port --count N [--bad-count B]
+    python3 v2_window_probe.py pagination --addr host:port --prefix P --page-size N
 """
 
 import argparse
@@ -21,7 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bandb_client import ACK_NONE, ACK_WINDOW, BanDBClientV2, ReconciliationError  # noqa: E402
+from bandb_client import ACK_EVERY, ACK_NONE, ACK_WINDOW, BanDBClientV2, ReconciliationError  # noqa: E402
 
 
 def _print_ack(prefix: str, fields) -> None:
@@ -91,6 +92,51 @@ def cmd_none(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_pagination(args: argparse.Namespace) -> int:
+    """LIST_WRITES 分页跨语言实测：客户端游标循环 + list_writes_all 遍历
+    助手把结果分页取全（服务端把 MaxPackageSize 压小后，单帧装不下全部
+    命中——分页是取全的唯一路径，见 Go 侧
+    TestCrosslang_V2ListWritesPaginationOverFrameLimit）。"""
+    c = BanDBClientV2(args.addr)
+    try:
+        ack = c.connect(ACK_EVERY)
+        print(f"negotiated_ack={ack}")
+
+        # 手写游标循环（与 list_writes_all 内部同构），顺带数页数——联调
+        # 测试要断言"真的分了页、页与页之间用 next_cursor 衔接"，单页返回
+        # 的遍历助手把分页细节藏起来了。
+        pages = 0
+        cursor = b""
+        entries = []
+        while True:
+            page, _, next_cursor = c.list_writes(args.prefix, 0, 0, "", cursor, args.page_size)
+            entries.extend(page)
+            pages += 1
+            if not next_cursor:
+                break
+            cursor = next_cursor
+        print(f"pages={pages} total={len(entries)}")
+
+        # 全量遍历助手应得到同一份结果（seq 序列一致才算一致）。
+        helper_entries = c.list_writes_all(args.prefix, page_size=args.page_size)
+        helper_seqs = [e.seq for e in helper_entries]
+        loop_seqs = [e.seq for e in entries]
+        print(f"helper_total={len(helper_entries)}")
+        print(f"helper_match={1 if helper_seqs == loop_seqs else 0}")
+
+        # 总序核对（游标=(logical_key, seq)，跨页不重不漏、按逻辑键字典序
+        # 升序；seq 是每个逻辑键内部版本号，各键独立从 1 起）。不打印键本身
+        # ——键含冒号，会破坏 Go 侧 "key=value" 行解析器（见 crosslang_test.go
+        # runV2WindowProbe 的分词约定），改为打印核对结论。
+        keys = [e.logical_key for e in entries]
+        ordered = 1 if keys == sorted(keys) and len(set(keys)) == len(keys) else 0
+        print(f"ordered={ordered} distinct={len(set(keys))}")
+        print("seqs=" + ",".join(str(e.seq) for e in entries))
+    finally:
+        c.close()
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -106,6 +152,12 @@ def main() -> int:
     p_none.add_argument("--count", type=int, required=True)
     p_none.add_argument("--bad-count", type=int, default=0)
     p_none.set_defaults(func=cmd_none)
+
+    p_pagination = sub.add_parser("pagination")
+    p_pagination.add_argument("--addr", required=True)
+    p_pagination.add_argument("--prefix", required=True)
+    p_pagination.add_argument("--page-size", type=int, required=True)
+    p_pagination.set_defaults(func=cmd_pagination)
 
     args = parser.parse_args()
     return args.func(args)

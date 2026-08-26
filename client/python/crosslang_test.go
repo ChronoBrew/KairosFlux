@@ -31,6 +31,7 @@ import (
 	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
 	"github.com/ChronoBrew/KairosFlux/kairnet/codec"
+	"github.com/ChronoBrew/KairosFlux/kairnet/negotiate"
 	"github.com/ChronoBrew/KairosFlux/proto"
 	"github.com/ChronoBrew/KairosFlux/service"
 	"github.com/ChronoBrew/KairosFlux/service/ingesthook"
@@ -523,5 +524,115 @@ func TestCrosslang_V2NoneStatReconcile(t *testing.T) {
 	}
 	if got := mustAtoi(t, out, "bye_stat.received"); got != total {
 		t.Fatalf("BYE 隐式 STAT_ACK received=%d，期望 %d", got, total)
+	}
+}
+
+// startCrosslangV2ServerSmallFrames 是 startCrosslangV2Server 的小帧长变体：
+// MaxPackageSize 压到 400 字节，使"单页装不下全部命中"成为必然。每条信封
+// 约 128 字节（24 字节逻辑键 + sha256 的 64 字符 hex + 元数据），本测试写入
+// 6 条后单帧全量 = 4+6×128+8+next_cursor(36) ≈ 816B > 400 会被
+// result_too_large 拒，而每页 2 条 = 4+256+8+36 = 304B < 400 能过——分页是
+// 取全的唯一路径。Python 侧 list_writes_all 的跨语言分页实测在这里跑。
+// Go 侧同构场景见 service 包的
+// TestRouterV2_ListWritesPaginationFetchesAllAcrossFrameLimit。
+func startCrosslangV2ServerSmallFrames(t *testing.T, windowN uint32) string {
+	t.Helper()
+	oldMaxPkg := config.G.MaxPackageSize
+	config.G.MaxPackageSize = 400
+	t.Cleanup(func() { config.G.MaxPackageSize = oldMaxPkg })
+	return startCrosslangV2Server(t, windowN)
+}
+
+// v2GoPutVersioned 是测试用的极简 Go 侧 v2 写入：协商过的连接上发一帧
+// PUT_VERSIONED，读回响应帧，断言 OK。Python 客户端没有 PUT_VERSIONED
+// 实现（M2 之前就存在的缺口，见 bandb_client.py 顶部注释），联调测试的
+// 版本化数据由 Go 侧构造。
+func v2GoPutVersioned(t *testing.T, conn net.Conn, key string) {
+	t.Helper()
+	msg := codec.NewMessageV2(
+		codec.HeaderV2{Opcode: codec.OpcodePutVersioned, Type: codec.TypeUnspecified},
+		proto.EncodePutFrame([]byte(key), []byte("v")),
+	)
+	frame, err := codec.NewDataPackV2().Pack(msg)
+	if err != nil {
+		t.Fatalf("v2 Pack 失败: %v", err)
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("设置写超时失败: %v", err)
+	}
+	if _, err := conn.Write(frame); err != nil {
+		t.Fatalf("v2 写帧失败: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("设置读超时失败: %v", err)
+	}
+	header := make([]byte, codec.HeaderV2Len)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		t.Fatalf("读响应头失败: %v", err)
+	}
+	h, err := codec.NewDataPackV2().UnPack(header)
+	if err != nil {
+		t.Fatalf("UnPack 响应头失败: %v", err)
+	}
+	if h.Opcode != codec.OpcodeOK {
+		t.Fatalf("PUT_VERSIONED 应 OK，got opcode=%#x", h.Opcode)
+	}
+	payload := make([]byte, h.DataLen)
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("读响应负载失败: %v", err)
+	}
+}
+
+// TestCrosslang_V2ListWritesPaginationOverFrameLimit 是 LIST_WRITES 分页的
+// 跨语言实测：Go 侧写入 6 条版本化记录（同前缀，seq 1..6），Python 侧用
+// list_writes 游标循环 + list_writes_all 遍历助手按 page_size=2 三页取全。
+// 小帧长服务端保证"不分页就取不全"（单帧全量 278B > 200B 上限），分页是
+// 遍历成功的唯一路径——与 service 包的同构 Go 集成测试互为对照。
+func TestCrosslang_V2ListWritesPaginationOverFrameLimit(t *testing.T) {
+	python3 := requirePython3(t)
+	addr := startCrosslangV2ServerSmallFrames(t, 1000)
+
+	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
+	if err != nil {
+		t.Fatalf("拨号失败: %v", err)
+	}
+	defer conn.Close()
+	version, ack, err := negotiate.ClientNegotiateWithAck(conn, 3*time.Second, negotiate.AckEvery)
+	if err != nil {
+		t.Fatalf("协商失败: %v", err)
+	}
+	if version != negotiate.VersionV2 || ack != negotiate.AckEvery {
+		t.Fatalf("协商结果 version=%v ack=%v，期望 VersionV2/AckEvery", version, ack)
+	}
+	for i := 1; i <= 6; i++ {
+		v2GoPutVersioned(t, conn, fmt.Sprintf("reading:2026-08-17:%05d", i))
+	}
+
+	out := runV2WindowProbe(t, python3, "pagination",
+		"--addr", addr, "--prefix", "reading:2026-08-17", "--page-size", "2")
+
+	if got := mustAtoi(t, out, "pages"); got != 3 {
+		t.Fatalf("pages=%d，期望 3（6 条 / page_size=2）", got)
+	}
+	if got := mustAtoi(t, out, "total"); got != 6 {
+		t.Fatalf("total=%d，期望 6", got)
+	}
+	if got := mustAtoi(t, out, "helper_total"); got != 6 {
+		t.Fatalf("list_writes_all helper_total=%d，期望 6", got)
+	}
+	if got := mustAtoi(t, out, "helper_match"); got != 1 {
+		t.Fatalf("list_writes_all 与手写游标循环结果不一致（helper_match=%d）", got)
+	}
+	// 总序：游标 = (logical_key, seq)，跨页不重不漏、按逻辑键字典序升序；
+	// seq 是每个逻辑键内部的版本号（各键独立从 1 起），6 个不同键各写 1 次
+	// → 每个键 seq=1。
+	if got := mustAtoi(t, out, "ordered"); got != 1 {
+		t.Fatalf("ordered=%d，期望 1（跨页不重不漏、键序升序）", got)
+	}
+	if got := mustAtoi(t, out, "distinct"); got != 6 {
+		t.Fatalf("distinct=%d，期望 6（6 个不同逻辑键不重不漏）", got)
+	}
+	if got := out["seqs"]; got != "1,1,1,1,1,1" {
+		t.Fatalf("seqs=%q，期望 1,1,1,1,1,1（每键独立版本号）", got)
 	}
 }
