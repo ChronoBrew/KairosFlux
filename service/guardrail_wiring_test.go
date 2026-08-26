@@ -57,6 +57,15 @@ func (r *fakeMsgReq) SetMsgData(d []byte) { r.data = d }
 // blocked 时 PUT 回 overloaded（复用既有可重试状态）、GET 照常进处理器
 // （not found 走正常语义）；解除后 PUT 恢复。
 func TestGuardrailWiring_V1BlocksWritesKeepsReads(t *testing.T) {
+	// 用临时数据目录隔离：KVServer 读写 config.G 的 WAL/SSTable 路径，默认
+	// 是仓库 log/ 目录（跨测试运行持久化，会把上一轮运行写入的数据带进来，
+	// 让"GET 应 not found"这类断言受污染）。
+	dir := t.TempDir()
+	oldWAL, oldSST := config.G.WALPath, config.G.SSTablePath
+	config.G.WALPath = filepath.Join(dir, "wal.log")
+	config.G.SSTablePath = dir
+	t.Cleanup(func() { config.G.WALPath, config.G.SSTablePath = oldWAL, oldSST })
+
 	kv := NewKVServer()
 	router := NewRouter(kv)
 	guardrail := blockedTestGuardrail(t)
