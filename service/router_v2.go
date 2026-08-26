@@ -47,6 +47,12 @@ type RouterV2 struct {
 	// corr_id/FLUSH 划分的批次边界，防止客户端一直不 FLUSH 导致服务端
 	// 无限攒积压。
 	windowSafetyValveN uint32
+
+	// 内存护栏（可选）：memoryGuardrail!=nil 时，进程 RSS 超限（max_rss_mb）
+	// 后写帧（PUT/PUT_VERSIONED/DEL）结构化拒绝（ErrCodeMemoryLimit，
+	// "memory_limit_reached"），读帧照常服务。与 v1 Router 共享同一个实例
+	// （服务装配时构造，见 guardrail.go）。
+	memoryGuardrail *MemoryGuardrail
 }
 
 // DefaultV2WindowSafetyValveN 是生产环境的默认安全阀取值——测试可以在
@@ -94,6 +100,10 @@ type v2ConnState struct {
 	cumFirstErrCode   uint16
 	cumFirstErrReason string
 }
+
+// SetMemoryGuardrail 挂载内存护栏（nil 表示不检查）。服务装配时调用
+// （NewNode/Engine.attachNetworkShell），与 v1 Router 共享同一个实例。
+func (r *RouterV2) SetMemoryGuardrail(g *MemoryGuardrail) { r.memoryGuardrail = g }
 
 func (r *RouterV2) connState(conn kairnet.Conn) *v2ConnState {
 	if s, ok := conn.Property(v2ConnStatePropertyKey).(*v2ConnState); ok {
@@ -190,6 +200,13 @@ func (r *RouterV2) handleWrite(req kairnet.RequestV2) {
 // 确实收到了字节、但帧本身不合法"这类问题永久排除在诊断范围之外，与
 // §11.2.3 强调的诊断粒度设计意图相悖。
 func (r *RouterV2) applyWrite(req kairnet.RequestV2) (accepted bool, errCode uint16, reason string) {
+	// 内存护栏：进程 RSS 超限拒收写帧（含 DEL 与 PUT/PUT_VERSIONED 的公共
+	// 落盘入口），结构化拒绝而不是静默丢帧——ack=window/none 的记账把这次
+	// 拒绝计为 received 且 rejected（firstErrCode=0x1003），对账时可见。
+	// 读帧不经过本函数，超限期间照常服务。
+	if r.memoryGuardrail != nil && r.memoryGuardrail.Blocked() {
+		return false, codec.ErrCodeMemoryLimit, "memory_limit_reached"
+	}
 	data := req.Data()
 
 	if req.Opcode() == codec.OpcodeDel {
@@ -427,6 +444,12 @@ func (r *RouterV2) handleScan(req kairnet.RequestV2) {
 // 总是立即响应：OK 负载 = 分配到的 seq（[u64 LE] 8 字节），供调用方确认/
 // 记录这次写对应的版本号；ERR 负载沿用既有 V2ErrPayload 结构。
 func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
+	// 内存护栏：PUT_VERSIONED 是独立落盘入口（不经 applyWrite），这里单独
+	// 拦一道——与 applyWrite 同一判定、同一错误码，保证 v2 全部写帧语义一致。
+	if r.memoryGuardrail != nil && r.memoryGuardrail.Blocked() {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMemoryLimit, "memory_limit_reached")
+		return
+	}
 	key, value, source, ok := proto.DecodePutVersionedFrame(req.Data())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)

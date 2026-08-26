@@ -44,11 +44,14 @@
 package kairosflux
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"time"
 
 	"github.com/ChronoBrew/KairosFlux/config"
@@ -76,6 +79,11 @@ type Options struct {
 	// （service/router_v2.go 的 windowSafetyValveN 文档）；<=0 用生产默认值
 	// 1000。embedded 模式下无网络连接，不参与 ack 协商，本字段无意义。
 	WindowSafetyValveN uint32
+
+	// MaxRSSMb 是内存护栏的进程 RSS 上限（MiB，见 service/guardrail.go）；
+	// <=0 关闭护栏（默认）。只对 server 模式有意义——embedded 模式进程内
+	// 直调由宿主进程自己管理内存预算。
+	MaxRSSMb int64
 }
 
 // Engine 是 KairosFlux 的双模式引擎：embedded 与 server 共用同一个时态内核
@@ -88,6 +96,9 @@ type Engine struct {
 	temporal *service.TemporalStore
 	server   *kairnet.Server // server 模式非 nil；embedded 模式 nil
 	rw       engineReadWriter
+	// guardrailCancel 是内存护栏采样循环的取消函数（仅 server 模式且
+	// MaxRSSMb>0 时非 nil），Close 时调用，保证护栏 goroutine 随引擎退出。
+	guardrailCancel context.CancelFunc
 }
 
 // 公开类型别名：跨仓调用方（ChronoBrew/ChronoBrew 的 sample 与 E2E 测试）
@@ -196,6 +207,7 @@ func newEngine(opts Options, requireDir bool) (*Engine, error) {
 		config.WithPort(opts.Port),
 		config.WithWALPath(filepath.Join(opts.DataDir, "wal.log")),
 		config.WithSSTablePath(opts.DataDir),
+		config.WithMaxRSSMb(opts.MaxRSSMb),
 	)
 
 	kv, err := service.NewKVServerWithConfig(cfg)
@@ -229,6 +241,20 @@ func (e *Engine) attachNetworkShell(opts Options) error {
 	router := service.NewRouter(e.kv)
 	router.SetPreHandle(filter.Handle)
 	routerV2 := service.NewRouterV2(e.kv, filter, opts.WindowSafetyValveN)
+
+	// 内存护栏启动自检 + 装配（与 service/node.go 同构）：max_rss_mb>0 时
+	// v1/v2 Router 共享同一个护栏实例，超限拒写（v1 overloaded / v2
+	// ErrCodeMemoryLimit）。护栏随 Engine 生命周期运行（Close 取消），
+	// embedded 模式（Port<=0）不挂网络壳，不进本函数。GOGC 用
+	// SetGCPercent(-1) 只读查询（负数为"不改，返回当前值"）。
+	slog.Info("内存护栏启动自检", "GOGC", debug.SetGCPercent(-1), "max_rss_mb", e.cfg.MaxRSSMb)
+	if guardrail := service.NewMemoryGuardrail(e.cfg.MaxRSSMb, slog.Default()); guardrail != nil {
+		router.SetMemoryGuardrail(guardrail)
+		routerV2.SetMemoryGuardrail(guardrail)
+		gctx, gcancel := context.WithCancel(context.Background())
+		e.guardrailCancel = gcancel
+		guardrail.Start(gctx)
+	}
 
 	srv := kairnet.NewServerWithConfig(e.cfg)
 	srv.AddHandler(proto.MsgPut, router)
@@ -324,6 +350,9 @@ func (e *Engine) Addr() string {
 // 恢复）。存储引擎的 flush/compaction 工作协程随进程退出，无需也不存在单独
 // 的关闭入口（见 storage.Engine 文档）。
 func (e *Engine) Close() error {
+	if e.guardrailCancel != nil {
+		e.guardrailCancel()
+	}
 	if e.server != nil {
 		e.server.Stop()
 	}
