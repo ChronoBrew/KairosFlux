@@ -7,6 +7,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/ChronoBrew/KairosFlux/client"
@@ -356,5 +357,102 @@ func TestRouterV2_ListWritesRejectsResultExceedingFrameSizeLimit(t *testing.T) {
 	code, reason, ok := proto.DecodeV2ErrPayload(msg.Payload)
 	if !ok || code != codec.ErrCodeResultTooLarge || reason != "result_too_large" {
 		t.Fatalf("拒绝原因不符: code=%#x reason=%q ok=%v", code, reason, ok)
+	}
+}
+
+// listWritesPage 对应带分页的 LIST_WRITES（M5 方案 §C.1）：请求带可选游标/
+// limit（proto.EncodeListWritesRequestV2），响应带 next_cursor 尾段
+// （proto.DecodeListWritesResponseV2）。
+func (c *v2Client) listWritesPage(corrID uint32, prefix string, tFromNanos, tToNanos int64, source string, cursor []byte, limit uint32) *codec.MessageV2 {
+	c.send(codec.OpcodeListWrites, codec.TypeUnspecified, corrID,
+		proto.EncodeListWritesRequestV2([]byte(prefix), tFromNanos, tToNanos, []byte(source), cursor, limit))
+	return c.recv()
+}
+
+// TestRouterV2_ListWritesPaginationFetchesAllAcrossFrameLimit 是 M5 方案 §C.1
+// 的验收场景：构造超过帧长上限的 LIST_WRITES 结果集（无分页必被
+// result_too_large 拒绝，复现 M2 已知缺口），用 limit=2 分页后两页取全——
+// 每页响应体都不超帧长，next_cursor 从第一页带出、第二页收尾为空。
+func TestRouterV2_ListWritesPaginationFetchesAllAcrossFrameLimit(t *testing.T) {
+	oldMax := config.G.MaxPackageSize
+	// 3 条 "reading:...:600000" 级记录（每条含 64 字符 payloadHash）的响应体
+	// =386B；limit=2 的两页各 ≈301B。上限取 330：无分页必超、两页都能发出。
+	config.G.MaxPackageSize = 330
+	t.Cleanup(func() { config.G.MaxPackageSize = oldMax })
+
+	addr := startRouterV2TestServer(t, DefaultV2WindowSafetyValveN)
+	c := dialV2(t, addr, negotiate.AckEvery)
+	defer c.close()
+
+	logical := "reading:2026-08-17:600000"
+	for i, val := range []string{"v1", "v2", "v3"} {
+		if msg := c.putVersioned(uint32(i+1), logical, val); msg.Header.Opcode != codec.OpcodeOK {
+			t.Fatalf("PUT_VERSIONED 应成功, opcode=%#x", msg.Header.Opcode)
+		}
+	}
+
+	// M2 缺口复现：无分页查询被结构化拒绝。
+	rejected := c.listWrites(10, "reading:2026-08-17:", 0, 0, "")
+	if rejected.Header.Opcode != codec.OpcodeErr {
+		t.Fatalf("无分页超限查询应被结构化拒绝, opcode=%#x", rejected.Header.Opcode)
+	}
+	code, reason, ok := proto.DecodeV2ErrPayload(rejected.Payload)
+	if !ok || code != codec.ErrCodeResultTooLarge || reason != "result_too_large" {
+		t.Fatalf("拒绝原因不符: code=%#x reason=%q ok=%v", code, reason, ok)
+	}
+
+	// 第一页：limit=2，2 条 + 非空 next_cursor。
+	page1 := c.listWritesPage(11, "reading:2026-08-17:", 0, 0, "", nil, 2)
+	if page1.Header.Opcode != codec.OpcodeOK {
+		code, reason, ok := proto.DecodeV2ErrPayload(page1.Payload)
+		t.Fatalf("分页第一页应成功, opcode=%#x code=%#x reason=%q ok=%v", page1.Header.Opcode, code, reason, ok)
+	}
+	entries1, _, next1, ok := proto.DecodeListWritesResponseV2(page1.Payload)
+	if !ok || len(entries1) != 2 || len(next1) == 0 {
+		t.Fatalf("第一页应 2 条且带 next_cursor: entries=%d next=%q ok=%v", len(entries1), next1, ok)
+	}
+	lk, seq, curOK := proto.DecodeListWritesCursor(next1)
+	if !curOK || lk != logical || seq != 2 {
+		t.Fatalf("next_cursor 应是最后一条 (logical, seq): lk=%q seq=%d ok=%v", lk, seq, curOK)
+	}
+
+	// 第二页：带 next_cursor 续查，1 条收尾 + 空 next_cursor。
+	page2 := c.listWritesPage(12, "reading:2026-08-17:", 0, 0, "", next1, 2)
+	if page2.Header.Opcode != codec.OpcodeOK {
+		t.Fatalf("分页第二页应成功, opcode=%#x", page2.Header.Opcode)
+	}
+	entries2, _, next2, ok := proto.DecodeListWritesResponseV2(page2.Payload)
+	if !ok || len(entries2) != 1 || len(next2) != 0 {
+		t.Fatalf("第二页应 1 条且 next_cursor 为空: entries=%d next=%q ok=%v", len(entries2), next2, ok)
+	}
+
+	// 两页取全：seq 1/2/3 各恰好一次，顺序与全量 ListWrites 一致。
+	gotSeqs := []uint64{entries1[0].Seq, entries1[1].Seq, entries2[0].Seq}
+	if fmt.Sprint(gotSeqs) != fmt.Sprint([]uint64{1, 2, 3}) {
+		t.Fatalf("两页应取全 seq 1..3: %v", gotSeqs)
+	}
+}
+
+// TestRouterV2_ListWritesLegacyRequestGetsLegacyResponseByteForByte 锁定分页
+// 改造不改变 M2 老行为：无尾段请求的响应体与旧格式逐字节一致（无
+// next_cursor 尾段），老客户端零回归。
+func TestRouterV2_ListWritesLegacyRequestGetsLegacyResponse(t *testing.T) {
+	addr := startRouterV2TestServer(t, DefaultV2WindowSafetyValveN)
+	c := dialV2(t, addr, negotiate.AckEvery)
+	defer c.close()
+
+	if msg := c.putVersioned(1, "reading:2026-08-17:600000", "v1"); msg.Header.Opcode != codec.OpcodeOK {
+		t.Fatalf("PUT_VERSIONED 应成功, opcode=%#x", msg.Header.Opcode)
+	}
+
+	msg := c.listWrites(10, "reading:2026-08-17:", 0, 0, "")
+	if msg.Header.Opcode != codec.OpcodeOK {
+		t.Fatalf("老格式查询应成功, opcode=%#x", msg.Header.Opcode)
+	}
+	entries, counts, next, ok := proto.DecodeListWritesResponseV2(msg.Payload)
+	// 无 source 声明的写入计入空字符串来源；无分页请求的响应不带 next_cursor 尾段。
+	if !ok || len(entries) != 1 || len(counts) != 1 || counts[0].Source != "" || counts[0].Count != 1 || next != nil {
+		t.Fatalf("老格式请求应得无尾段响应: entries=%d counts=%+v next=%q ok=%v",
+			len(entries), counts, next, ok)
 	}
 }

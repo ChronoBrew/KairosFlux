@@ -496,6 +496,187 @@ func EncodeListWritesResponse(entries [][]byte, sourceNames []string, sourceCoun
 	return buf
 }
 
+// —— LIST_WRITES 分页（M5，方案 §C.1）：可选游标/limit 只追加在既有请求/
+// 响应尾段，基段（EncodeListWritesRequest / EncodeListWritesResponse）的字节
+// 布局逐字节不变——旧调用方（无尾段的请求）收到的是与 M2 时期逐字节相同的
+// 响应，新向量与旧向量各自独立锁死（docs/kair/vectors-v2.json）。——
+
+// EncodeListWritesCursor 编码分页游标负载：[logicalKeyLen u32 LE][logicalKey]
+// [seq u64 LE]。游标语义是"续查位置"——(LogicalKey, Seq) 总序（ListWrites 的
+// 确定性输出序）中上一次返回的最后一条；Seq 是写入总序，游标按它向前推进，
+// logicalKey 用于在总序里唯一定位（同一条 seq 只属于一个逻辑键，但排序是
+// key 优先，纯 seq 无法表达"下一页从哪条 key 之后开始"）。
+func EncodeListWritesCursor(logicalKey string, seq uint64) []byte {
+	buf := make([]byte, 4+len(logicalKey)+8)
+	binary.LittleEndian.PutUint32(buf[0:4], uint32(len(logicalKey)))
+	copy(buf[4:], logicalKey)
+	binary.LittleEndian.PutUint64(buf[4+len(logicalKey):4+len(logicalKey)+8], seq)
+	return buf
+}
+
+// DecodeListWritesCursor 是 EncodeListWritesCursor 的逆操作。
+func DecodeListWritesCursor(payload []byte) (logicalKey string, seq uint64, ok bool) {
+	if len(payload) < 4 {
+		return "", 0, false
+	}
+	logicalKeyLen := int(binary.LittleEndian.Uint32(payload[0:4]))
+	if logicalKeyLen < 0 || 4+logicalKeyLen+8 != len(payload) {
+		return "", 0, false
+	}
+	return string(payload[4 : 4+logicalKeyLen]),
+		binary.LittleEndian.Uint64(payload[4+logicalKeyLen : 4+logicalKeyLen+8]), true
+}
+
+// EncodeListWritesRequestV2 编码带分页的 LIST_WRITES 请求负载：基段与
+// EncodeListWritesRequest 逐字节相同（prefix + tFrom/tTo + source），末尾
+// 追加 [cursorLen u32 LE][cursor][limit u32 LE]。cursor 为空表示从总序起点
+// 开始（新查询的第一页）；limit=0 表示不限量。cursor 为空且 limit=0 时
+// 不追加尾段、生成与 EncodeListWritesRequest 逐字节相同的旧格式请求——
+// 服务端据此返回旧格式响应（无 next_cursor 尾段），使"新 API 的零分页形态"
+// 与旧行为完全一致，是"只追加向量、既有向量字节不变"红线在请求侧的落地。
+func EncodeListWritesRequestV2(prefix []byte, tFromNanos, tToNanos int64, source, cursor []byte, limit uint32) []byte {
+	if len(cursor) == 0 && limit == 0 {
+		return EncodeListWritesRequest(prefix, tFromNanos, tToNanos, source)
+	}
+	base := EncodeListWritesRequest(prefix, tFromNanos, tToNanos, source)
+	buf := make([]byte, len(base)+4+len(cursor)+4)
+	copy(buf, base)
+	binary.LittleEndian.PutUint32(buf[len(base):len(base)+4], uint32(len(cursor)))
+	copy(buf[len(base)+4:], cursor)
+	binary.LittleEndian.PutUint32(buf[len(base)+4+len(cursor):], limit)
+	return buf
+}
+
+// DecodeListWritesRequestV2 是 EncodeListWritesRequestV2 的逆操作；无尾段
+// （M2 时期老格式请求）也能解：返回 after=nil、limit=0，与
+// DecodeListWritesRequest 完全等价——兼容是按精确剩余长度判定尾段存在与否，
+// 不猜内容（同 EncodeReplayFingerprintRequest 的既有判据）。
+func DecodeListWritesRequestV2(data []byte) (prefix []byte, tFromNanos, tToNanos int64, source, after []byte, limit uint32, ok bool) {
+	if len(data) < 4 {
+		return nil, 0, 0, nil, nil, 0, false
+	}
+	prefixLen := int(binary.LittleEndian.Uint32(data[0:4]))
+	if prefixLen < 0 || 4+prefixLen+8+8+4 > len(data) {
+		return nil, 0, 0, nil, nil, 0, false
+	}
+	off := 4
+	prefix = data[off : off+prefixLen]
+	off += prefixLen
+	tFromNanos = int64(binary.LittleEndian.Uint64(data[off : off+8]))
+	off += 8
+	tToNanos = int64(binary.LittleEndian.Uint64(data[off : off+8]))
+	off += 8
+	sourceLen := int(binary.LittleEndian.Uint32(data[off : off+4]))
+	off += 4
+	if sourceLen < 0 || off+sourceLen > len(data) {
+		return nil, 0, 0, nil, nil, 0, false
+	}
+	source = data[off : off+sourceLen]
+	off += sourceLen
+	if off == len(data) {
+		return prefix, tFromNanos, tToNanos, source, nil, 0, true // M2 老格式，无尾段
+	}
+	// 尾段：[cursorLen u32 LE][cursor][limit u32 LE]，精确长度判定。
+	if len(data) < off+4+4 {
+		return nil, 0, 0, nil, nil, 0, false
+	}
+	cursorLen := int(binary.LittleEndian.Uint32(data[off : off+4]))
+	off += 4
+	if cursorLen < 0 || off+cursorLen+4 != len(data) {
+		return nil, 0, 0, nil, nil, 0, false
+	}
+	after = data[off : off+cursorLen]
+	limit = binary.LittleEndian.Uint32(data[off+cursorLen : off+cursorLen+4])
+	return prefix, tFromNanos, tToNanos, source, after, limit, true
+}
+
+// EncodeListWritesResponseV2 编码带 next_cursor 尾段的 LIST_WRITES OK 响应
+// 负载：基段与 EncodeListWritesResponse 逐字节相同（matchCount + entries +
+// sourceCountN + 按来源计数），末尾追加 [nextCursorLen u32 LE][nextCursor]
+// （nextCursor 为 EncodeListWritesCursor 编码）。nextCursor 为空表示"没有
+// 更多结果"（或查询未分页）。基段之后多出的尾字节不影响 M2 时期老解码器
+// （Go DecodeListWritesResponse / Python decode_list_writes_response 均按
+// 字段精确消费、不校验剩余字节），旧客户端照常解出 entries/counts。
+func EncodeListWritesResponseV2(entries [][]byte, sourceNames []string, sourceCounts []uint32, nextCursor []byte) []byte {
+	base := EncodeListWritesResponse(entries, sourceNames, sourceCounts)
+	buf := make([]byte, len(base)+4+len(nextCursor))
+	copy(buf, base)
+	binary.LittleEndian.PutUint32(buf[len(base):len(base)+4], uint32(len(nextCursor)))
+	copy(buf[len(base)+4:], nextCursor)
+	return buf
+}
+
+// DecodeListWritesResponseV2 是 EncodeListWritesResponseV2 的逆操作，也兼容
+// 无尾段的 M2 老响应体（解出 nextCursor=nil）。调用方只需区分"尾段是空游标
+// （页面已尽）"与"无尾段（查询未分页）"两种情况——前者用分页查询获得，后者
+// 是老查询格式的响应，本就携带全部结果。
+func DecodeListWritesResponseV2(body []byte) ([]WriteEnvelopeView, []SourceCountView, []byte, bool) {
+	entries, counts, ok := DecodeListWritesResponse(body)
+	if !ok {
+		return nil, nil, nil, false
+	}
+	// 重新定位基段消费终点，判断尾段是否存在（DecodeListWritesResponse 不
+	// 校验剩余字节，这里按 [nextCursorLen u32][nextCursor] 精确长度判定）。
+	off := 4
+	for i := 0; i < len(entries); i++ {
+		consumed, entryOK := writeEnvelopeEntryLen(body[off:])
+		if !entryOK {
+			return nil, nil, nil, false
+		}
+		off += consumed
+	}
+	off += 4
+	for i := 0; i < len(counts); i++ {
+		srcLen := int(binary.LittleEndian.Uint32(body[off : off+4]))
+		off += 4 + srcLen + 4
+	}
+	if off == len(body) {
+		return entries, counts, nil, true // M2 老格式，无尾段
+	}
+	if len(body) < off+4 {
+		return nil, nil, nil, false
+	}
+	nextLen := int(binary.LittleEndian.Uint32(body[off : off+4]))
+	if nextLen < 0 || off+4+nextLen != len(body) {
+		return nil, nil, nil, false
+	}
+	return entries, counts, body[off+4 : off+4+nextLen], true
+}
+
+// writeEnvelopeEntryLen 返回 EncodeWriteEnvelopeEntry 编码在 data 中消费的
+// 字节数（不物化字段，仅用于 DecodeListWritesResponseV2 定位尾段起点）。
+func writeEnvelopeEntryLen(data []byte) (int, bool) {
+	if len(data) < 4 {
+		return 0, false
+	}
+	off := 0
+	logicalKeyLen := int(binary.LittleEndian.Uint32(data[off : off+4]))
+	off += 4
+	if logicalKeyLen < 0 || off+logicalKeyLen+8+8+4 > len(data) {
+		return 0, false
+	}
+	off += logicalKeyLen + 8 + 8
+	sourceLen := int(binary.LittleEndian.Uint32(data[off : off+4]))
+	off += 4
+	if sourceLen < 0 || off+sourceLen+4+2 > len(data) {
+		return 0, false
+	}
+	off += sourceLen
+	off += 4 // schemaVer u32
+	hashLen := int(binary.LittleEndian.Uint16(data[off : off+2]))
+	off += 2
+	if hashLen < 0 || off+hashLen+4 > len(data) {
+		return 0, false
+	}
+	off += hashLen
+	payloadLen := int(binary.LittleEndian.Uint32(data[off : off+4]))
+	off += 4
+	if payloadLen < 0 || off+payloadLen+1 > len(data) {
+		return 0, false
+	}
+	return off + payloadLen + 1, true
+}
+
 // DecodeListWritesResponse 是 EncodeListWritesResponse 的逆操作。
 func DecodeListWritesResponse(body []byte) ([]WriteEnvelopeView, []SourceCountView, bool) {
 	if len(body) < 4 {

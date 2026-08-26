@@ -93,6 +93,14 @@ const (
 	// service.RouterV2.handleListWrites 的文档：结构化拒绝比"服务端直接发送
 	// 一个客户端解码时会因超限而拒绝的巨帧、让调用方对着超时干等"更诚实。
 	ErrCodeResultTooLarge uint16 = 0x1002
+	// ErrCodeMemoryLimit 同属 §10.3 的 0x1xxx 段（帧/传输层）：服务端进程
+	// 内存护栏（memory guardrail，见 service/guardrail.go 与
+	// docs/bench/memory-guardrail.md）判定进程 RSS 已超配置上限（max_rss_mb）
+	// 而拒收新写入——"进程即将被 OOM 杀死"与"客户端写入失败"之间，宁可
+	// 显式拒绝并让客户端重试，也不要在 swap 死亡/被 kill 后靠重启恢复。
+	// reason 固定为 "memory_limit_reached"。v1 写路径（无错误码体系）复用
+	// 既有 overloaded 状态，不加新码——错误码分类学只扩展 v2 侧。
+	ErrCodeMemoryLimit uint16 = 0x1003
 	// ErrCodeSchemaValidation 对应 §10.3 的 0x3xxx 段（schema 校验）：value
 	// 未通过已注册类型的校验器。本阶段未实现 §9 Schema Descriptor 的按类型
 	// 子码分配，所有 schema 校验失败共用这一个码，具体原因仍由人读的

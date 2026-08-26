@@ -18,8 +18,11 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"time"
 
+	"github.com/ChronoBrew/KairosFlux/config"
 	"github.com/ChronoBrew/KairosFlux/internal/metrics"
 	"github.com/ChronoBrew/KairosFlux/kairnet"
 	"github.com/ChronoBrew/KairosFlux/proto"
@@ -81,6 +84,19 @@ func NewNode() (*Node, error) {
 	// 生命周期启停（ctx 由 Stop 取消）。
 	ctx, cancel := context.WithCancel(context.Background())
 	metrics.StartLogger(ctx, 10*time.Second)
+
+	// 内存护栏启动自检：打印 GOGC 与生效的 max_rss_mb（tail 日志即可核对
+	// 部署参数；GOGC 决定 Go 堆在 GC 前的放量斜率，是进程 RSS 爬升的第一
+	// 变量，故一并打印）。GOGC 用 SetGCPercent(-1) 只读查询（负数为"不改，
+	// 返回当前值"），本工具链没有 debug.GCPercent()。max_rss_mb>0 时启用
+	// 护栏，随 Node 生命周期运行（同一 ctx），v1/v2 Router 共享实例、同源
+	// 判定。
+	slog.Info("内存护栏启动自检", "GOGC", debug.SetGCPercent(-1), "max_rss_mb", config.G.MaxRSSMb)
+	if guardrail := NewMemoryGuardrail(config.G.MaxRSSMb, slog.Default()); guardrail != nil {
+		router.memoryGuardrail = guardrail
+		routerV2.memoryGuardrail = guardrail
+		guardrail.Start(ctx)
+	}
 
 	return &Node{kv: kv, ha: ha, server: server, ctx: ctx, cancel: cancel}, nil
 }

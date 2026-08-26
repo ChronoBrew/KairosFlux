@@ -47,6 +47,12 @@ type RouterV2 struct {
 	// corr_id/FLUSH 划分的批次边界，防止客户端一直不 FLUSH 导致服务端
 	// 无限攒积压。
 	windowSafetyValveN uint32
+
+	// 内存护栏（可选）：memoryGuardrail!=nil 时，进程 RSS 超限（max_rss_mb）
+	// 后写帧（PUT/PUT_VERSIONED/DEL）结构化拒绝（ErrCodeMemoryLimit，
+	// "memory_limit_reached"），读帧照常服务。与 v1 Router 共享同一个实例
+	// （服务装配时构造，见 guardrail.go）。
+	memoryGuardrail *MemoryGuardrail
 }
 
 // DefaultV2WindowSafetyValveN 是生产环境的默认安全阀取值——测试可以在
@@ -94,6 +100,10 @@ type v2ConnState struct {
 	cumFirstErrCode   uint16
 	cumFirstErrReason string
 }
+
+// SetMemoryGuardrail 挂载内存护栏（nil 表示不检查）。服务装配时调用
+// （NewNode/Engine.attachNetworkShell），与 v1 Router 共享同一个实例。
+func (r *RouterV2) SetMemoryGuardrail(g *MemoryGuardrail) { r.memoryGuardrail = g }
 
 func (r *RouterV2) connState(conn kairnet.Conn) *v2ConnState {
 	if s, ok := conn.Property(v2ConnStatePropertyKey).(*v2ConnState); ok {
@@ -190,6 +200,13 @@ func (r *RouterV2) handleWrite(req kairnet.RequestV2) {
 // 确实收到了字节、但帧本身不合法"这类问题永久排除在诊断范围之外，与
 // §11.2.3 强调的诊断粒度设计意图相悖。
 func (r *RouterV2) applyWrite(req kairnet.RequestV2) (accepted bool, errCode uint16, reason string) {
+	// 内存护栏：进程 RSS 超限拒收写帧（含 DEL 与 PUT/PUT_VERSIONED 的公共
+	// 落盘入口），结构化拒绝而不是静默丢帧——ack=window/none 的记账把这次
+	// 拒绝计为 received 且 rejected（firstErrCode=0x1003），对账时可见。
+	// 读帧不经过本函数，超限期间照常服务。
+	if r.memoryGuardrail != nil && r.memoryGuardrail.Blocked() {
+		return false, codec.ErrCodeMemoryLimit, "memory_limit_reached"
+	}
 	data := req.Data()
 
 	if req.Opcode() == codec.OpcodeDel {
@@ -427,6 +444,12 @@ func (r *RouterV2) handleScan(req kairnet.RequestV2) {
 // 总是立即响应：OK 负载 = 分配到的 seq（[u64 LE] 8 字节），供调用方确认/
 // 记录这次写对应的版本号；ERR 负载沿用既有 V2ErrPayload 结构。
 func (r *RouterV2) handlePutVersioned(req kairnet.RequestV2) {
+	// 内存护栏：PUT_VERSIONED 是独立落盘入口（不经 applyWrite），这里单独
+	// 拦一道——与 applyWrite 同一判定、同一错误码，保证 v2 全部写帧语义一致。
+	if r.memoryGuardrail != nil && r.memoryGuardrail.Blocked() {
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMemoryLimit, "memory_limit_reached")
+		return
+	}
 	key, value, source, ok := proto.DecodePutVersionedFrame(req.Data())
 	if !ok {
 		metrics.FramesDroppedMalformed.Add(1)
@@ -566,32 +589,84 @@ func (r *RouterV2) handleReplayFingerprint(req kairnet.RequestV2) {
 }
 
 // handleListWrites 处理 LIST_WRITES（时态内核 M2 审计查询，方案 §M2 第 2
-// 项）：请求帧 proto.DecodeListWritesRequest（prefix + 时间范围 + 来源过滤），
-// 返回命中的操作元数据信封列表 + 按来源聚合计数——这就是"定点分析查询"的
-// 最小完备形态（as_of(t) 定点取值 + LIST_WRITES(key,t1..t2) 定点审计）。
+// 项）：请求帧 proto.DecodeListWritesRequestV2（prefix + 时间范围 + 来源
+// 过滤 + 可选游标/limit，M5 方案 §C.1），返回命中的操作元数据信封列表 +
+// 按来源聚合计数——这就是"定点分析查询"的最小完备形态（as_of(t) 定点取值
+// + LIST_WRITES(key,t1..t2) 定点审计）。
 //
-// 结果体量防护：一个前缀下的写入历史长度没有上界（不像 REPLAY_FINGERPRINT
-// 只返回"每个逻辑键的最新版本"，LIST_WRITES 把每条历史记录连同 payload 一起
-// 编进响应体），soak 测试（service/temporal_soak_bench_test.go，10 万键×10
-// 版本=100 万条）证实这不是假设性风险——单帧体量可以逼近甚至超过
-// codec.EffectiveMaxSize 的帧长上限。若不在这里检查，服务端会把一个客户端
-// 解码时终将因超限而拒绝（或收发耗时远超连接超时）的巨帧硬发出去，调用方
-// 只会看到连接超时/解码失败，看不出原因；这里改为结构化拒绝
-// （ErrCodeResultTooLarge），诚实地把"查询范围太大"这件事暴露给调用方，
-// 分页不在本次任务范围内（M2 任务书未要求，属于后续如果真的需要再做的
-// 范围收窄）。
+// 结果体量防护（M2 遗留缺口，M5 修复）：一个前缀下的写入历史长度没有上界
+// （不像 REPLAY_FINGERPRINT 只返回"每个逻辑键的最新版本"，LIST_WRITES 把
+// 每条历史记录连同 payload 一起编进响应体），soak 测试
+// （service/temporal_soak_bench_test.go，10 万键×10 版本=100 万条）证实这
+// 不是假设性风险——单帧体量可以逼近甚至超过 codec.EffectiveMaxSize 的帧长
+// 上限。M2 的处理是结构化拒绝（ErrCodeResultTooLarge，"查询范围太大"），
+// 分页不在 M2 范围内故当时未做；M5 补上：请求可带游标/limit，服务端把响应
+// 钉在 limit 条内、附 next_cursor 供续查，无界查询不再必然撞帧长上限。
+//
+// 两条路径的分界：请求无尾段（M2 老格式）时走与 M2 完全相同的旧路径——
+// ListWrites + EncodeListWritesResponse + 超帧拒绝，响应逐字节不变（"只
+// 追加向量"红线的响应侧落地，docs/kair/vectors-v2.json 旧向量不受影响）；
+// 请求带游标或 limit（尾段）时走分页路径。分页路径的帧长检查保留为防御：
+// limit 由调用方自定，若 limit 大到单帧仍超限，结果照旧被结构化拒绝，语义
+// 不变。
 func (r *RouterV2) handleListWrites(req kairnet.RequestV2) {
-	prefix, tFrom, tTo, source, ok := proto.DecodeListWritesRequest(req.Data())
+	prefix, tFrom, tTo, source, afterBytes, limit, ok := proto.DecodeListWritesRequestV2(req.Data())
 	if !ok {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
 		return
 	}
-	result, err := r.temporal.ListWrites(string(prefix), tFrom, tTo, string(source))
+
+	// M2 老格式请求（无尾段）：旧路径，响应逐字节不变。
+	if len(afterBytes) == 0 && limit == 0 {
+		result, err := r.temporal.ListWrites(string(prefix), tFrom, tTo, string(source))
+		if err != nil {
+			r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
+			return
+		}
+		body := encodeListWritesBody(result)
+		if effMax := codec.EffectiveMaxSize(config.G.MaxPackageSize); uint32(len(body)) > effMax {
+			slog.Warn("kairnet LIST_WRITES result exceeds frame size limit, rejecting",
+				"bodyBytes", len(body), "effectiveMax", effMax, "matchCount", len(result.Entries))
+			r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeResultTooLarge, "result_too_large")
+			return
+		}
+		r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
+		return
+	}
+
+	// 分页路径（M5）：游标非空时按 (LogicalKey, Seq) 解码，非法即畸形帧。
+	var after *ListWritesCursor
+	if len(afterBytes) > 0 {
+		lk, seq, curOK := proto.DecodeListWritesCursor(afterBytes)
+		if !curOK {
+			r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeMalformedFrame, "malformed_frame")
+			return
+		}
+		after = &ListWritesCursor{LogicalKey: lk, Seq: seq}
+	}
+	result, hasMore, err := r.temporal.ListWritesPage(string(prefix), tFrom, tTo, string(source), after, limit)
 	if err != nil {
 		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeNone, "error")
 		return
 	}
+	var nextCursor []byte
+	if hasMore && len(result.Entries) > 0 {
+		last := result.Entries[len(result.Entries)-1]
+		nextCursor = proto.EncodeListWritesCursor(last.LogicalKey, last.Seq)
+	}
+	body := encodeListWritesBodyV2(result, nextCursor)
+	if effMax := codec.EffectiveMaxSize(config.G.MaxPackageSize); uint32(len(body)) > effMax {
+		slog.Warn("kairnet LIST_WRITES page exceeds frame size limit, rejecting",
+			"bodyBytes", len(body), "effectiveMax", effMax, "matchCount", len(result.Entries))
+		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeResultTooLarge, "result_too_large")
+		return
+	}
+	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
+}
 
+// encodeListWritesBody 把 ListWritesResult 编码成 M2 格式 LIST_WRITES OK
+// 响应体（EncodeListWritesResponse：entries + 按来源聚合计数）。
+func encodeListWritesBody(result ListWritesResult) []byte {
 	entries := make([][]byte, len(result.Entries))
 	for i, e := range result.Entries {
 		entries[i] = proto.EncodeWriteEnvelopeEntry(
@@ -603,21 +678,24 @@ func (r *RouterV2) handleListWrites(req kairnet.RequestV2) {
 		sourceNames[i] = sc.Source
 		sourceCounts[i] = sc.Count
 	}
-	body := proto.EncodeListWritesResponse(entries, sourceNames, sourceCounts)
+	return proto.EncodeListWritesResponse(entries, sourceNames, sourceCounts)
+}
 
-	// EffectiveMaxSize(config.G.MaxPackageSize)：与 kairnet/transport 解码
-	// 入站帧用的同一个生效上限（见 kairnet/transport/connection.go 的
-	// maxPackageSize 字段），不是 codec 包自己那个"未配置时兜底 256MiB"的
-	// 独立默认值——响应体如果按这个上限打包发出去，客户端解码时用的是
-	// 同一个配置项，两边判断必须一致，否则会出现"服务端认为能发、客户端
-	// 认为超限"的分歧。
-	if effMax := codec.EffectiveMaxSize(config.G.MaxPackageSize); uint32(len(body)) > effMax {
-		slog.Warn("kairnet LIST_WRITES result exceeds frame size limit, rejecting",
-			"bodyBytes", len(body), "effectiveMax", effMax, "matchCount", len(result.Entries))
-		r.sendErr(req.Conn(), req.Type(), req.CorrID(), codec.ErrCodeResultTooLarge, "result_too_large")
-		return
+// encodeListWritesBodyV2 是分页路径的响应体编码：M2 基段 + next_cursor 尾段
+// （nextCursor 为空 = 页面已尽）。
+func encodeListWritesBodyV2(result ListWritesResult, nextCursor []byte) []byte {
+	entries := make([][]byte, len(result.Entries))
+	for i, e := range result.Entries {
+		entries[i] = proto.EncodeWriteEnvelopeEntry(
+			e.LogicalKey, e.Seq, e.WriteNanos, e.Source, e.SchemaVer, e.PersistedHash, e.Payload, e.HashOK)
 	}
-	r.sendOK(req.Conn(), req.Type(), req.CorrID(), body)
+	sourceNames := make([]string, len(result.BySource))
+	sourceCounts := make([]uint32, len(result.BySource))
+	for i, sc := range result.BySource {
+		sourceNames[i] = sc.Source
+		sourceCounts[i] = sc.Count
+	}
+	return proto.EncodeListWritesResponseV2(entries, sourceNames, sourceCounts, nextCursor)
 }
 
 func (r *RouterV2) sendOK(conn kairnet.Conn, typ uint16, corrID uint32, payload []byte) {

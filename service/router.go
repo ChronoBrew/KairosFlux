@@ -35,6 +35,12 @@ type Router struct {
 	// 网关自适应准入（可选）：limiter!=nil 时按并发上限准入，过载 shed。
 	limiter *admission.Limiter
 
+	// 内存护栏（可选）：memoryGuardrail!=nil 时，进程 RSS 超限（max_rss_mb）
+	// 后拒收全部写请求——v1 无错误码体系，复用 overloaded 状态（护栏组件与
+	// 判定语义见 guardrail.go）。构造于服务装配时（NewNode/attachNetworkShell），
+	// 与 RouterV2 共享同一个实例，保证 v1/v2 对同一份 RSS 状态做一致判定。
+	memoryGuardrail *MemoryGuardrail
+
 	// 前置处理函数；返回 HookDrop 表示丢弃本帧，reason 是丢弃原因（可为空），
 	// PreHandle 会把它带上 sendDropped 回传给客户端。
 	preHandleFunc func(request kairnet.Request) (kairnet.HookAction, string)
@@ -80,6 +86,10 @@ func (r *Router) SetLimiter(l *admission.Limiter) {
 }
 
 // SetPreHandle 设置前置处理函数
+// SetMemoryGuardrail 挂载内存护栏（nil 表示不检查）。服务装配时调用
+// （NewNode/Engine.attachNetworkShell），与 RouterV2 共享同一个实例。
+func (r *Router) SetMemoryGuardrail(g *MemoryGuardrail) { r.memoryGuardrail = g }
+
 func (r *Router) SetPreHandle(f func(request kairnet.Request) (kairnet.HookAction, string)) {
 	r.preHandleFunc = f
 }
@@ -118,12 +128,24 @@ func (r *Router) Handle(request kairnet.Request) {
 	msgID := request.MsgID()
 	data := request.MsgData()
 
+	// 内存护栏只拦写（PUT/DEL）：读是瞬时分配，不是进程内存爬升的源头；
+	// 与 v2 侧 applyWrite/handlePutVersioned 只拒写保持同一语义。超限期间
+	// 读路径继续服务（审计/诊断仍可用），写请求回 overloaded，让客户端按
+	// 既有重试语义处理。
 	switch msgID {
 	case proto.MsgPut:
+		if r.memoryGuardrail != nil && r.memoryGuardrail.Blocked() {
+			sendOverloaded(request)
+			return
+		}
 		r.handlePut(data, request)
 	case proto.MsgGet:
 		r.handleGet(data, request)
 	case proto.MsgDelete:
+		if r.memoryGuardrail != nil && r.memoryGuardrail.Blocked() {
+			sendOverloaded(request)
+			return
+		}
 		r.handleDelete(data, request)
 	case proto.MsgScan:
 		r.handleScan(data, request)
