@@ -41,6 +41,12 @@ type GlobalConfig struct {
 	MaxConn        int
 	MaxPackageSize uint32
 
+	// MaxRSSMb 是进程内存护栏（memory guardrail，见 service/guardrail.go）
+	// 的 RSS 上限（MiB）。服务端周期性采样自身 RSS，超限后拒收新写入并告警
+	// （v1 回 overloaded，v2 回 ErrCodeMemoryLimit），防止进程在 swap 死亡/
+	// OOM 上越走越远。<=0 表示不限（关闭护栏，默认）。
+	MaxRSSMb int64
+
 	// ConnReadTimeoutMs 是每次读一帧的空闲超时（毫秒）：从上一字节读到之后开始计时，
 	// 超时未凑齐下一帧（哪怕只差 1 字节）即断开连接。防的是"半个帧后不发了"的慢客户端/
 	// 恶意连接长期占着一个 goroutine + 一个 MaxConn 名额不释放。<=0 表示不设超时
@@ -141,6 +147,7 @@ func defaultGlobalConfig() *GlobalConfig {
 		Version:                  "1.0.0",
 		MaxConn:                  1000,
 		MaxPackageSize:           16 << 20, // 16MiB：容纳多模态大值(相机帧)与多条 SCAN 响应
+		MaxRSSMb:                 0,        // 默认不限：护栏显式开启才生效
 		ConnReadTimeoutMs:        30000,    // 30s：慢客户端/半帧连接的空闲上限
 		WorkerPoolSize:           10,
 		MaxWorkerTaskLen:         10000,

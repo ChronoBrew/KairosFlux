@@ -74,3 +74,6 @@ func WithMaxCompactionSize(n int) Option {
 
 func WithShardCount(n int) Option { return func(c *GlobalConfig) { c.ShardCount = n } }
 func WithVNodes(n int) Option     { return func(c *GlobalConfig) { c.VNodes = n } }
+
+// WithMaxRSSMb 设置内存护栏的 RSS 上限（MiB）；<=0 关闭护栏（默认）。
+func WithMaxRSSMb(n int64) Option { return func(c *GlobalConfig) { c.MaxRSSMb = n } }
