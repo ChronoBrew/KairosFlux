@@ -36,7 +36,9 @@ func (p JobPhase) Terminal() bool {
 // JobStatus 是 job:status:{name} 的观测状态（契约原文字段："phase/last_run/
 // retry/verdict"——Phase 对应 phase，Slot 对应 last_run（"最近跑的是哪个
 // 调度时间片"），Attempt 对应 retry（已尝试次数，含首次），LastVerdict
-// 对应 verdict）。
+// 对应 verdict）。M4 裁决后它是事件账本的派生视图：每次执行先写 running
+// 标记（①）、终态由刚落盘的事件派生（④，见 jobStatusFromEvent），启动
+// 恢复扫描（Reconciler.Recover）会把崩溃遗留的不一致重建回账本事实。
 type JobStatus struct {
 	Phase           JobPhase     `json:"phase"`
 	Slot            int64        `json:"slot"`
