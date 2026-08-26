@@ -1032,6 +1032,13 @@ def decode_list_writes_response(body: bytes) -> Tuple[list, list]:
 # Encode/DecodeListWritesRequestV2、Encode/DecodeListWritesResponseV2。
 # ---------------------------------------------------------------------------
 
+# ERR_CODE_MEMORY_LIMIT 是服务端内存护栏拒收新写入的 v2 错误码（0x1xxx 帧/
+# 传输段，与 Go codec.ErrCodeMemoryLimit 对齐；错误码裁决见 M5 协调者确认，
+# v1 侧复用 overloaded 状态不加新码）。服务端在进程 RSS 超限（max_rss_mb）
+# 时回 ERR 帧，reason="memory_limit_reached"——客户端按此识别"重试可能有用
+# 的过载类拒绝"。
+ERR_CODE_MEMORY_LIMIT = 0x1003
+
 
 class V2Error(BanDBError):
     """v2 ERR(opcode=0x81) 响应：机读错误码 + 人读原因。对应 Go:
